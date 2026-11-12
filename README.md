@@ -1,3 +1,7 @@
+<p align="center">
+  <img src="assets/banner.jpg" alt="TRACE: Transcript Recall And Continuity Engine. Memory for coding agents, kept by code." width="100%">
+</p>
+
 # TRACE
 
 [![CI](https://github.com/diegolinan/trace/actions/workflows/ci.yml/badge.svg)](https://github.com/diegolinan/trace/actions/workflows/ci.yml)
