@@ -72,6 +72,7 @@ func TestMain(m *testing.M) {
 		{Name: "main", Label: "the main agent", Git: "dir", Marker: "ROLE.md", Contains: "role: main", Folder: "work-acme"},
 	}, Repo: "D:/Work/acme", Anchors: map[string]string{"queue_id": `\bQ\d{1,3}\b`, "card": `\b(?:E\d{3}|[Cc]ard \d{1,3})\b`}}
 	compileConfig()
+	clockNow = func() time.Time { return time.Date(2026, 11, 12, 0, 0, 0, 0, time.UTC) }
 	os.Exit(m.Run())
 }
 
@@ -284,7 +285,7 @@ func TestSessionStartResume(t *testing.T) {
 		t.Fatal(err)
 	}
 	got := out.String()
-	for _, want := range []string{"Where Agent A stopped", "Session s1 (named first-try, then launch-day),", "steering: no, eso no", "Bash", "search <words>"} {
+	for _, want := range []string{"Where Agent A stopped", "Session s1 (named first-try, then launch-day),", "steering: no, eso no", "refused: no, eso no", "Bash", "search <words>"} {
 		if !strings.Contains(got, want) {
 			t.Errorf("missing %q in:\n%s", want, got)
 		}

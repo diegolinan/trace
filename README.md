@@ -44,7 +44,7 @@ TRACE takes a different approach:
 - **Identity.** A session is known by its id, never by its name. Every name a session is given is kept as a dated label. A session's role comes from files in its own checkout, so moving or renaming a folder does not change it.
 - **Hooks.**
   - Stop, PreCompact and SessionEnd: a detached import that returns at once.
-  - SessionStart: a block that says where the last session of the same role stopped.
+  - SessionStart: a block that says where the last session of the same role stopped. It also lists, verbatim, what the user refused or set as a standing rule in the last 14 days, each with the end of the reply it answered, so the agent does not propose it again. These are found by code rules, with no network.
   - PreCompact: also fixed text that tells Claude Code's summarizer to keep quotes, ids and open work.
   - SubagentStart: tells helper agents that they are helpers, not the agent that started them.
 - **Search.** Word and trigram search over everything stored.

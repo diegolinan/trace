@@ -87,6 +87,9 @@ func resumeBlock(db *sql.DB, sid, source, role, host string, w io.Writer) error 
 		160, id); err != nil {
 		return err
 	}
+	if err := refusals(db, w, user, host, role); err != nil {
+		return err
+	}
 	if err := section("Pinned by "+user+" (\"remember this\"), any session",
 		`select e.ts, 'pin', e.text from anchor a join event e on e.id = a.event_id where a.type = 'pin' order by e.ts desc limit 5`,
 		300); err != nil {
@@ -96,6 +99,61 @@ func resumeBlock(db *sql.DB, sid, source, role, host string, w io.Writer) error 
 	fmt.Fprintf(w, "Everything else said or done: `%s search <words>` (-all widens it).\n", exe)
 	return nil
 }
+
+// refusals lists what the user refused or set as a rule in the last 14 days, in any session of this host and role,
+// verbatim and with the end of the reply it answered: a refusal outlives the session it was said in, and agents
+// re-propose what was refused (VetoBench). Marked by the code rules in marks.go, at read time, with no network.
+// Bare interrupts ("para", "wait") are left out: they stop a turn, they refuse nothing lasting.
+func refusals(db *sql.DB, w io.Writer, user, host, role string) error {
+	since := clockNow().UTC().Add(-14 * 24 * time.Hour).Format(time.RFC3339)
+	rows, err := db.Query(`select e.session_id, e.seq, e.ts, e.text from event e join session s on s.id = e.session_id
+		where s.host = ? and s.role = ? and s.excluded is null and e.speaker = 'user' and e.kind in ('prompt', 'steering')
+		and e.ts >= ? order by e.ts desc limit 500`, host, role, since)
+	if err != nil {
+		return err
+	}
+	type hit struct {
+		sid, ts, text, label string
+		seq                  int
+	}
+	var hits []hit
+	for rows.Next() && len(hits) < 8 {
+		var h hit
+		rows.Scan(&h.sid, &h.seq, &h.ts, &h.text)
+		if !lasting(h.text) {
+			continue
+		}
+		h.label = "refused"
+		if markText(h.text).rule {
+			h.label = "rule"
+		}
+		hits = append(hits, h)
+	}
+	rows.Close()
+	if len(hits) == 0 {
+		return nil
+	}
+	fmt.Fprintf(w, "### What %s refused or set as a rule, last 14 days (verbatim, newest last)\n", user)
+	for i := len(hits) - 1; i >= 0; i-- {
+		h := hits[i]
+		var before string
+		db.QueryRow(`select text from event where session_id = ? and seq < ? and kind = 'reply' order by seq desc limit 1`, h.sid, h.seq).Scan(&before)
+		line := fmt.Sprintf("- %s %s: %s", local(h.ts), h.label, strings.Join(strings.Fields(clip(pasted.ReplaceAllString(h.text, "[pasted text]"), 250)), " "))
+		if before != "" {
+			tail := strings.Join(strings.Fields(before), " ")
+			if len(tail) > 150 {
+				tail = "…" + tail[len(tail)-150:]
+			}
+			line += " (answering: " + strings.ToValidUTF8(tail, "") + ")"
+		}
+		fmt.Fprintln(w, line)
+	}
+	fmt.Fprintln(w)
+	return nil
+}
+
+// clockNow is time.Now; tests pin it so fixtures do not age out of the 14-day window.
+var clockNow = time.Now
 
 // framing says how to read the block. Agents act on old notes as orders (aigent-os, passbaton, hindsight), or
 // ignore a note shown without framing (vectr: 0 of 7).

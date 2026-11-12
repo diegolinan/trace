@@ -32,6 +32,26 @@ var (
 
 type marks struct{ correction, rejection, approval, rule bool }
 
+// lastingRe is the part of rejectRe that refuses something beyond the turn: negative orders and "X no". Left out:
+// interrupts (para, banca, stop), "sacalo" (an order to remove, as often an approval as a refusal) and "ya no"
+// (as often confusion). Seen on real boots, where those filled the list with non-refusals.
+var lastingRe = regexp.MustCompile(`^(?:no te adelantes|no hagas|no toques|no sigas|no lo hagas|no cambies|no borres|no hace falta|ni se te ocurra|\S+ no$|todavia no|no por ahora|no todavia|olvidate|do not|don't|dont|never mind)\b`)
+
+// lasting is true when a typed message refuses something or sets a rule that should outlive the session.
+func lasting(text string) bool {
+	if markText(text).rule {
+		return true
+	}
+	t := fold.Replace(strings.ToLower(pasted.ReplaceAllString(text, " ")))
+	t = tagNo.ReplaceAllString(t, "?")
+	for _, c := range clauses.Split(t, -1) {
+		if c = strings.Join(strings.Fields(c), " "); c != "" && !explain.MatchString(c) && lastingRe.MatchString(c) {
+			return true
+		}
+	}
+	return false
+}
+
 func markText(text string) marks {
 	t := strings.ToLower(pasted.ReplaceAllString(text, " "))
 	t = fold.Replace(tagNo.ReplaceAllString(accentSi.ReplaceAllString(t, "${1}yes${2}"), "?"))

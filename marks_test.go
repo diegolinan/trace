@@ -31,6 +31,25 @@ func TestHomeAndConfig(t *testing.T) {
 	}
 }
 
+// The boot list keeps refusals and rules that outlive the turn, never interrupts, removals or confusion.
+func TestLasting(t *testing.T) {
+	for text, want := range map[string]bool{
+		"bien. no te adelantes":                         true,
+		"no hace falta usar archivos":                   true,
+		"copia no... mover":                             true,
+		"De acá en más guardalo en raw":                 true,
+		"para. Para el repo, no habria que asegurarlo?": false,
+		"banca que lo tiro para atras":                  false,
+		"dale, Saca del codigo todo lo mio":             false,
+		"no era a los 15 minutos? ya no te entiendo":    false,
+		"no entiendo":                                   false,
+	} {
+		if lasting(text) != want {
+			t.Errorf("lasting(%q) != %v", text, want)
+		}
+	}
+}
+
 func TestMarkText(t *testing.T) {
 	for text, want := range map[string]marks{
 		"a, dale":                       {approval: true},
