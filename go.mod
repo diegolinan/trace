@@ -1,4 +1,4 @@
-module trace
+module github.com/diegolinan/trace
 
 go 1.27.0
 

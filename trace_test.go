@@ -342,7 +342,7 @@ func TestRoleFor(t *testing.T) {
 			t.Errorf("roleFor(%s) = %s, want %s", cwd, got, want)
 		}
 	}
-	if _, role, _, _ := sessionFor(`C:\p\d--work-acme\s.jsonl`); role != "main" {
+	if _, role, _, _ := sessionFor(filepath.Join("p", "d--work-acme", "s.jsonl")); role != "main" {
 		t.Errorf("lower-case main folder got role %s", role)
 	}
 	// With no roles configured, every checkout is its own project, and its sessions get the hooks.

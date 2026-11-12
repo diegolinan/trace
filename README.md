@@ -1,5 +1,14 @@
 # TRACE
 
+[![CI](https://github.com/diegolinan/trace/actions/workflows/ci.yml/badge.svg)](https://github.com/diegolinan/trace/actions/workflows/ci.yml)
+[![Go Report Card](https://goreportcard.com/badge/github.com/diegolinan/trace)](https://goreportcard.com/report/github.com/diegolinan/trace)
+[![Go version](https://img.shields.io/github/go-mod/go-version/diegolinan/trace)](go.mod)
+[![Release](https://img.shields.io/github/v/tag/diegolinan/trace?label=release)](https://github.com/diegolinan/trace/tags)
+[![License: Apache 2.0](https://img.shields.io/badge/license-Apache%202.0-blue)](LICENSE)
+![Platforms](https://img.shields.io/badge/platforms-Linux%20%7C%20macOS%20%7C%20Windows-lightgrey)
+![No model in the loop](https://img.shields.io/badge/model%20in%20the%20loop-none-success)
+![For Claude Code](https://img.shields.io/badge/for-Claude%20Code-d97757)
+
 **T**ranscript **R**ecall **A**nd **C**ontinuity **E**ngine: memory for coding agents, kept by code.
 
 Author: Diego Liñan. License: Apache 2.0 (`LICENSE`, `NOTICE`).
@@ -42,8 +51,8 @@ TRACE takes a different approach:
 You need Go 1.27 or newer.
 
 ```sh
-go build -o ~/.local/bin/trace .        # or any folder; on Windows, for example %LOCALAPPDATA%\trace\trace.exe
-trace import                            # first full import
+go install github.com/diegolinan/trace@latest   # puts trace in $(go env GOPATH)/bin
+trace import                                    # first full import
 trace stats
 ```
 
@@ -105,6 +114,6 @@ A role names a checkout by a file in its root, so it survives moves and renames:
 
 ## Status
 
-- **Tested on Windows.** It builds for macOS and Linux, but it has not been run there yet.
+- **Used daily on Windows.** CI runs the tests on Linux, macOS and Windows; the hooks have only been used for real on Windows.
 - **Codex is not supported yet.**
 - **The marks are experimental** and not used by the hooks.
