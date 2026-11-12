@@ -136,6 +136,10 @@ func folderRole(folder string) string {
 
 // roleFor reads the role from the checkout's own files. A cwd that no longer exists keeps the fallback.
 func roleFor(cwd, fallback string) string {
+	// A path from another system (D:\x read on Linux) is not absolute here; walking up it would reach ".".
+	if !filepath.IsAbs(cwd) {
+		return fallback
+	}
 	for d := cwd; d != ""; {
 		if st, err := os.Stat(filepath.Join(d, ".git")); err == nil {
 			if len(cfg.Roles) == 0 {
