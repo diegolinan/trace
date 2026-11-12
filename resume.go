@@ -77,14 +77,11 @@ func resumeBlock(db *sql.DB, sid, source, role, host string, w io.Writer) error 
 		500, id, 8); err != nil {
 		return err
 	}
-	if err := section("The last reply (verbatim, clipped)",
-		`select ts, 'reply', text from event where session_id = ? and speaker = 'assistant' and kind = 'reply' order by seq desc limit 1`,
-		1500, id); err != nil {
-		return err
-	}
-	if err := section("Last actions",
-		`select ts, 'tool', text from event where session_id = ? and kind = 'tool_call' order by seq desc limit 6`,
-		160, id); err != nil {
+	// Several replies, not one plus tool calls: a last "ok, clear me" reply carries no state, and tool calls were mostly
+	// CI polling (2026-11-12: a /clear lost a published release and an answered question that sat two replies back).
+	if err := section("The last replies (verbatim, clipped, newest last)",
+		`select ts, 'reply', text from event where session_id = ? and speaker = 'assistant' and kind = 'reply' order by seq desc limit 4`,
+		600, id); err != nil {
 		return err
 	}
 	if err := refusals(db, w, user, host, role); err != nil {
@@ -96,7 +93,7 @@ func resumeBlock(db *sql.DB, sid, source, role, host string, w io.Writer) error 
 		return err
 	}
 	exe, _ := os.Executable()
-	fmt.Fprintf(w, "Everything else said or done: `%s search <words>` (-all widens it).\n", exe)
+	fmt.Fprintf(w, "Everything else said or done: `%s search <words>` (-all widens it). Search before saying you cannot confirm something.\n", exe)
 	return nil
 }
 

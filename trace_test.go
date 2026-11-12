@@ -285,7 +285,7 @@ func TestSessionStartResume(t *testing.T) {
 		t.Fatal(err)
 	}
 	got := out.String()
-	for _, want := range []string{"Where Agent A stopped", "Session s1 (named first-try, then launch-day),", "steering: no, eso no", "refused: no, eso no", "Bash", "search <words>"} {
+	for _, want := range []string{"Where Agent A stopped", "Session s1 (named first-try, then launch-day),", "steering: no, eso no", "refused: no, eso no", "The last replies", "search <words>"} {
 		if !strings.Contains(got, want) {
 			t.Errorf("missing %q in:\n%s", want, got)
 		}

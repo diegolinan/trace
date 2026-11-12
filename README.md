@@ -30,7 +30,7 @@ Claude Code also deletes transcripts after 30 days.
 
 TRACE takes a different approach:
 - **It keeps the record.** Every transcript is copied verbatim into one local SQLite file, by code, with no model in the loop.
-- **It shows the facts.** Each new session sees the user's last words, the last reply and the last actions, quoted, not paraphrased.
+- **It shows the facts.** Each new session sees the user's last words and the last four replies, quoted, not paraphrased.
 
 ## What it does
 
