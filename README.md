@@ -1,7 +1,7 @@
 # TRACE
 
 [![CI](https://github.com/diegolinan/trace/actions/workflows/ci.yml/badge.svg)](https://github.com/diegolinan/trace/actions/workflows/ci.yml)
-[![Go Report Card](https://goreportcard.com/badge/github.com/diegolinan/trace)](https://goreportcard.com/report/github.com/diegolinan/trace)
+[![Go Reference](https://pkg.go.dev/badge/github.com/diegolinan/trace.svg)](https://pkg.go.dev/github.com/diegolinan/trace)
 [![Go version](https://img.shields.io/github/go-mod/go-version/diegolinan/trace)](go.mod)
 [![Release](https://img.shields.io/github/v/tag/diegolinan/trace?label=release)](https://github.com/diegolinan/trace/tags)
 [![License: Apache 2.0](https://img.shields.io/badge/license-Apache%202.0-blue)](LICENSE)
