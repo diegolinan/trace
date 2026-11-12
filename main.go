@@ -8,6 +8,7 @@
 //	trace install           add the hooks to Claude Code's user settings, then import (uninstall removes them)
 //	trace import            read new bytes of every transcript in scope; safe to run any time
 //	trace hook              for host hooks: starts a detached import and returns at once, always exit 0
+//	trace resume            where the last session in this checkout stopped, for agents without hooks (-host codex)
 //	trace search <words>    [-n 10] [-who user|assistant|subagent] [-all] [-since 2026-11-01]
 //	trace stats
 package main
@@ -24,7 +25,7 @@ import (
 
 func main() {
 	if len(os.Args) < 2 {
-		fmt.Fprintln(os.Stderr, "usage: trace install | uninstall | import | hook | search <words> | stats")
+		fmt.Fprintln(os.Stderr, "usage: trace install | uninstall | import | hook | resume | search <words> | stats")
 		os.Exit(2)
 	}
 	cmd := os.Args[1]
@@ -36,6 +37,9 @@ func main() {
 	dbPath := fs.String("db", filepath.Join(data, "trace.db"), "database file")
 	projects := fs.String("projects", filepath.Join(userHome, ".claude", "projects"), "Claude Code transcripts folder")
 	history := fs.String("history", filepath.Join(userHome, ".claude", "history.jsonl"), "Claude Code prompt log")
+	codexDir := fs.String("codex", codexHome(), "Codex home, for its session rollouts (empty: no Codex)")
+	host := fs.String("host", "codex", "resume: which agent's sessions to show (codex or claude-code)")
+	notID := fs.String("not", "", "resume: a session id to leave out (default: the session written to in the last two minutes)")
 	archive := fs.String("archive", filepath.Join(data, "raw"), "raw copies folder (empty: no copy)")
 	repo := fs.String("repo", cfg.Repo, "git repository for commit checks (empty: none)")
 	scope := fs.String("scope", cfg.Scope, "project folders whose name contains this (empty: all)")
@@ -53,7 +57,7 @@ func main() {
 	case "hook":
 		// Fail open: a hook error must never block or fail the host's turn.
 		if err := hook(readHookInput(os.Stdin), os.Args[2:], *dbPath, func(db *sql.DB, trigger string) error {
-			return runImport(db, *projects, *history, *archive, *repo, *scope, trigger)
+			return runImport(db, *projects, *history, *codexDir, *archive, *repo, *scope, trigger)
 		}, os.Stdout); err != nil {
 			fmt.Fprintln(os.Stderr, "trace hook:", err)
 		}
@@ -70,18 +74,42 @@ func main() {
 		}
 		fmt.Println("first import (later ones run from the hooks)...")
 		err = importOnce(*dbPath, time.Minute, func(db *sql.DB) error {
-			return runImport(db, *projects, *history, *archive, *repo, *scope, "install")
+			return runImport(db, *projects, *history, *codexDir, *archive, *repo, *scope, "install")
 		})
+	case "resume":
+		// For hosts that run no hooks (Codex Desktop): the agent runs this itself when a session starts.
+		if ierr := importOnce(*dbPath, 5*time.Second, func(db *sql.DB) error {
+			return runImport(db, *projects, *history, *codexDir, *archive, *repo, *scope, "resume")
+		}); ierr != nil {
+			fmt.Fprintln(os.Stderr, "trace: import failed, showing what is stored:", ierr)
+		}
+		cwd, _ := os.Getwd()
+		role := roleFor(cwd, projectRole(cwd))
+		var db *sql.DB
+		if db, err = openReadOnly(*dbPath); err == nil {
+			skip := *notID
+			if skip == "" {
+				skip = liveSession(db, *host, role)
+			}
+			var buf strings.Builder
+			if err = resumeBlock(db, skip, "startup", role, *host, &buf); err == nil {
+				if buf.Len() == 0 {
+					fmt.Printf("No earlier %s session in this checkout.\n", hostName(*host))
+				}
+				fmt.Print(buf.String())
+			}
+			db.Close()
+		}
 	case "import":
 		// Waits for a running import: the hook that fired last must still read the newest bytes.
 		err = importOnce(*dbPath, time.Minute, func(db *sql.DB) error {
-			return runImport(db, *projects, *history, *archive, *repo, *scope, *trigger)
+			return runImport(db, *projects, *history, *codexDir, *archive, *repo, *scope, *trigger)
 		})
 	case "search", "stats":
 		if cmd == "search" {
 			// Read what is new first, so the live session is searchable without a per-turn hook (cass).
 			if ierr := importOnce(*dbPath, 0, func(db *sql.DB) error {
-				return runImport(db, *projects, *history, *archive, *repo, *scope, "search")
+				return runImport(db, *projects, *history, *codexDir, *archive, *repo, *scope, "search")
 			}); ierr != nil {
 				fmt.Fprintln(os.Stderr, "trace: import before search failed, searching what is stored:", ierr)
 			}
@@ -143,14 +171,14 @@ func fail(err error) {
 	os.Exit(1)
 }
 
-func runImport(db *sql.DB, projects, history, archive, repo, scope, trigger string) error {
+func runImport(db *sql.DB, projects, history, codex, archive, repo, scope, trigger string) error {
 	start := time.Now().UTC().Format(time.RFC3339)
 	res, err := db.Exec("insert into ingest_run(started_at, trigger) values (?, ?)", start, trigger)
 	if err != nil {
 		return err
 	}
 	runID, _ := res.LastInsertId()
-	im := &importer{db: db, archiveDir: archive, repo: repo, scope: scope, shaCache: map[string]string{}, touched: map[string]bool{}}
+	im := &importer{db: db, archiveDir: archive, repo: repo, scope: scope, shaCache: map[string]string{}, touched: map[string]bool{}, unmapped: map[string]int{}}
 	defer im.closeGit()
 	files, results, err := transcriptFiles(projects, scope)
 	var errs []string
@@ -172,6 +200,22 @@ func runImport(db *sql.DB, projects, history, archive, repo, scope, trigger stri
 		}
 	} else {
 		errs = append(errs, err.Error())
+	}
+	if codex != "" {
+		cf := codexFiles(codex)
+		for _, f := range cf {
+			if err := im.importCodex(f); err != nil {
+				errs = append(errs, err.Error())
+				db.Exec("update source_file set last_error = ? where path = ?", err.Error(), f)
+			}
+		}
+		files = append(files, cf...)
+		if err := codexNames(db, codex); err != nil {
+			errs = append(errs, err.Error())
+		}
+	}
+	for sig, n := range im.unmapped {
+		db.Exec("insert into unmapped(signature, count, last_seen) values (?, ?, ?) on conflict(signature) do update set count = count + excluded.count, last_seen = excluded.last_seen", sig, n, start)
 	}
 	if err := activeTime(db, im.touched); err != nil {
 		errs = append(errs, err.Error())
@@ -303,6 +347,8 @@ func stats(db *sql.DB) error {
 	q("events by speaker and kind", "select speaker, kind, count(*), sum(length(text)) from event group by 1, 2 order by 3 desc")
 	q("anchors by type", "select type, count(*), count(distinct value) from anchor group by 1 order by 2 desc")
 	q("redacted events", "select redacted, count(*) from event where redacted is not null group by 1")
+	q("rows no rule stores (a new format shows up here)", "select signature, count, last_seen from unmapped order by count desc limit 15")
+	q("files skipped", "select host, skipped, count(*) from source_file where skipped is not null group by 1, 2")
 	q("last runs", "select started_at, ended_at, trigger, files_seen, events_added, error is not null from ingest_run order by id desc limit 15")
 	// Claude Code swaps hook output over 10,000 characters for a 2 KB preview, and the agent never sees the rest.
 	q("hook output that never reached the session", "select count(*), max(ts) from event where kind = 'injected' and ltrim(text) like '<persisted-output>%'")

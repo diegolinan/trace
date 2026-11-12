@@ -3,6 +3,7 @@ module github.com/diegolinan/trace
 go 1.27.0
 
 require (
+	github.com/klauspost/compress v1.20.4
 	github.com/ncruces/go-sqlite3 v0.37.0
 	golang.org/x/sys v0.49.0
 )

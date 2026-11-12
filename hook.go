@@ -71,7 +71,7 @@ func hook(in hookInput, flags []string, dbPath string, run func(*sql.DB, string)
 		return err
 	}
 	defer db.Close()
-	return resumeBlock(db, in.SessionID, in.Source, role, w)
+	return resumeBlock(db, in.SessionID, in.Source, role, "claude-code", w)
 }
 
 // helperLine reaches every subagent through SubagentStart (subagents get no SessionStart context). They load the

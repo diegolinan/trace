@@ -50,7 +50,7 @@ func setup(t *testing.T) (dir string, db *sql.DB, run func() int) {
 	t.Cleanup(func() { db.Close() })
 	run = func() int {
 		before := count(t, db, "select count(*) from event")
-		if err := runImport(db, filepath.Join(dir, "projects"), filepath.Join(dir, "history.jsonl"), filepath.Join(dir, "raw"), "", "acme", "test"); err != nil {
+		if err := runImport(db, filepath.Join(dir, "projects"), filepath.Join(dir, "history.jsonl"), filepath.Join(dir, "codex"), filepath.Join(dir, "raw"), "", "acme", "test"); err != nil {
 			t.Fatal(err)
 		}
 		return count(t, db, "select count(*) from event") - before
@@ -272,7 +272,7 @@ func TestSessionStartResume(t *testing.T) {
 	dir, db, _ := setup(t)
 	dbPath := filepath.Join(dir, "m.db")
 	run := func(db *sql.DB, trigger string) error {
-		return runImport(db, filepath.Join(dir, "projects"), filepath.Join(dir, "history.jsonl"), filepath.Join(dir, "raw"), "", "acme", trigger)
+		return runImport(db, filepath.Join(dir, "projects"), filepath.Join(dir, "history.jsonl"), filepath.Join(dir, "codex"), filepath.Join(dir, "raw"), "", "acme", trigger)
 	}
 	var out strings.Builder
 	// A later Codex session in the same checkout shares the role (role = which checkout) but is not the same agent (host = which agent).

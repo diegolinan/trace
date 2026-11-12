@@ -29,6 +29,7 @@ type importer struct {
 	gitOut     *bufio.Reader
 	added      int
 	touched    map[string]bool // sessions that got events this run
+	unmapped   map[string]int  // row kinds no rule stores, counted so a new format shows up
 }
 
 // transcriptFiles lists every session and subagent transcript in scope: project folders whose name
@@ -37,6 +38,9 @@ type importer struct {
 // transcript keeps only as a 2 KB preview, which Claude Code's cleanup deletes with the session.
 func transcriptFiles(projectsDir, scope string) (out, results []string, err error) {
 	dirs, err := os.ReadDir(projectsDir)
+	if os.IsNotExist(err) {
+		return nil, nil, nil // no Claude Code on this machine (a Codex-only user)
+	}
 	if err != nil {
 		return nil, nil, err
 	}

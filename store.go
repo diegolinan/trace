@@ -87,6 +87,11 @@ create table if not exists event (
 create index if not exists event_session on event(session_id, seq);
 create index if not exists event_ts on event(ts);
 create index if not exists event_tooluse on event(tool_use_id);
+create table if not exists unmapped (
+  signature text primary key,
+  count integer not null,
+  last_seen text
+);
 create table if not exists anchor (
   event_id integer not null references event(id),
   type text not null,
@@ -132,6 +137,7 @@ func openDB(path string) (*sql.DB, error) {
 		"alter table source_file add column tail_sha text",                            // hash of the bytes just before read_to_byte
 		"alter table source_file add column bad_lines integer not null default 0",     // lines no JSON parse could recover
 		"alter table source_file add column archive_bytes integer not null default 0", // raw copy length at the last commit
+		"alter table source_file add column skipped text",                             // why a file is never read (a Codex thread outside scope)
 	} {
 		_, err := db.Exec(alter)
 		if err != nil && !strings.Contains(err.Error(), "duplicate column") {
