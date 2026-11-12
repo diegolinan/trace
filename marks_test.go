@@ -15,19 +15,21 @@ func TestHomeAndConfig(t *testing.T) {
 	if traceHome() != dir {
 		t.Fatalf("TRACE_HOME ignored: %s", traceHome())
 	}
-	if c := loadConfig(dir); !reflect.DeepEqual(c, config{}) {
-		t.Fatalf("no file should give defaults, got %+v", c)
+	if c, err := loadConfig(dir); err != nil || !reflect.DeepEqual(c, config{}) {
+		t.Fatalf("no file should give defaults, got %+v %v", c, err)
 	}
 	if dataDir(dir, config{}) != dir {
 		t.Fatal("no data setting should keep the data in the home")
 	}
-	os.WriteFile(filepath.Join(dir, "config.json"), []byte(`{"data":"D:/d","repo":"D:/r","scope":"X"}`), 0o644)
-	if c := loadConfig(dir); c.Repo != "D:/r" || c.Scope != "X" || dataDir(dir, c) != "D:/d" {
-		t.Fatalf("config not read: %+v", c)
+	// With a BOM, as Windows PowerShell writes it.
+	os.WriteFile(filepath.Join(dir, "config.json"), []byte("\xef\xbb\xbf"+`{"data":"D:/d","repo":"D:/r","scope":"X","claude":false}`), 0o644)
+	if c, err := loadConfig(dir); err != nil || c.Repo != "D:/r" || c.Scope != "X" || dataDir(dir, c) != "D:/d" || c.Claude == nil || *c.Claude {
+		t.Fatalf("config not read: %+v %v", c, err)
 	}
+	// A bad file must stop the run: defaults would widen the scope to every project.
 	os.WriteFile(filepath.Join(dir, "config.json"), []byte(`{bad`), 0o644)
-	if c := loadConfig(dir); !reflect.DeepEqual(c, config{}) {
-		t.Fatalf("bad JSON should give defaults, got %+v", c)
+	if _, err := loadConfig(dir); err == nil {
+		t.Fatal("bad JSON should be an error")
 	}
 }
 
@@ -71,7 +73,8 @@ func TestMarkText(t *testing.T) {
 // Scores the rules against Codex's blind labels of 200 real messages (kept in the data folder, never in git: they hold the user's words). Skipped when absent.
 // Prompt-log rows are left out: history.jsonl cannot tell the user's typing from another agent's.
 func TestMarksAgainstLabels(t *testing.T) {
-	dir := filepath.Join(dataDir(traceHome(), loadConfig(traceHome())), "label") + "/"
+	c, _ := loadConfig(traceHome())
+	dir := filepath.Join(dataDir(traceHome(), c), "label") + "/"
 	sf, err := os.Open(dir + "sample.jsonl")
 	if err != nil {
 		t.Skip("no labelled sample on this machine")

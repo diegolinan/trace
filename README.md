@@ -113,13 +113,14 @@ trace stats                  counts, last runs, hook output that never reached t
 
 ## Configuration
 
-TRACE's home is `$TRACE_HOME`, or `~/.trace` when that is not set. Settings are read from `<home>/config.json`. Every setting is optional, and without the file the defaults apply.
+TRACE's home is `$TRACE_HOME`, or `~/.trace` when that is not set. Settings are read from `<home>/config.json`. Every setting is optional, and without the file the defaults apply. A file that is not valid JSON stops every command except `hook`, which does nothing, rather than run on the defaults (the default scope is every project). A UTF-8 BOM is accepted.
 
 | setting | meaning | default |
 |---|---|---|
 | `data` | folder for `trace.db` and `raw/` | the home |
 | `repo` | git repository for checking that a commit id in the text is real | no checks |
 | `scope` | only projects whose folder name contains this (for Codex, the folder a thread ran in) | every project |
+| `claude` | `false`: never read Claude Code transcripts or `~/.claude/history.jsonl` (a Codex-only memory) | `true` |
 | `user` | the person's name in the text the agent reads | "the user" |
 | `roles` | named checkouts (see below) | every git checkout is its own project |
 | `relay_tools` | tool-name prefixes whose results are another agent's words | none |

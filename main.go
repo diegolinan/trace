@@ -32,11 +32,22 @@ func main() {
 	fs := flag.NewFlagSet(cmd, flag.ExitOnError)
 	userHome, _ := os.UserHomeDir()
 	home := traceHome()
-	cfg = loadConfig(home)
+	var err error
+	if cfg, err = loadConfig(home); err != nil {
+		fmt.Fprintln(os.Stderr, "trace: config.json is not valid JSON, nothing done:", err)
+		if cmd == "hook" {
+			return // fail open: never block the host's turn
+		}
+		os.Exit(1)
+	}
 	data := dataDir(home, cfg)
 	dbPath := fs.String("db", filepath.Join(data, "trace.db"), "database file")
-	projects := fs.String("projects", filepath.Join(userHome, ".claude", "projects"), "Claude Code transcripts folder")
-	history := fs.String("history", filepath.Join(userHome, ".claude", "history.jsonl"), "Claude Code prompt log")
+	claudeProjects, claudeHistory := filepath.Join(userHome, ".claude", "projects"), filepath.Join(userHome, ".claude", "history.jsonl")
+	if cfg.Claude != nil && !*cfg.Claude {
+		claudeProjects, claudeHistory = "", ""
+	}
+	projects := fs.String("projects", claudeProjects, "Claude Code transcripts folder (empty: none)")
+	history := fs.String("history", claudeHistory, "Claude Code prompt log (empty: none)")
 	codexDir := fs.String("codex", codexHome(), "Codex home, for its session rollouts (empty: no Codex)")
 	host := fs.String("host", "codex", "resume: which agent's sessions to show (codex or claude-code)")
 	notID := fs.String("not", "", "resume: a session id to leave out (default: the session written to in the last two minutes)")
@@ -51,7 +62,6 @@ func main() {
 	fs.Parse(os.Args[2:])
 	cfg.Repo = *repo
 	compileConfig()
-	var err error
 
 	switch cmd {
 	case "hook":

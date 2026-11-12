@@ -20,6 +20,7 @@ type config struct {
 	Data       string     `json:"data"`        // where trace.db and raw/ live; empty: the home itself
 	Repo       string     `json:"repo"`        // git repository for checking commit ids; empty: no checks
 	Scope      string     `json:"scope"`       // only project folders whose name contains this; empty: all
+	Claude     *bool      `json:"claude"`      // false: never read Claude Code transcripts or history.jsonl
 	User       string     `json:"user"`        // the person's name in the text the agents read; empty: "the user"
 	Roles      []roleRule `json:"roles"`       // named checkouts; empty: every git checkout is its own project
 	RelayTools []string   `json:"relay_tools"` // tool-name prefixes whose results are another agent's words
@@ -94,13 +95,21 @@ func dataDir(home string, c config) string {
 	return home
 }
 
-func loadConfig(home string) (c config) {
-	b, err := os.ReadFile(filepath.Join(home, "config.json"))
-	if err == nil && json.Unmarshal(b, &c) != nil {
-		fmt.Fprintln(os.Stderr, "trace: config.json is not valid JSON; using defaults")
-		c = config{}
+// loadConfig fails on a file it cannot read: running on defaults would widen the scope to every project.
+// A UTF-8 BOM (Windows PowerShell writes one) is accepted.
+func loadConfig(home string) (c config, err error) {
+	path := filepath.Join(home, "config.json")
+	b, err := os.ReadFile(path)
+	if os.IsNotExist(err) {
+		return config{}, nil
 	}
-	return c
+	if err == nil {
+		err = json.Unmarshal(bytes.TrimPrefix(b, []byte("\xef\xbb\xbf")), &c)
+	}
+	if err != nil {
+		return config{}, fmt.Errorf("%s: %w", path, err)
+	}
+	return c, nil
 }
 
 func userName() string {
