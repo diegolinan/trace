@@ -19,7 +19,7 @@ var cfg config
 type config struct {
 	Data       string     `json:"data"`        // where trace.db and raw/ live; empty: the home itself
 	Repo       string     `json:"repo"`        // git repository for checking commit ids; empty: no checks
-	Scope      string     `json:"scope"`       // only project folders whose name contains this; empty: all
+	Scope      scopeList  `json:"scope"`       // a folder or a list of folders (inScope); empty: all
 	Claude     *bool      `json:"claude"`      // false: never read Claude Code transcripts or history.jsonl
 	User       string     `json:"user"`        // the person's name in the text the agents read; empty: "the user"
 	Roles      []roleRule `json:"roles"`       // named checkouts; empty: every git checkout is its own project
@@ -124,6 +124,39 @@ func userName() string {
 var notAlnum = regexp.MustCompile(`[^A-Za-z0-9]`)
 
 func folderName(path string) string { return strings.ToLower(notAlnum.ReplaceAllString(path, "-")) }
+
+// scopeList is the scope setting: one string or a list, kept comma-joined so the -scope flag takes the same form.
+// shortcut: a folder whose path holds a comma splits in two, both still matching it; upgrade if that ever bites.
+type scopeList string
+
+func (s *scopeList) UnmarshalJSON(b []byte) error {
+	var one string
+	if json.Unmarshal(b, &one) == nil {
+		*s = scopeList(one)
+		return nil
+	}
+	var many []string
+	if err := json.Unmarshal(b, &many); err != nil {
+		return fmt.Errorf("scope: a string or a list of strings: %w", err)
+	}
+	*s = scopeList(strings.Join(many, ","))
+	return nil
+}
+
+// inScope says whether a folder (a path, or Claude Code's transcript folder name) is in scope: its folderName contains
+// the folderName of any comma-separated entry, so a full path, a folder name and either case all work. Empty: all.
+func inScope(folder, scope string) bool {
+	if strings.TrimSpace(scope) == "" {
+		return true
+	}
+	name := folderName(folder)
+	for _, s := range strings.Split(scope, ",") {
+		if s = strings.TrimSpace(s); s != "" && strings.Contains(name, folderName(s)) {
+			return true
+		}
+	}
+	return false
+}
 
 // projectRole is the role of a checkout when no roles are configured: its own folder name, so the resume block
 // shows the last session of the same project.

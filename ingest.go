@@ -45,7 +45,7 @@ func transcriptFiles(projectsDir, scope string) (out, results []string, err erro
 		return nil, nil, err
 	}
 	for _, d := range dirs {
-		if !d.IsDir() || !strings.Contains(d.Name(), scope) {
+		if !d.IsDir() || !inScope(d.Name(), scope) {
 			continue
 		}
 		root := filepath.Join(projectsDir, d.Name())
@@ -550,7 +550,7 @@ func (im *importer) readHistory(tx *sql.Tx, f io.Reader, from, fileID int64) (in
 				Content string `json:"content"`
 			} `json:"pastedContents"`
 		}
-		if json.Unmarshal(line, &h) != nil || h.SessionID == "" || !strings.Contains(folderName(h.Project), strings.ToLower(im.scope)) {
+		if json.Unmarshal(line, &h) != nil || h.SessionID == "" || !inScope(h.Project, im.scope) {
 			return nil
 		}
 		var host string

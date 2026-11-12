@@ -6,6 +6,7 @@
 // Usage:
 //
 //	trace install           add the hooks to Claude Code's user settings, then import (uninstall removes them)
+//	trace install -host codex   a Codex-only memory for the current folder: config.json and an AGENTS.md line
 //	trace import            read new bytes of every transcript in scope; safe to run any time
 //	trace hook              for host hooks: starts a detached import and returns at once, always exit 0
 //	trace resume            where the last session in this checkout stopped, for agents without hooks (-host codex)
@@ -53,7 +54,7 @@ func main() {
 	notID := fs.String("not", "", "resume: a session id to leave out (default: the session written to in the last two minutes)")
 	archive := fs.String("archive", filepath.Join(data, "raw"), "raw copies folder (empty: no copy)")
 	repo := fs.String("repo", cfg.Repo, "git repository for commit checks (empty: none)")
-	scope := fs.String("scope", cfg.Scope, "project folders whose name contains this (empty: all)")
+	scope := fs.String("scope", string(cfg.Scope), "folders in scope, comma-separated (empty: all)")
 	trigger := fs.String("trigger", "manual", "what started this import (hook name)")
 	n := fs.Int("n", 10, "hits")
 	who := fs.String("who", "", "only this speaker")
@@ -73,6 +74,19 @@ func main() {
 		}
 		return
 	case "install", "uninstall":
+		hostSet := false // -host defaults to codex for resume; install only means Codex when asked for
+		fs.Visit(func(f *flag.Flag) { hostSet = hostSet || f.Name == "host" })
+		if cmd == "install" && hostSet && *host == "codex" {
+			cwd, _ := os.Getwd()
+			if err = installCodex(home, cwd, *codexDir, os.Stdout); err != nil {
+				break
+			}
+			fmt.Println("first import (later ones run from trace resume)...")
+			err = importOnce(*dbPath, time.Minute, func(db *sql.DB) error {
+				return runImport(db, "", "", *codexDir, *archive, *repo, cwd, "install")
+			})
+			break
+		}
 		exe := ""
 		if cmd == "install" {
 			if exe, err = selfPath(); err != nil {

@@ -201,7 +201,7 @@ func (im *importer) importCodex(path string) error {
 	if !ok {
 		return nil // still being created, or not a rollout: the next run tries again
 	}
-	if im.scope != "" && !strings.Contains(folderName(meta.Cwd), strings.ToLower(im.scope)) {
+	if !inScope(meta.Cwd, im.scope) {
 		_, err := tx.Exec("update source_file set skipped = 'scope', size = ?, mtime = ? where id = ?", st.Size(), mtime, fileID)
 		if err != nil {
 			return err
