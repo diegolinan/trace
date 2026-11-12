@@ -308,7 +308,7 @@ func TestCommitBatch(t *testing.T) {
 		t.Skip("no git")
 	}
 	full := strings.TrimSpace(string(head))
-	im := &importer{repo: "../../..", shaCache: map[string]string{}}
+	im := &importer{repo: ".", shaCache: map[string]string{}} // the enclosing checkout, wherever this folder lives
 	defer im.closeGit()
 	for i := 0; i < 3; i++ {
 		if got := im.commit(full[:9]); got != full {
