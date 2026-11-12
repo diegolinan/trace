@@ -5,6 +5,7 @@
 //
 // Usage:
 //
+//	trace install           add the hooks to Claude Code's user settings, then import (uninstall removes them)
 //	trace import            read new bytes of every transcript in scope; safe to run any time
 //	trace hook              for host hooks: starts a detached import and returns at once, always exit 0
 //	trace search <words>    [-n 10] [-who user|assistant|subagent] [-all] [-since 2026-11-01]
@@ -23,7 +24,7 @@ import (
 
 func main() {
 	if len(os.Args) < 2 {
-		fmt.Fprintln(os.Stderr, "usage: trace import | hook | search <words> | stats")
+		fmt.Fprintln(os.Stderr, "usage: trace install | uninstall | import | hook | search <words> | stats")
 		os.Exit(2)
 	}
 	cmd := os.Args[1]
@@ -57,6 +58,20 @@ func main() {
 			fmt.Fprintln(os.Stderr, "trace hook:", err)
 		}
 		return
+	case "install", "uninstall":
+		exe := ""
+		if cmd == "install" {
+			if exe, err = selfPath(); err != nil {
+				break
+			}
+		}
+		if err = install(claudeSettings(), exe, os.Stdout); err != nil || cmd == "uninstall" {
+			break
+		}
+		fmt.Println("first import (later ones run from the hooks)...")
+		err = importOnce(*dbPath, time.Minute, func(db *sql.DB) error {
+			return runImport(db, *projects, *history, *archive, *repo, *scope, "install")
+		})
 	case "import":
 		// Waits for a running import: the hook that fired last must still read the newest bytes.
 		err = importOnce(*dbPath, time.Minute, func(db *sql.DB) error {

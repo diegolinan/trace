@@ -52,33 +52,56 @@ TRACE takes a different approach:
 
 ## Install
 
-You need Go 1.27 or newer.
+One command, no Go needed. Each installer downloads the latest release built for your machine, checks its SHA-256, and runs `trace install`.
+
+**macOS and Linux**
 
 ```sh
-go install github.com/diegolinan/trace@latest   # puts trace in $(go env GOPATH)/bin
-trace import                                    # first full import
-trace stats
+curl -fsSL https://raw.githubusercontent.com/diegolinan/trace/main/install.sh | sh
 ```
 
-Then add the hooks to Claude Code's user settings (`~/.claude/settings.json`). Use the path of the binary you built:
+This puts `trace` in `~/.local/bin`. Set `TRACE_BIN_DIR` to choose another folder.
 
-```json
-{
-  "hooks": {
-    "SessionStart":  [{ "hooks": [{ "type": "command", "command": "/path/to/trace", "args": ["hook"], "timeout": 30 }] }],
-    "Stop":          [{ "hooks": [{ "type": "command", "command": "/path/to/trace", "args": ["hook"], "timeout": 10 }] }],
-    "PreCompact":    [{ "hooks": [{ "type": "command", "command": "/path/to/trace", "args": ["hook"], "timeout": 10 }] }],
-    "SessionEnd":    [{ "hooks": [{ "type": "command", "command": "/path/to/trace", "args": ["hook"], "timeout": 5 }] }],
-    "SubagentStart": [{ "hooks": [{ "type": "command", "command": "/path/to/trace", "args": ["hook"], "timeout": 5 }] }]
-  }
-}
+**Windows (PowerShell)**
+
+```powershell
+irm https://raw.githubusercontent.com/diegolinan/trace/main/install.ps1 | iex
 ```
 
-Claude Code reads hooks when a session starts, so restart open sessions after adding them. `trace stats` shows each hook run under "last runs".
+This puts `trace.exe` in `%LOCALAPPDATA%\trace` and adds that folder to your user PATH. Set `TRACE_NO_PATH=1` to leave PATH alone.
+
+**With Go (1.27 or newer)**
+
+```sh
+go install github.com/diegolinan/trace@latest
+trace install
+```
+
+### What `trace install` changes
+
+1. It adds five hooks to Claude Code's user settings (`~/.claude/settings.json`, or `$CLAUDE_CONFIG_DIR/settings.json`): SessionStart, Stop, PreCompact, SessionEnd and SubagentStart. Each one runs this binary with `hook`.
+   - Other settings and hooks are kept.
+   - The previous file is saved as `settings.json.trace-backup`.
+   - A settings file that is not valid JSON is never touched.
+2. It runs the first import of your existing transcripts into `~/.trace`.
+
+Then restart open Claude Code sessions: they read hooks when they start. To check that it works, use a session, then run `trace stats`. Each hook run shows under "last runs".
+
+Running `trace install` again is safe. After moving the binary, run it again to point the hooks at the new place.
+
+### Uninstall
+
+```sh
+trace uninstall      # removes TRACE's hooks, and only those
+```
+
+Then delete the binary, and `~/.trace` if you also want the data gone.
 
 ## Commands
 
 ```
+trace install                add the hooks to Claude Code's user settings and do the first import
+trace uninstall              remove the hooks (the data stays in ~/.trace)
 trace import                 read what is new in every transcript in scope; safe to run any time
 trace hook                   for host hooks; never fails the host's turn
 trace search <words>         [-n 10] [-who user|assistant|subagent] [-all] [-since 2026-11-01]
