@@ -241,6 +241,7 @@ func TestHookDetaches(t *testing.T) {
 	if out, err := exec.Command("go", "build", "-o", exe, ".").CombinedOutput(); err != nil {
 		t.Fatalf("build: %v\n%s", err, out)
 	}
+	exec.Command(exe).Run() // warm-up: Windows scans a fresh binary on its first run, which is not the hook's cost
 	hook := exec.Command(exe, "hook", "-db", filepath.Join(dir, "m.db"), "-projects", filepath.Join(dir, "projects"),
 		"-history", filepath.Join(dir, "history.jsonl"), "-archive", filepath.Join(dir, "raw"), "-repo=", "-scope", "acme")
 	hook.Env = append(os.Environ(), "TRACE_HOME="+dir) // never the machine's own config.json
