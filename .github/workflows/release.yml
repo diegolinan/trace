@@ -31,30 +31,3 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: gh release create "$GITHUB_REF_NAME" dist/* --title "TRACE $GITHUB_REF_NAME" --generate-notes
 
-  # The real install scripts, against the release just published, for a throwaway user on each system.
-  install-smoke:
-    needs: release
-    strategy:
-      fail-fast: false
-      matrix:
-        os: [ubuntu-latest, macos-latest, windows-latest]
-    runs-on: ${{ matrix.os }}
-    steps:
-      - uses: actions/checkout@v4
-      - if: runner.os != 'Windows'
-        shell: bash
-        run: |
-          export HOME="$RUNNER_TEMP/home" && mkdir -p "$HOME"
-          sh install.sh
-          grep -q '"hook"' "$HOME/.claude/settings.json"
-          "$HOME/.local/bin/trace" stats >/dev/null
-          "$HOME/.local/bin/trace" uninstall
-      - if: runner.os == 'Windows'
-        shell: powershell
-        run: |
-          $env:USERPROFILE = Join-Path $env:RUNNER_TEMP 'home'; New-Item -ItemType Directory -Force $env:USERPROFILE | Out-Null
-          $env:TRACE_BIN_DIR = Join-Path $env:RUNNER_TEMP 'bin'; $env:TRACE_NO_PATH = '1'
-          ./install.ps1
-          if (-not (Select-String -Quiet '"hook"' (Join-Path $env:USERPROFILE '.claude\settings.json'))) { throw 'hooks missing' }
-          & (Join-Path $env:TRACE_BIN_DIR 'trace.exe') stats | Out-Null
-          & (Join-Path $env:TRACE_BIN_DIR 'trace.exe') uninstall

@@ -29,3 +29,35 @@ jobs:
           set -o pipefail
           go test ./... 2>&1 | tee test.out || { grep -E -- '--- FAIL|_test\.go:[0-9]+|panic' test.out | head -30 | sed 's/^/::error::/'; exit 1; }
       - run: go build -o trace-bin .
+
+  # The real install scripts against the latest release, for a throwaway user. The last lines of output become
+  # annotations when it fails.
+  install-smoke:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - if: runner.os != 'Windows'
+        shell: bash
+        run: |
+          export HOME="$RUNNER_TEMP/home" && mkdir -p "$HOME"
+          set -o pipefail
+          {
+            set -ex
+            sh install.sh
+            grep -q '"hook"' "$HOME/.claude/settings.json"
+            "$HOME/.local/bin/trace" stats >/dev/null
+            "$HOME/.local/bin/trace" uninstall
+          } 2>&1 | tee smoke.out || { tail -15 smoke.out | sed 's/^/::error::/'; exit 1; }
+      - if: runner.os == 'Windows'
+        shell: powershell
+        run: |
+          $env:USERPROFILE = Join-Path $env:RUNNER_TEMP 'home'; New-Item -ItemType Directory -Force $env:USERPROFILE | Out-Null
+          $env:TRACE_BIN_DIR = Join-Path $env:RUNNER_TEMP 'bin'; $env:TRACE_NO_PATH = '1'
+          ./install.ps1
+          if (-not (Select-String -Quiet '"hook"' (Join-Path $env:USERPROFILE '.claude\settings.json'))) { throw 'hooks missing' }
+          & (Join-Path $env:TRACE_BIN_DIR 'trace.exe') stats | Out-Null
+          & (Join-Path $env:TRACE_BIN_DIR 'trace.exe') uninstall
