@@ -11,6 +11,7 @@
 //	trace hook              for host hooks: starts a detached import and returns at once, always exit 0
 //	trace resume            where the last session in this checkout stopped, for agents without hooks (-host codex)
 //	trace search <words>    [-n 10] [-who user|assistant|subagent] [-all] [-since 2026-11-01]
+//	trace rules             the rule card a session in this folder gets (re-injection, opt-in)
 //	trace stats
 package main
 
@@ -26,7 +27,7 @@ import (
 
 func main() {
 	if len(os.Args) < 2 {
-		fmt.Fprintln(os.Stderr, "usage: trace install | uninstall | import | hook | resume | search <words> | stats")
+		fmt.Fprintln(os.Stderr, "usage: trace install | uninstall | import | hook | resume | search <words> | rules | stats")
 		os.Exit(2)
 	}
 	cmd := os.Args[1]
@@ -93,7 +94,7 @@ func main() {
 				break
 			}
 		}
-		if err = install(claudeSettings(), exe, checkMatcher(cfg.Checks), os.Stdout); err != nil || cmd == "uninstall" {
+		if err = install(claudeSettings(), exe, optionalHooks(cfg), os.Stdout); err != nil || cmd == "uninstall" {
 			break
 		}
 		fmt.Println("first import (later ones run from the hooks)...")
@@ -147,6 +148,27 @@ func main() {
 			}
 			db.Close()
 		}
+	case "rules":
+		// The rule card a Claude Code session in this folder gets, and why it holds what it holds.
+		cwd, _ := os.Getwd()
+		db, _ := openReadOnly(*dbPath)
+		text, note := sessionCard(db, cwd, roleFor(cwd, projectRole(cwd)))
+		if db != nil {
+			db.Close()
+		}
+		home, _ := os.UserHomeDir()
+		for _, s := range claudeSources(cwd, home) {
+			fmt.Fprintf(os.Stderr, "%7d  %s\n", len(s.text), s.label)
+		}
+		if note != "" {
+			fmt.Fprintln(os.Stderr, "note:", note)
+		}
+		if cfg.Reinject == nil {
+			fmt.Fprintln(os.Stderr, `re-injection is off; "reinject": {} in config.json turns it on (then run trace install)`)
+		}
+		fmt.Fprintf(os.Stderr, "card: %d characters, about %d tokens; it comes back every %.0f tokens of new context\n\n",
+			len(text), len(text)/4, cfg.Reinject.factor()*float64(len(text))/4)
+		fmt.Print(text)
 	default:
 		err = fmt.Errorf("unknown command %q", cmd)
 	}
@@ -377,6 +399,7 @@ func stats(db *sql.DB) error {
 	// Claude Code swaps hook output over 10,000 characters for a 2 KB preview, and the agent never sees the rest.
 	q("hook output that never reached the session", "select count(*), max(ts) from event where kind = 'injected' and ltrim(text) like '<persisted-output>%'")
 	q("checks, last 14 days: runs, failures, last failure", "select name, count(*), sum(ok = 0), max(case when ok = 0 then ts end) from check_run where ts >= strftime('%Y-%m-%dT%H:%M:%SZ', 'now', '-14 days') group by 1 order by 1")
+	q("rule card, last 14 days: reason, times, sessions, characters injected", "select reason, count(*), count(distinct session_id), sum(chars) from injection where ts >= strftime('%Y-%m-%dT%H:%M:%SZ', 'now', '-14 days') group by 1 order by 1")
 	q("files with errors", "select path, last_error from source_file where last_error is not null")
 	return nil
 }

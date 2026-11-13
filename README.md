@@ -49,6 +49,8 @@ TRACE takes a different approach:
   - PreCompact: also fixed text that tells Claude Code's summarizer to keep quotes, ids and open work.
   - SubagentStart: tells helper agents that they are helpers, not the agent that started them.
   - PostToolUse, only when `checks` are configured: runs the project's checks after the tool calls they name, and shows a failure to the agent at once.
+  - UserPromptSubmit and PostToolUse on every tool, only when `reinject` is configured: the rule card (below).
+- **Rule card (opt-in, experimental).** Two memory problems, one tool: across sessions, what happened and where the work stopped; within a session, which rules are in force. Agents stop attending to their instructions as context grows, long before it fills: in published measurements a rule fell below 50% compliance once the context was about 7 to 12 times its size. TRACE reads the size of the context from the host's own token counts in the transcript, and each time enough new context has entered (by default 7 times the card's size) it shows the agent a short card of the project's rules again. The card is built by code, never reworded: the instruction files whole when they fit (CLAUDE.md and what it imports, CLAUDE.local.md, auto memory's MEMORY.md), otherwise only the text you mark between `<!-- trace:rules -->` and `<!-- /trace:rules -->`; then what the user refused or set as a rule in the last 14 days, verbatim. When a file changes, only the new lines are shown. Subagents get no card. Whether this lowers violations is not yet measured; the checks log and `trace stats` are there to measure it. `trace rules` shows the card a session in the current folder would get.
 - **Checks.** A rule the agent has in context still gets broken: agents stop attending to their instructions as a session grows. A rule a command can verify is better checked than repeated. Each check names the tools it follows (for example `Bash`), a pattern for the file or command (for example `git commit`), and a command; a non-zero exit is a violation, and its output reaches the agent before its next step. Every run is logged, passes too, so `trace stats` shows how often each rule breaks.
 - **Search.** Word and trigram search over everything stored.
 - **Secrets.** API keys, tokens and private keys are redacted before anything is stored. The raw copies are not redacted: they are byte copies of files already on the same disk.
@@ -83,7 +85,7 @@ trace install
 
 ### What `trace install` changes
 
-1. It adds five hooks to Claude Code's user settings (`~/.claude/settings.json`, or `$CLAUDE_CONFIG_DIR/settings.json`): SessionStart, Stop, PreCompact, SessionEnd and SubagentStart, and a sixth, PostToolUse, when `checks` are configured, limited to the tools they name. Each one runs this binary with `hook`.
+1. It adds five hooks to Claude Code's user settings (`~/.claude/settings.json`, or `$CLAUDE_CONFIG_DIR/settings.json`): SessionStart, Stop, PreCompact, SessionEnd and SubagentStart. PostToolUse is added when `checks` are configured, limited to the tools they name; with `reinject`, PostToolUse on every tool and UserPromptSubmit (each call takes about 0.1 s). Each one runs this binary with `hook`.
    - Other settings and hooks are kept.
    - The previous file is saved as `settings.json.trace-backup`.
    - A settings file that is not valid JSON is never touched.
@@ -112,7 +114,8 @@ trace hook                   for host hooks; never fails the host's turn
 trace resume                 where the last session in this checkout stopped, for agents without hooks
                              [-host codex|claude-code]
 trace search <words>         [-n 10] [-who user|assistant|subagent] [-all] [-since 2026-11-01]
-trace stats                  counts, last runs, hook output that never reached the session
+trace rules                  the rule card a session in this folder would get, and why
+trace stats                  counts, last runs, checks, rule cards, hook output that never reached the session
 ```
 
 ## Configuration
@@ -131,6 +134,7 @@ TRACE's home is `$TRACE_HOME`, or `~/.trace` when that is not set. Settings are 
 | `anchors` | extra tags, `name: regexp`, beside commits, paths and URLs (for example ticket ids) | none |
 | `pin_phrases` | phrases that pin a typed message | "remember this" |
 | `checks` | rules a command can verify, run after matching tool calls (see below) | none |
+| `reinject` | turns on the rule card: `{}`, or `{"factor": 7, "budget": 8000}` (new context, in card sizes, before it comes again; most characters of the card) | off |
 
 A role names a checkout by a file in its root, so it survives moves and renames:
 
@@ -159,7 +163,7 @@ A check runs after a tool call when `on` matches the tool's name (a regexp, as i
 }
 ```
 
-After adding, changing or removing checks, run `trace install` again: the PostToolUse hook only listens to the tools the checks name.
+After adding, changing or removing checks or `reinject`, run `trace install` again: the hooks only listen to what the configuration needs.
 
 ## Status
 

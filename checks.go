@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"os"
 	"os/exec"
 	"regexp"
 	"runtime"
@@ -94,16 +95,69 @@ func runShell(dir, command string) (string, error) {
 	return string(b), err
 }
 
-// checkHook answers PostToolUse: the failed checks, as context for the agent's next step. Checks run from the root
-// of the session's git checkout, so a project's command works after the agent cd's into a subfolder.
-func checkHook(db *sql.DB, in hookInput, w io.Writer) error {
-	if root, err := exec.Command("git", "-C", in.Cwd, "rev-parse", "--show-toplevel").Output(); err == nil {
-		in.Cwd = strings.TrimSpace(string(root))
+// anyCheckApplies says whether a check would run (or report itself misconfigured) for this tool call, so the common
+// call opens no database and starts no process.
+func anyCheckApplies(in hookInput, cs []check) bool {
+	target := toolTarget(in.ToolInput)
+	for _, c := range cs {
+		on, err1 := regexp.Compile(`^(?:` + c.On + `)$`)
+		match, err2 := regexp.Compile(c.Match)
+		if err1 != nil || err2 != nil || (c.On == "" || on.MatchString(in.ToolName)) && match.MatchString(target) {
+			return true
+		}
 	}
-	text := runChecks(db, in, cfg.Checks, runShell)
-	if text == "" {
+	return false
+}
+
+// ruleHook answers PostToolUse and UserPromptSubmit: the failed checks first, then the rule card when it is due
+// (reinject.go), as one output under Claude Code's 10,000-character cap. Checks run from the root of the session's
+// git checkout, so a project's command works after the agent cd's into a subfolder.
+func ruleHook(in hookInput, role, dbPath string, w io.Writer) error {
+	var db *sql.DB
+	open := func() *sql.DB {
+		if db == nil {
+			d, err := openDB(dbPath)
+			if err != nil {
+				fmt.Fprintln(os.Stderr, "trace: running without the store:", err)
+				return nil
+			}
+			db = d
+		}
+		return db
+	}
+	defer func() {
+		if db != nil {
+			db.Close()
+		}
+	}()
+	var parts []string
+	if in.Event == "PostToolUse" && anyCheckApplies(in, cfg.Checks) {
+		ci := in
+		if root, err := exec.Command("git", "-C", in.Cwd, "rev-parse", "--show-toplevel").Output(); err == nil {
+			ci.Cwd = strings.TrimSpace(string(root))
+		}
+		if text := runChecks(open(), ci, cfg.Checks, runShell); text != "" {
+			parts = append(parts, text)
+		}
+	}
+	// Subagents get no card: their payload names the parent's transcript, so its size would be the parent's.
+	if cfg.Reinject != nil && in.AgentID == "" {
+		if ctx := contextTokens(in.Transcript); ctx > 0 {
+			if d := open(); d != nil {
+				text, _ := sessionCard(d, in.Cwd, role)
+				out, _, err := reinjection(d, in.SessionID, ctx, text, cfg.Reinject.factor(), time.Now())
+				if err != nil {
+					fmt.Fprintln(os.Stderr, "trace: re-injection:", err)
+				}
+				if out != "" {
+					parts = append(parts, out)
+				}
+			}
+		}
+	}
+	if len(parts) == 0 {
 		return nil
 	}
 	return json.NewEncoder(w).Encode(map[string]any{"hookSpecificOutput": map[string]string{
-		"hookEventName": "PostToolUse", "additionalContext": text}})
+		"hookEventName": in.Event, "additionalContext": clip(strings.Join(parts, "\n\n"), 9500)}})
 }

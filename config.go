@@ -31,6 +31,8 @@ type config struct {
 	PinPhrases []string `json:"pin_phrases"`
 	// Checks are the project's rules a command can verify, run after matching tool calls (checks.go).
 	Checks []check `json:"checks"`
+	// Reinject turns on the rule card (reinject.go); absent, nothing is re-injected and no hook is added for it.
+	Reinject *reinjectCfg `json:"reinject"`
 }
 
 type namedRe struct {

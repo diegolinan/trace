@@ -19,6 +19,7 @@ type hookInput struct {
 	Cwd        string          `json:"cwd"`
 	ToolName   string          `json:"tool_name"`  // PostToolUse
 	ToolInput  json.RawMessage `json:"tool_input"` // PostToolUse
+	AgentID    string          `json:"agent_id"`   // set inside a subagent, whose payload names the parent's transcript
 }
 
 func readHookInput(r io.Reader) hookInput {
@@ -48,18 +49,11 @@ func hook(in hookInput, flags []string, dbPath string, run func(*sql.DB, string)
 	}
 	mine := ours(role) && excluded == ""
 	switch {
-	case in.Event == "PostToolUse": // no import: one runs at every Stop
+	case in.Event == "PostToolUse" || in.Event == "UserPromptSubmit": // no import: one runs at every Stop
 		if !mine {
 			return nil
 		}
-		db, err := openDB(dbPath)
-		if err != nil {
-			fmt.Fprintln(os.Stderr, "trace: checks run without their log:", err)
-			db = nil
-		} else {
-			defer db.Close()
-		}
-		return checkHook(db, in, w)
+		return ruleHook(in, role, dbPath, w)
 	case in.Event == "SubagentStart": // no import: the parent's Stop covers it
 		if !mine {
 			return nil
@@ -72,7 +66,19 @@ func hook(in hookInput, flags []string, dbPath string, run func(*sql.DB, string)
 			fmt.Fprintf(w, compactSteer, userName())
 		}
 		return err
-	case in.Event != "SessionStart" || in.Source == "compact":
+	case in.Event == "SessionStart" && in.Source == "compact":
+		err := spawnImport(flags, trigger)
+		// Claude Code reloads the instruction files after a compaction, but not the user's rules from conversation.
+		if mine && cfg.Reinject != nil {
+			db, _ := openReadOnly(dbPath)
+			text, _ := sessionCard(db, in.Cwd, role)
+			if db != nil {
+				db.Close()
+			}
+			fmt.Fprint(w, text)
+		}
+		return err
+	case in.Event != "SessionStart":
 		return spawnImport(flags, trigger)
 	}
 	if err := importOnce(dbPath, 5*time.Second, func(db *sql.DB) error { return run(db, trigger) }); err != nil {

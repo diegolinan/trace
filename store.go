@@ -99,6 +99,22 @@ create table if not exists anchor (
   verified integer
 );
 create index if not exists anchor_value on anchor(type, value);
+-- Re-injection (reinject.go): each card text once, and each decision to inject or to restart the count.
+create table if not exists card (
+  sha text primary key,
+  first_seen text,
+  text text
+);
+create table if not exists injection (
+  id integer primary key,
+  session_id text not null,
+  ts text not null,
+  ctx_tokens integer not null,
+  reason text not null,
+  card_sha text,
+  chars integer
+);
+create index if not exists injection_session on injection(session_id, id);
 -- Every run of a configured check (checks.go): passes too, so the failure rate has its denominator.
 create table if not exists check_run (
   id integer primary key,

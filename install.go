@@ -15,7 +15,22 @@ import (
 var hookEvents = []struct {
 	name    string
 	timeout int
-}{{"SessionStart", 30}, {"Stop", 10}, {"PreCompact", 10}, {"SessionEnd", 5}, {"SubagentStart", 5}, {"PostToolUse", 60}}
+}{{"SessionStart", 30}, {"Stop", 10}, {"PreCompact", 10}, {"SessionEnd", 5}, {"SubagentStart", 5}, {"PostToolUse", 60}, {"UserPromptSubmit", 10}}
+
+// optional are the events installed only when config.json asks for them, with their matcher ("" for none): checks
+// need PostToolUse on their tools; the rule card needs every tool call and every prompt, since most context enters
+// between prompts.
+var optional = map[string]bool{"PostToolUse": true, "UserPromptSubmit": true}
+
+func optionalHooks(c config) map[string]string {
+	m := map[string]string{}
+	if c.Reinject != nil {
+		m["PostToolUse"], m["UserPromptSubmit"] = "*", ""
+	} else if mt := checkMatcher(c.Checks); mt != "" {
+		m["PostToolUse"] = mt
+	}
+	return m
+}
 
 // claudeSettings is Claude Code's user settings file; CLAUDE_CONFIG_DIR moves it.
 func claudeSettings() string {
@@ -38,9 +53,9 @@ func isTraceCmd(h any) bool {
 }
 
 // setHooks removes every trace hook from settings, then adds one per event running exe (none when exe is empty).
-// PostToolUse gets one only when checks are configured, matching their tools, so other tool calls start nothing.
+// An optional event gets one only when opt names it (optionalHooks), so tool calls start nothing unless asked.
 // Other hooks and settings are left as they are. It returns the events whose hooks changed.
-func setHooks(settings map[string]any, exe, matcher string) []string {
+func setHooks(settings map[string]any, exe string, opt map[string]string) []string {
 	hooks, _ := settings["hooks"].(map[string]any)
 	if hooks == nil {
 		hooks = map[string]any{}
@@ -73,12 +88,14 @@ func setHooks(settings map[string]any, exe, matcher string) []string {
 				after = append(after, copyGroup)
 			}
 		}
-		if exe != "" && ev.name == "PostToolUse" && matcher != "" {
-			after = append(after, map[string]any{"matcher": matcher, "hooks": []any{map[string]any{
-				"type": "command", "command": exe, "args": []any{"hook"}, "timeout": float64(ev.timeout)}}})
-		} else if exe != "" && ev.name != "PostToolUse" {
-			after = append(after, map[string]any{"hooks": []any{map[string]any{
-				"type": "command", "command": exe, "args": []any{"hook"}, "timeout": float64(ev.timeout)}}})
+		matcher, asked := opt[ev.name]
+		if exe != "" && (asked || !optional[ev.name]) {
+			group := map[string]any{"hooks": []any{map[string]any{
+				"type": "command", "command": exe, "args": []any{"hook"}, "timeout": float64(ev.timeout)}}}
+			if matcher != "" {
+				group["matcher"] = matcher
+			}
+			after = append(after, group)
 		}
 		if !reflect.DeepEqual(normalize(before), normalize(after)) {
 			changed = append(changed, ev.name)
@@ -107,7 +124,7 @@ func normalize(v any) any {
 
 // install adds (exe != "") or removes TRACE's hooks in Claude Code's user settings. A file that does not parse is
 // never overwritten; an existing file is copied to settings.json.trace-backup first.
-func install(path, exe, matcher string, w io.Writer) error {
+func install(path, exe string, opt map[string]string, w io.Writer) error {
 	settings := map[string]any{}
 	b, err := os.ReadFile(path)
 	switch {
@@ -123,7 +140,7 @@ func install(path, exe, matcher string, w io.Writer) error {
 	default:
 		return err
 	}
-	changed := setHooks(settings, exe, matcher)
+	changed := setHooks(settings, exe, opt)
 	if len(changed) == 0 {
 		fmt.Fprintf(w, "hooks already up to date in %s\n", path)
 		return nil
