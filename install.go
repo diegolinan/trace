@@ -15,7 +15,7 @@ import (
 var hookEvents = []struct {
 	name    string
 	timeout int
-}{{"SessionStart", 30}, {"Stop", 10}, {"PreCompact", 10}, {"SessionEnd", 5}, {"SubagentStart", 5}}
+}{{"SessionStart", 30}, {"Stop", 10}, {"PreCompact", 10}, {"SessionEnd", 5}, {"SubagentStart", 5}, {"PostToolUse", 60}}
 
 // claudeSettings is Claude Code's user settings file; CLAUDE_CONFIG_DIR moves it.
 func claudeSettings() string {
@@ -38,8 +38,9 @@ func isTraceCmd(h any) bool {
 }
 
 // setHooks removes every trace hook from settings, then adds one per event running exe (none when exe is empty).
+// PostToolUse gets one only when checks are configured, matching their tools, so other tool calls start nothing.
 // Other hooks and settings are left as they are. It returns the events whose hooks changed.
-func setHooks(settings map[string]any, exe string) []string {
+func setHooks(settings map[string]any, exe, matcher string) []string {
 	hooks, _ := settings["hooks"].(map[string]any)
 	if hooks == nil {
 		hooks = map[string]any{}
@@ -72,7 +73,10 @@ func setHooks(settings map[string]any, exe string) []string {
 				after = append(after, copyGroup)
 			}
 		}
-		if exe != "" {
+		if exe != "" && ev.name == "PostToolUse" && matcher != "" {
+			after = append(after, map[string]any{"matcher": matcher, "hooks": []any{map[string]any{
+				"type": "command", "command": exe, "args": []any{"hook"}, "timeout": float64(ev.timeout)}}})
+		} else if exe != "" && ev.name != "PostToolUse" {
 			after = append(after, map[string]any{"hooks": []any{map[string]any{
 				"type": "command", "command": exe, "args": []any{"hook"}, "timeout": float64(ev.timeout)}}})
 		}
@@ -103,7 +107,7 @@ func normalize(v any) any {
 
 // install adds (exe != "") or removes TRACE's hooks in Claude Code's user settings. A file that does not parse is
 // never overwritten; an existing file is copied to settings.json.trace-backup first.
-func install(path, exe string, w io.Writer) error {
+func install(path, exe, matcher string, w io.Writer) error {
 	settings := map[string]any{}
 	b, err := os.ReadFile(path)
 	switch {
@@ -119,7 +123,7 @@ func install(path, exe string, w io.Writer) error {
 	default:
 		return err
 	}
-	changed := setHooks(settings, exe)
+	changed := setHooks(settings, exe, matcher)
 	if len(changed) == 0 {
 		fmt.Fprintf(w, "hooks already up to date in %s\n", path)
 		return nil

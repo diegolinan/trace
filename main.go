@@ -93,7 +93,7 @@ func main() {
 				break
 			}
 		}
-		if err = install(claudeSettings(), exe, os.Stdout); err != nil || cmd == "uninstall" {
+		if err = install(claudeSettings(), exe, checkMatcher(cfg.Checks), os.Stdout); err != nil || cmd == "uninstall" {
 			break
 		}
 		fmt.Println("first import (later ones run from the hooks)...")
@@ -376,6 +376,7 @@ func stats(db *sql.DB) error {
 	q("last runs", "select started_at, ended_at, trigger, files_seen, events_added, error is not null from ingest_run order by id desc limit 15")
 	// Claude Code swaps hook output over 10,000 characters for a 2 KB preview, and the agent never sees the rest.
 	q("hook output that never reached the session", "select count(*), max(ts) from event where kind = 'injected' and ltrim(text) like '<persisted-output>%'")
+	q("checks, last 14 days: runs, failures, last failure", "select name, count(*), sum(ok = 0), max(case when ok = 0 then ts end) from check_run where ts >= strftime('%Y-%m-%dT%H:%M:%SZ', 'now', '-14 days') group by 1 order by 1")
 	q("files with errors", "select path, last_error from source_file where last_error is not null")
 	return nil
 }

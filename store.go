@@ -99,6 +99,17 @@ create table if not exists anchor (
   verified integer
 );
 create index if not exists anchor_value on anchor(type, value);
+-- Every run of a configured check (checks.go): passes too, so the failure rate has its denominator.
+create table if not exists check_run (
+  id integer primary key,
+  ts text not null,
+  session_id text,
+  name text not null,
+  tool text,
+  target text,
+  ok integer not null,
+  output text
+);
 create virtual table if not exists event_fts using fts5(text, content='event', content_rowid='id', tokenize='unicode61 remove_diacritics 2');
 create virtual table if not exists event_tri using fts5(text, content='event', content_rowid='id', tokenize='trigram');
 create trigger if not exists event_ai after insert on event begin

@@ -12,16 +12,19 @@ import (
 
 // hookInput is the part of the host's hook payload trace reads (Claude Code and Codex share these names).
 type hookInput struct {
-	Event      string `json:"hook_event_name"`
-	SessionID  string `json:"session_id"`
-	Source     string `json:"source"` // SessionStart: startup, resume, clear, compact
-	Transcript string `json:"transcript_path"`
-	Cwd        string `json:"cwd"`
+	Event      string          `json:"hook_event_name"`
+	SessionID  string          `json:"session_id"`
+	Source     string          `json:"source"` // SessionStart: startup, resume, clear, compact
+	Transcript string          `json:"transcript_path"`
+	Cwd        string          `json:"cwd"`
+	ToolName   string          `json:"tool_name"`  // PostToolUse
+	ToolInput  json.RawMessage `json:"tool_input"` // PostToolUse
 }
 
 func readHookInput(r io.Reader) hookInput {
 	var in hookInput
-	json.NewDecoder(io.LimitReader(r, 1<<20)).Decode(&in) // an unreadable payload still triggers an import
+	// PostToolUse carries the tool's whole result, often megabytes; a cut payload would not decode at all.
+	json.NewDecoder(io.LimitReader(r, 256<<20)).Decode(&in) // an unreadable payload still triggers an import
 	return in
 }
 
@@ -45,6 +48,18 @@ func hook(in hookInput, flags []string, dbPath string, run func(*sql.DB, string)
 	}
 	mine := ours(role) && excluded == ""
 	switch {
+	case in.Event == "PostToolUse": // no import: one runs at every Stop
+		if !mine {
+			return nil
+		}
+		db, err := openDB(dbPath)
+		if err != nil {
+			fmt.Fprintln(os.Stderr, "trace: checks run without their log:", err)
+			db = nil
+		} else {
+			defer db.Close()
+		}
+		return checkHook(db, in, w)
 	case in.Event == "SubagentStart": // no import: the parent's Stop covers it
 		if !mine {
 			return nil

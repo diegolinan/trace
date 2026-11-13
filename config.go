@@ -29,6 +29,8 @@ type config struct {
 	Anchors map[string]string `json:"anchors"`
 	// PinPhrases mark a typed message as pinned, in any language; empty: "remember this".
 	PinPhrases []string `json:"pin_phrases"`
+	// Checks are the project's rules a command can verify, run after matching tool calls (checks.go).
+	Checks []check `json:"checks"`
 }
 
 type namedRe struct {

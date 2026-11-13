@@ -36,7 +36,7 @@ func TestInstallUninstall(t *testing.T) {
 		return n
 	}
 
-	if err := install(path, "/opt/a/trace", io.Discard); err != nil {
+	if err := install(path, "/opt/a/trace", "Bash", io.Discard); err != nil {
 		t.Fatal(err)
 	}
 	m := read()
@@ -47,16 +47,20 @@ func TestInstallUninstall(t *testing.T) {
 		t.Fatal("no backup of the previous file")
 	}
 	before, _ := os.ReadFile(path)
-	install(path, "/opt/a/trace", io.Discard) // again: nothing to change
+	install(path, "/opt/a/trace", "Bash", io.Discard) // again: nothing to change
 	if after, _ := os.ReadFile(path); string(after) != string(before) {
 		t.Fatal("second install changed the file")
 	}
-	install(path, `C:\b\trace.exe`, io.Discard) // moved binary: replaced, not added
-	if m = read(); countTrace(m) != len(hookEvents) || !strings.Contains(mustJSON(m), `C:\\b\\trace.exe`) {
+	install(path, `C:\b\trace.exe`, "Bash", io.Discard) // moved binary: replaced, not added
+	if m = read(); countTrace(m) != len(hookEvents) || !strings.Contains(mustJSON(m), `C:\\b\\trace.exe`) || !strings.Contains(mustJSON(m), `"matcher":"Bash"`) {
 		t.Fatalf("after move: %s", mustJSON(m))
 	}
+	install(path, `C:\b\trace.exe`, "", io.Discard) // no checks configured: no PostToolUse hook at all
+	if m = read(); countTrace(m) != len(hookEvents)-1 || m["hooks"].(map[string]any)["PostToolUse"] != nil {
+		t.Fatalf("without checks: %s", mustJSON(m))
+	}
 
-	if err := install(path, "", io.Discard); err != nil {
+	if err := install(path, "", "Bash", io.Discard); err != nil {
 		t.Fatal(err)
 	}
 	m = read()
@@ -65,14 +69,14 @@ func TestInstallUninstall(t *testing.T) {
 	}
 
 	os.WriteFile(path, []byte(`{not json`), 0o644)
-	if err := install(path, "/opt/a/trace", io.Discard); err == nil {
+	if err := install(path, "/opt/a/trace", "Bash", io.Discard); err == nil {
 		t.Fatal("a broken settings file must be left alone")
 	}
 	if b, _ := os.ReadFile(path); string(b) != `{not json` {
 		t.Fatal("broken settings file was overwritten")
 	}
 	fresh := filepath.Join(dir, "new", "settings.json")
-	if err := install(fresh, "/opt/a/trace", io.Discard); err != nil {
+	if err := install(fresh, "/opt/a/trace", "", io.Discard); err != nil {
 		t.Fatalf("missing settings file: %v", err)
 	}
 }

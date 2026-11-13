@@ -48,6 +48,8 @@ TRACE takes a different approach:
   - SessionStart: a block that says where the last session of the same role stopped. It also lists, verbatim, what the user refused or set as a standing rule in the last 14 days, each with the end of the reply it answered, so the agent does not propose it again. These are found by code rules, with no network.
   - PreCompact: also fixed text that tells Claude Code's summarizer to keep quotes, ids and open work.
   - SubagentStart: tells helper agents that they are helpers, not the agent that started them.
+  - PostToolUse, only when `checks` are configured: runs the project's checks after the tool calls they name, and shows a failure to the agent at once.
+- **Checks.** A rule the agent has in context still gets broken: agents stop attending to their instructions as a session grows. A rule a command can verify is better checked than repeated. Each check names the tools it follows (for example `Bash`), a pattern for the file or command (for example `git commit`), and a command; a non-zero exit is a violation, and its output reaches the agent before its next step. Every run is logged, passes too, so `trace stats` shows how often each rule breaks.
 - **Search.** Word and trigram search over everything stored.
 - **Secrets.** API keys, tokens and private keys are redacted before anything is stored. The raw copies are not redacted: they are byte copies of files already on the same disk.
 - **Marks (experimental).** Code rules mark a typed message that approves, rejects, corrects or sets a standing rule. Today the markers cover Spanish (including voseo) and English. They were scored against blind labels of real messages.
@@ -81,7 +83,7 @@ trace install
 
 ### What `trace install` changes
 
-1. It adds five hooks to Claude Code's user settings (`~/.claude/settings.json`, or `$CLAUDE_CONFIG_DIR/settings.json`): SessionStart, Stop, PreCompact, SessionEnd and SubagentStart. Each one runs this binary with `hook`.
+1. It adds five hooks to Claude Code's user settings (`~/.claude/settings.json`, or `$CLAUDE_CONFIG_DIR/settings.json`): SessionStart, Stop, PreCompact, SessionEnd and SubagentStart, and a sixth, PostToolUse, when `checks` are configured, limited to the tools they name. Each one runs this binary with `hook`.
    - Other settings and hooks are kept.
    - The previous file is saved as `settings.json.trace-backup`.
    - A settings file that is not valid JSON is never touched.
@@ -128,6 +130,7 @@ TRACE's home is `$TRACE_HOME`, or `~/.trace` when that is not set. Settings are 
 | `relay_tools` | tool-name prefixes whose results are another agent's words | none |
 | `anchors` | extra tags, `name: regexp`, beside commits, paths and URLs (for example ticket ids) | none |
 | `pin_phrases` | phrases that pin a typed message | "remember this" |
+| `checks` | rules a command can verify, run after matching tool calls (see below) | none |
 
 A role names a checkout by a file in its root, so it survives moves and renames:
 
@@ -143,7 +146,20 @@ A role names a checkout by a file in its root, so it survives moves and renames:
 
 - `git` is `"dir"` for a main checkout, `"file"` for a linked worktree, or empty for either.
 - `folder` is the fallback when the session's folder no longer exists. It is matched against the end of Claude Code's transcript folder name, without case.
-- When roles are configured, only those roles get the SessionStart block, the summary text and the helper line.
+- When roles are configured, only those roles get the SessionStart block, the summary text, the helper line and the checks.
+
+A check runs after a tool call when `on` matches the tool's name (a regexp, as in Claude Code's hook matchers; empty: every tool) and `match` matches the file the tool wrote or the command it ran. `run` is a shell command, run from the root of the session's git checkout with a 45-second limit:
+
+```json
+{
+  "checks": [
+    { "name": "changelog", "on": "Bash", "match": "git\\b.*\\bcommit", "run": "node scripts/check-changelog.mjs" },
+    { "name": "lint", "on": "Write|Edit", "match": "\\.go$", "run": "go vet ./..." }
+  ]
+}
+```
+
+After adding, changing or removing checks, run `trace install` again: the PostToolUse hook only listens to the tools the checks name.
 
 ## Status
 
