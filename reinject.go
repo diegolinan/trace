@@ -266,6 +266,18 @@ func reinjection(db *sql.DB, sid string, ctx int, text string, factor float64, n
 	if text == "" || ctx == 0 || sid == "" {
 		return "", "", nil
 	}
+	// Parallel tool calls fire their hooks at once: the read and the record are one write transaction, so only one
+	// of them injects. openDB keeps a single connection, so these statements all run on it.
+	if _, err := db.Exec("begin immediate"); err != nil {
+		return "", "", err
+	}
+	defer func() {
+		if err == nil {
+			_, err = db.Exec("commit")
+		} else {
+			db.Exec("rollback")
+		}
+	}()
 	var lastCtx int
 	var lastSha string
 	switch err := db.QueryRow("select ctx_tokens, card_sha from injection where session_id = ? order by id desc limit 1", sid).Scan(&lastCtx, &lastSha); {

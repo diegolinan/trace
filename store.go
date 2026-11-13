@@ -149,7 +149,8 @@ func openDB(path string) (*sql.DB, error) {
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 		return nil, err
 	}
-	db, err := driver.Open("file:"+filepath.ToSlash(path)+"?_pragma=journal_mode(wal)&_pragma=busy_timeout(10000)&_pragma=synchronous(normal)&_pragma=foreign_keys(on)&_pragma=journal_size_limit(4194304)",
+	// busy_timeout first: pragmas run in order, and journal_mode needs the lock that parallel hooks hold.
+	db, err := driver.Open("file:"+filepath.ToSlash(path)+"?_pragma=busy_timeout(10000)&_pragma=journal_mode(wal)&_pragma=synchronous(normal)&_pragma=foreign_keys(on)&_pragma=journal_size_limit(4194304)",
 		func(c *sqlite3.Conn) error { return fts5.Register(c) })
 	if err != nil {
 		return nil, err

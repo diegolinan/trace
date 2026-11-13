@@ -114,3 +114,45 @@ func TestContextTokens(t *testing.T) {
 		t.Fatal("a missing transcript is 0")
 	}
 }
+
+// Parallel tool calls fire their hooks at once, each with its own connection: only one of them injects.
+func TestReinjectionParallel(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "p.db")
+	db, err := openDB(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := strings.Repeat("r", 400)
+	if _, _, err := reinjection(db, "s", 1000, text, 7, time.Now()); err != nil {
+		t.Fatal(err)
+	}
+	db.Close()
+	outs := make(chan string, 8)
+	for i := 0; i < 8; i++ {
+		go func() {
+			d, err := openDB(path)
+			if err != nil {
+				outs <- "error: " + err.Error()
+				return
+			}
+			defer d.Close()
+			out, _, err := reinjection(d, "s", 5000, text, 7, time.Now())
+			if err != nil {
+				out = "error: " + err.Error()
+			}
+			outs <- out
+		}()
+	}
+	injected := 0
+	for i := 0; i < 8; i++ {
+		switch o := <-outs; {
+		case strings.HasPrefix(o, "error"):
+			t.Fatal(o)
+		case o != "":
+			injected++
+		}
+	}
+	if injected != 1 {
+		t.Fatalf("%d of 8 parallel hooks injected, want 1", injected)
+	}
+}
