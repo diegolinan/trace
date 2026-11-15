@@ -500,3 +500,44 @@ func TestHookGate(t *testing.T) {
 		t.Errorf("refused call: err %v, output %q", err, out.String())
 	}
 }
+
+// trace restore rebuilds the store from the raw copies alone: the same events, none twice, a second run adds
+// nothing, and a member cut short by a killed run does not stop it.
+func TestRestoreFromRaw(t *testing.T) {
+	dir, db, run := setup(t)
+	run()
+	raw := filepath.Join(dir, "raw")
+	db2, err := openDB(filepath.Join(dir, "restored.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db2.Close()
+	restore := func() {
+		if err := runImport(db2, raw, filepath.Join(raw, ".claude", "history.jsonl.gz"), "", "", "", "acme", "restore"); err != nil {
+			t.Fatal(err)
+		}
+	}
+	restore()
+	q := "select count(*) from event e join session s on s.id = e.session_id where s.host = 'claude-code'"
+	if a, b := count(t, db, q), count(t, db2, q); a == 0 || a != b {
+		t.Fatalf("restored %d transcript events, the store had %d", b, a)
+	}
+	if n := count(t, db2, "select count(*) from session where id = 'agent-x1' and role = 'subagent' and parent_id = 's1'"); n != 1 {
+		t.Errorf("the subagent's raw copy was not restored as a subagent")
+	}
+	before := count(t, db2, "select count(*) from event")
+	restore()
+	if after := count(t, db2, "select count(*) from event"); after != before {
+		t.Errorf("a second restore added %d events", after-before)
+	}
+	g, _ := os.OpenFile(filepath.Join(raw, proj, "s1.jsonl.gz"), os.O_APPEND|os.O_WRONLY, 0)
+	g.Write([]byte{0x1f, 0x8b, 8, 0, 0, 0}) // a member's header, then the process "died"
+	g.Close()
+	restore()
+	if after := count(t, db2, "select count(*) from event"); after != before {
+		t.Errorf("a cut-short member changed the restore: %d events, want %d", after, before)
+	}
+	if n := count(t, db2, "select count(*) from source_file where last_error is not null"); n != 0 {
+		t.Errorf("%d raw copies failed to restore", n)
+	}
+}

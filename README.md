@@ -54,6 +54,7 @@ TRACE takes a different approach:
 - **Checks.** A rule the agent has in context still gets broken: agents stop attending to their instructions as a session grows. A rule a command can verify is better checked than repeated. Each check names the tools it follows (for example `Bash`), a pattern for the file or command (for example `git commit`), and a command; a non-zero exit is a violation, and its output reaches the agent before its next step. Every run is logged, passes too, so `trace stats` shows how often each rule breaks.
 - **Search.** Word and trigram search over everything stored.
 - **Secrets.** API keys, tokens and private keys are redacted before anything is stored. The raw copies are not redacted: they are byte copies of files already on the same disk.
+- **Raw copies you can rebuild from.** Each Claude Code transcript, its large tool results and the prompt log are copied into `raw/` as they are imported, so they outlive Claude Code's cleanup (30 days by default). `trace restore` reads them back into the store: into an empty `trace.db` it rebuilds the Claude Code memory; into an existing one it adds only what is missing. Measured on a real store: 1,063 raw copies, 127,040 events, the same count as the live store, in 7 minutes. Roles are worked out again from the folders as they are now, so a session whose checkout moved can get another role. Codex sessions are not copied (Codex keeps its own), so they come back from `~/.codex` with `trace import`.
 - **Marks (experimental).** Code rules mark a typed message that approves, rejects, corrects or sets a standing rule. Today the markers cover Spanish (including voseo) and English. They were scored against blind labels of real messages.
 
 ## Install
@@ -144,6 +145,7 @@ trace install -host claude-code   add the hooks to Claude Code's user settings a
 trace install -host codex -mode hooks|agents   a Codex memory for the current folder (no default mode)
 trace uninstall -host <agent>     remove what install added for this home (the data stays)
 trace import                      read what is new in every transcript in scope; safe to run any time
+trace restore                     rebuild the store from the raw copies (a lost or broken trace.db, or transcripts the host deleted); skips what is stored
 trace hook                        for host hooks; never fails the host's turn
 trace resume                      where the last session in this checkout stopped, for agents without hooks
                                   [-host codex|claude-code]

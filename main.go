@@ -29,7 +29,7 @@ import (
 
 func main() {
 	if len(os.Args) < 2 {
-		fmt.Fprintln(os.Stderr, "usage: trace install -host claude-code|codex | uninstall -host ... | import | hook | resume | search <words> | rules | stats")
+		fmt.Fprintln(os.Stderr, "usage: trace install -host claude-code|codex | uninstall -host ... | import | restore | hook | resume | search <words> | rules | stats")
 		os.Exit(2)
 	}
 	cmd := os.Args[1]
@@ -205,6 +205,17 @@ func main() {
 		// Waits for a running import: the hook that fired last must still read the newest bytes.
 		err = importOnce(*dbPath, time.Minute, func(db *sql.DB) error {
 			return runImport(db, *projects, *history, *codexDir, *archive, *repo, *scope, *trigger)
+		})
+	case "restore":
+		// The raw copies back into the store: for a lost or broken trace.db, or a transcript the host deleted.
+		// The archive is the source here, so nothing is archived again; events already stored are skipped (uuid).
+		if st, serr := os.Stat(*archive); serr != nil || !st.IsDir() {
+			fail(fmt.Errorf("restore needs the raw copies folder; %s is not one (set -archive)", *archive))
+		}
+		err = importOnce(*dbPath, time.Minute, func(db *sql.DB) error {
+			// shortcut: the prompt log's copy is where the archive puts ~/.claude/history.jsonl; a -history elsewhere
+			// is archived under another folder and not restored. Upgrade if anyone moves it.
+			return runImport(db, *archive, filepath.Join(*archive, ".claude", "history.jsonl.gz"), "", "", *repo, *scope, "restore")
 		})
 	case "search", "stats":
 		if cmd == "search" {

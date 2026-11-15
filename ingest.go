@@ -58,7 +58,7 @@ func transcriptFiles(projectsDir, scope string) (out, results []string, err erro
 			switch {
 			case len(parts) >= 3 && parts[1] == "tool-results":
 				results = append(results, filepath.Join(d.Name(), rel))
-			case !strings.HasSuffix(p, ".jsonl"):
+			case !strings.HasSuffix(p, ".jsonl") && !rawCopy.MatchString(p):
 			// Workflow subagents sit deeper, in subagents/workflows/<wf>/ (lore claude_code.rs:237-260).
 			case len(parts) == 1 || (len(parts) >= 3 && parts[1] == "subagents"):
 				out = append(out, p)
@@ -101,8 +101,13 @@ func keepResults(projectsDir, archive string, results []string) error {
 }
 
 // sessionFor names the session a transcript file belongs to and its role.
+// rawCopy matches a transcript's raw copy (archive): <session>.jsonl.gz, or a copy set aside when the transcript was
+// rewritten, <session>.jsonl.replaced-<UTC time>.gz. `trace restore` reads them as transcripts.
+var rawCopy = regexp.MustCompile(`\.jsonl(\.replaced-\d{8}T\d{6})?\.gz$`)
+
 func sessionFor(path string) (id, role, parent, excluded string) {
-	base := strings.TrimSuffix(filepath.Base(path), ".jsonl")
+	base := rawCopy.ReplaceAllString(filepath.Base(path), ".jsonl")
+	base = strings.TrimSuffix(base, ".jsonl")
 	dir := filepath.Dir(path)
 	for d := dir; filepath.Dir(d) != d; d = filepath.Dir(d) { // subagents/agent-x.jsonl or subagents/workflows/<wf>/agent-x.jsonl
 		if filepath.Base(d) == "subagents" {
@@ -152,6 +157,12 @@ func (im *importer) importFile(path, host string) (int, error) {
 	// Claude Code rewrites transcripts in place (compaction temp-file swap #81843, Remote Control resume
 	// #104123), so a file that did not shrink can still be a different file: check the bytes before the offset.
 	restart := st.Size() < from || (from > 0 && tailSha.Valid && tailHash(f, from) != tailSha.String)
+	// A raw copy (.gz, `trace restore`) cannot be read from a byte offset inside its compressed stream: when its
+	// size changed it is read whole again; uuids keep that idempotent. read_to_byte stores its compressed size.
+	gz := strings.HasSuffix(path, ".gz")
+	if gz && st.Size() != from {
+		restart = true
+	}
 	if !restart && st.Size() == from {
 		return 0, nil
 	}
@@ -161,16 +172,27 @@ func (im *importer) importFile(path, host string) (int, error) {
 	if _, err := f.Seek(from, io.SeekStart); err != nil {
 		return 0, err
 	}
+	var r io.Reader = f
+	if gz {
+		zr, err := gzip.NewReader(f) // multistream: the archive appends one member per import
+		if err != nil {
+			return 0, fmt.Errorf("%s: %w", path, err)
+		}
+		r = cutTail{zr}
+	}
 	var n, bad int
 	var end int64
 	var archived string
 	if host == "prompt-log" {
-		n, end, err = im.readHistory(tx, f, from, fileID)
+		n, end, err = im.readHistory(tx, r, from, fileID)
 	} else {
-		n, bad, end, err = im.readTranscript(tx, f, path, from, fileID)
+		n, bad, end, err = im.readTranscript(tx, r, path, from, fileID)
 	}
 	if err != nil {
 		return 0, fmt.Errorf("%s: %w", path, err)
+	}
+	if gz {
+		end = st.Size()
 	}
 	if end > from && im.archiveDir != "" {
 		if archived, archBytes, err = im.archive(path, from, end, restart, archBytes); err != nil {
@@ -182,6 +204,18 @@ func (im *importer) importFile(path, host string) (int, error) {
 		return 0, err
 	}
 	return n, tx.Commit()
+}
+
+// cutTail ends a raw copy at a member cut short (a run killed mid-archive, which the next archive run trims):
+// what came before it is read, the half member is not.
+type cutTail struct{ r io.Reader }
+
+func (c cutTail) Read(p []byte) (int, error) {
+	n, err := c.r.Read(p)
+	if err == io.ErrUnexpectedEOF {
+		err = io.EOF
+	}
+	return n, err
 }
 
 // tailHash hashes up to 4 KB ending at offset, enough to tell a rewritten file from the one read before.
