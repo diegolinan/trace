@@ -75,7 +75,11 @@ func TestInstallNeedsHost(t *testing.T) {
 
 // A relative TRACE_HOME is stored absolute, so a hook started from another folder opens the same memory.
 func TestRelativeHomeStoredAbsolute(t *testing.T) {
-	root := t.TempDir()
+	// The child resolves its working folder (on macOS the temp dir /var is a link to /private/var), so compare there.
+	root, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
 	exe := filepath.Join(root, "bin", "trace")
 	if runtime.GOOS == "windows" {
 		exe += ".exe"
