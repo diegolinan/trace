@@ -7,10 +7,12 @@ import (
 	"golang.org/x/sys/windows"
 )
 
-// startDetached starts cmd with no console and outside the hook's job, so the host closing or killing the hook
-// does not take the import with it. A job that forbids breakaway refuses the flag; then it starts without it.
+// startDetached starts cmd outside the hook's job, so the host closing or killing the hook does not take the import
+// with it. A job that forbids breakaway refuses the flag; then it starts without it. CREATE_NO_WINDOW, not
+// DETACHED_PROCESS: a detached process has no console, so the git it starts (commit checks) got a new console
+// window of its own, which flashed on the screen at every Stop; a hidden console is inherited instead.
 func startDetached(cmd *exec.Cmd) error {
-	flags := uint32(windows.DETACHED_PROCESS | windows.CREATE_NEW_PROCESS_GROUP)
+	flags := uint32(windows.CREATE_NO_WINDOW | windows.CREATE_NEW_PROCESS_GROUP)
 	cmd.SysProcAttr = &syscall.SysProcAttr{CreationFlags: flags | windows.CREATE_BREAKAWAY_FROM_JOB, HideWindow: true}
 	if err := cmd.Start(); err == nil {
 		return nil
