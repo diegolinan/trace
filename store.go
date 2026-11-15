@@ -115,6 +115,12 @@ create table if not exists injection (
   chars integer
 );
 create index if not exists injection_session on injection(session_id, id);
+-- The instructions a Codex rollout last recorded, and how far it has been read (codexSources): rollouts only grow.
+create table if not exists codex_instructions (
+  rollout text primary key,
+  offset integer not null,
+  text text not null
+);
 -- Every run of a configured check (checks.go): passes too, so the failure rate has its denominator.
 create table if not exists check_run (
   id integer primary key,

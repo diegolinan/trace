@@ -107,10 +107,10 @@ func TestContextTokens(t *testing.T) {
 	os.WriteFile(p, []byte(`{"type":"assistant","message":{"usage":{"input_tokens":2,"cache_read_input_tokens":100,"cache_creation_input_tokens":30}}}
 {"type":"user","message":{"content":"x","usage":{"input_tokens":999}}}
 `), 0o644)
-	if n := contextTokens(p); n != 132 {
+	if n := contextTokens(p, "claude-code"); n != 132 {
 		t.Fatalf("context %d, want 132", n)
 	}
-	if contextTokens(filepath.Join(t.TempDir(), "none")) != 0 {
+	if contextTokens(filepath.Join(t.TempDir(), "none"), "claude-code") != 0 {
 		t.Fatal("a missing transcript is 0")
 	}
 }

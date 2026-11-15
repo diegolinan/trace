@@ -92,9 +92,21 @@ func resumeBlock(db *sql.DB, sid, source, role, host string, w io.Writer) error 
 		300); err != nil {
 		return err
 	}
-	exe, _ := os.Executable()
-	fmt.Fprintf(w, "Everything else said or done: `%s search <words>` (-all widens it). Search before saying you cannot confirm something.\n", exe)
+	fmt.Fprintf(w, "Everything else said or done: `%s <words>` (-all widens it). Search before saying you cannot confirm something.\n", searchCmd())
 	return nil
+}
+
+// activeHome is the TRACE home this run uses (main sets it).
+var activeHome string
+
+// searchCmd is the search an agent is told to run: this binary, with -home when the memory is not the default one, so
+// the agent of a second memory does not search (and import into) the default store.
+func searchCmd() string {
+	exe, _ := os.Executable()
+	if activeHome != "" && !sameHome(activeHome, traceHome()) {
+		return fmt.Sprintf(`%s search -home "%s"`, exe, activeHome)
+	}
+	return exe + " search"
 }
 
 // refusals lists what the user refused or set as a rule in the last 14 days, in any session of this host and role,

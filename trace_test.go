@@ -67,6 +67,11 @@ func count(t *testing.T, db *sql.DB, q string, args ...any) int {
 }
 
 func TestMain(m *testing.M) {
+	if args, ok := os.LookupEnv("TRACE_TEST_MAIN"); ok { // runTrace: this binary runs trace's main
+		os.Args = append([]string{"trace"}, strings.Split(args, "\x1f")...)
+		main()
+		os.Exit(0)
+	}
 	cfg = config{User: "Ana", RelayTools: []string{"mcp__relay"}, Roles: []roleRule{
 		{Name: "aux", Label: "Agent A", Git: "file", Marker: "ROLE.md", Contains: "role: aux", Folder: "claude-worktrees-aux"},
 		{Name: "main", Label: "the main agent", Git: "dir", Marker: "ROLE.md", Contains: "role: main", Folder: "work-acme"},
@@ -246,7 +251,8 @@ func TestHookDetaches(t *testing.T) {
 	hook := exec.Command(exe, "hook", "-db", filepath.Join(dir, "m.db"), "-projects", filepath.Join(dir, "projects"),
 		"-history", filepath.Join(dir, "history.jsonl"), "-archive", filepath.Join(dir, "raw"), "-repo=", "-scope", "acme")
 	hook.Env = append(os.Environ(), "TRACE_HOME="+dir) // never the machine's own config.json
-	hook.Stdin = strings.NewReader(`{"hook_event_name":"SessionEnd","session_id":"s1"}`)
+	cwd, _ := json.Marshal(filepath.Join(dir, "acme")) // absolute and in scope: the gate admits it
+	hook.Stdin = strings.NewReader(`{"hook_event_name":"SessionEnd","session_id":"s1","cwd":` + string(cwd) + `}`)
 	start := time.Now()
 	if out, err := hook.CombinedOutput(); err != nil || len(out) > 0 {
 		t.Fatalf("hook: %v %s", err, out)
@@ -280,8 +286,8 @@ func TestSessionStartResume(t *testing.T) {
 	if _, err := db.Exec(`insert into session(id, host, role, started_at, ended_at) values ('cx', 'codex', 'aux', '2026-11-10T11:00:00Z', '2026-11-10T12:00:00Z')`); err != nil {
 		t.Fatal(err)
 	}
-	in := hookInput{Event: "SessionStart", Source: "clear", SessionID: "new", Transcript: filepath.Join(dir, "projects", proj, "new.jsonl")}
-	if err := hook(in, nil, dbPath, run, &out); err != nil {
+	in := hookInput{Event: "SessionStart", Source: "clear", SessionID: "new", Cwd: dir, Transcript: filepath.Join(dir, "projects", proj, "new.jsonl")}
+	if err := hook(in, nil, dbPath, "claude-code", filepath.Join(dir, "projects"), run, &out); err != nil {
 		t.Fatal(err)
 	}
 	got := out.String()
@@ -298,8 +304,30 @@ func TestSessionStartResume(t *testing.T) {
 	}
 	out.Reset()
 	in.Transcript = filepath.Join(dir, "projects", "C--other-project", "x.jsonl")
-	if hook(in, nil, dbPath, run, &out); out.Len() != 0 {
+	if hook(in, nil, dbPath, "claude-code", filepath.Join(dir, "projects"), run, &out); out.Len() != 0 {
 		t.Errorf("a session outside scope got a block:\n%s", out.String())
+	}
+	// Codex: a Codex session in a plain folder (no git, no roles) gets its block as JSON, the shape Codex reads
+	// SessionStart context in. Its role is the folder's, as the importer gives a Codex thread.
+	oldRoles := cfg.Roles
+	cfg.Roles = nil
+	defer func() { cfg.Roles = oldRoles }()
+	if _, err := db.Exec(`insert into session(id, host, role, started_at, ended_at) values ('cx2', 'codex', ?, '2026-11-11T11:00:00Z', '2026-11-11T12:00:00Z')`, projectRole(dir)); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(`insert into event(session_id, seq, ts, speaker, kind, text) values ('cx2', 1, '2026-11-11T11:30:00Z', 'assistant', 'reply', 'NONCE_CODEX_71')`); err != nil {
+		t.Fatal(err)
+	}
+	out.Reset()
+	in = hookInput{Event: "SessionStart", Source: "startup", SessionID: "new2", Cwd: dir}
+	if err := hook(in, nil, dbPath, "codex", "", run, &out); err != nil {
+		t.Fatal(err)
+	}
+	var codexOut struct {
+		HookSpecificOutput struct{ HookEventName, AdditionalContext string }
+	}
+	if err := json.Unmarshal([]byte(out.String()), &codexOut); err != nil || codexOut.HookSpecificOutput.HookEventName != "SessionStart" || !strings.Contains(codexOut.HookSpecificOutput.AdditionalContext, "NONCE_CODEX_71") {
+		t.Errorf("Codex SessionStart output %q: %v", out.String(), err)
 	}
 }
 
@@ -408,8 +436,8 @@ func TestCaptureAndIndex(t *testing.T) {
 // A subagent of a configured role is told it is a helper; other projects get nothing.
 func TestSubagentStart(t *testing.T) {
 	var out strings.Builder
-	in := hookInput{Event: "SubagentStart", Transcript: filepath.Join("x", proj, "s1.jsonl")}
-	if err := hook(in, nil, "", nil, &out); err != nil {
+	in := hookInput{Event: "SubagentStart", Cwd: t.TempDir(), Transcript: filepath.Join("x", proj, "s1.jsonl")}
+	if err := hook(in, nil, "", "claude-code", "x", nil, &out); err != nil {
 		t.Fatal(err)
 	}
 	var got struct{ HookSpecificOutput map[string]string }
@@ -418,10 +446,57 @@ func TestSubagentStart(t *testing.T) {
 	}
 	out.Reset()
 	in.Transcript = filepath.Join("x", "C--other-project", "s1.jsonl")
-	if hook(in, nil, "", nil, &out); out.Len() != 0 {
+	if hook(in, nil, "", "claude-code", "x", nil, &out); out.Len() != 0 {
 		t.Errorf("another project got %q", out.String())
 	}
 	if len(compactSteer) > 1500 {
 		t.Errorf("compactSteer is %d bytes", len(compactSteer))
+	}
+}
+
+// The hook's scope gate: a cwd in scope admits; for Claude Code so does a transcript inside the transcripts folder
+// under a project in scope (a session that cd'd to a scratch folder); nothing else does, and a call refused does
+// nothing at all. Checks need the cwd itself in scope.
+func TestHookGate(t *testing.T) {
+	old := cfg.Scope
+	cfg.Scope = "acme"
+	defer func() { cfg.Scope = old }()
+	base := t.TempDir() // absolute on every OS
+	projects := filepath.Join(base, "u", ".claude", "projects")
+	mine := filepath.Join(projects, "D--Work-acme", "s1.jsonl")
+	acme, other, scratch := filepath.Join(base, "Work", "acme"), filepath.Join(base, "Work", "other"), filepath.Join(base, "Temp", "scratch")
+	for _, c := range []struct {
+		name      string
+		in        hookInput
+		host      string
+		ok, cwdIn bool
+	}{
+		{"cwd in scope", hookInput{Cwd: filepath.Join(acme, "sub")}, "claude-code", true, true},
+		{"own session cd'd to scratch", hookInput{Cwd: scratch, SessionID: "s1", Transcript: mine}, "claude-code", true, false},
+		{"own subagent", hookInput{Cwd: scratch, SessionID: "s1", Transcript: filepath.Join(projects, "D--Work-acme", "s1", "subagents", "agent-a.jsonl")}, "claude-code", true, false},
+		{"another session's transcript", hookInput{Cwd: scratch, SessionID: "s2", Transcript: mine}, "claude-code", false, false},
+		{"no session id", hookInput{Cwd: scratch, Transcript: mine}, "claude-code", false, false},
+		{"own transcript, no cwd", hookInput{SessionID: "s1", Transcript: mine}, "claude-code", false, false},
+		{"relative cwd", hookInput{Cwd: filepath.Join("Work", "acme")}, "claude-code", false, false},
+		{"other project", hookInput{Cwd: other, SessionID: "s", Transcript: filepath.Join(projects, "D--Work-other", "s.jsonl")}, "claude-code", false, false},
+		{"scope name outside the transcripts folder", hookInput{Cwd: other, SessionID: "s", Transcript: filepath.Join(base, "elsewhere", "D--Work-acme", "s.jsonl")}, "claude-code", false, false},
+		{"climbing out with ..", hookInput{Cwd: other, SessionID: "s", Transcript: filepath.Join(projects, "..", "D--Work-acme", "s.jsonl")}, "claude-code", false, false},
+		{"transcript directly in the folder", hookInput{Cwd: other, SessionID: "acme", Transcript: filepath.Join(projects, "acme.jsonl")}, "claude-code", false, false},
+		{"no cwd, no transcript", hookInput{}, "claude-code", false, false},
+		{"codex: transcript does not widen", hookInput{Cwd: scratch, SessionID: "s1", Transcript: mine}, "codex", false, false},
+		{"codex: cwd in scope", hookInput{Cwd: acme}, "codex", true, true},
+	} {
+		if ok, cwdIn := admitted(c.in, c.host, projects); ok != c.ok || cwdIn != c.cwdIn {
+			t.Errorf("%s: admitted %v, cwd in scope %v", c.name, ok, cwdIn)
+		}
+	}
+	// Refused: no import (run is never called), no output, even on SessionStart.
+	var out strings.Builder
+	in := hookInput{Event: "SessionStart", Source: "startup", Cwd: other}
+	if err := hook(in, nil, filepath.Join(t.TempDir(), "m.db"), "claude-code", projects, func(*sql.DB, string) error {
+		t.Error("a call outside scope imported")
+		return nil
+	}, &out); err != nil || out.Len() != 0 {
+		t.Errorf("refused call: err %v, output %q", err, out.String())
 	}
 }

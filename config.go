@@ -127,7 +127,11 @@ func userName() string {
 // digit becomes "-". Launchers differ in drive-letter case (episodic-memory #202), so it is lowered.
 var notAlnum = regexp.MustCompile(`[^A-Za-z0-9]`)
 
-func folderName(path string) string { return strings.ToLower(notAlnum.ReplaceAllString(path, "-")) }
+// The Windows long-path prefix (\\?\D:\x, as Codex sends cwd and transcript_path after a resume) names the same
+// folder, so it is dropped: otherwise a role or scope would differ by the prefix alone.
+func folderName(path string) string {
+	return strings.ToLower(notAlnum.ReplaceAllString(strings.TrimPrefix(path, `\\?\`), "-"))
+}
 
 // scopeList is the scope setting: one string or a list, kept comma-joined so the -scope flag takes the same form.
 // shortcut: a folder whose path holds a comma splits in two, both still matching it; upgrade if that ever bites.

@@ -5,8 +5,10 @@
 //
 // Usage:
 //
-//	trace install           add the hooks to Claude Code's user settings, then import (uninstall removes them)
+//	trace install -host claude-code   add hooks that run this home to Claude Code's user settings, then import
+//	                                  (uninstall removes them; -migrate takes over hooks that name no home)
 //	trace install -host codex   a Codex-only memory for the current folder: config.json and an AGENTS.md line
+//	-home <folder>          on any command: the TRACE home to use (default $TRACE_HOME, else ~/.trace)
 //	trace import            read new bytes of every transcript in scope; safe to run any time
 //	trace hook              for host hooks: starts a detached import and returns at once, always exit 0
 //	trace resume            where the last session in this checkout stopped, for agents without hooks (-host codex)
@@ -27,13 +29,56 @@ import (
 
 func main() {
 	if len(os.Args) < 2 {
-		fmt.Fprintln(os.Stderr, "usage: trace install | uninstall | import | hook | resume | search <words> | rules | stats")
+		fmt.Fprintln(os.Stderr, "usage: trace install -host claude-code|codex | uninstall -host ... | import | hook | resume | search <words> | rules | stats")
 		os.Exit(2)
 	}
 	cmd := os.Args[1]
-	fs := flag.NewFlagSet(cmd, flag.ExitOnError)
-	userHome, _ := os.UserHomeDir()
+	// A hook must never exit 2 on a bad flag: Claude Code reads exit 2 as "block".
+	onErr := flag.ExitOnError
+	if cmd == "hook" {
+		onErr = flag.ContinueOnError
+	}
+	fs := flag.NewFlagSet(cmd, onErr)
+	// Flags are parsed before config.json is read, because -home says which config to read; the defaults that
+	// come from the config are filled in afterwards for the flags not given.
+	homeFlag := fs.String("home", "", "TRACE home: config.json and, unless config moves it, the data (default $TRACE_HOME, else ~/.trace)")
+	dbPath := fs.String("db", "", "database file (default <data>/trace.db)")
+	projects := fs.String("projects", "", "Claude Code transcripts folder (empty: none; default ~/.claude/projects unless config says claude: false)")
+	history := fs.String("history", "", "Claude Code prompt log (empty: none; default ~/.claude/history.jsonl unless config says claude: false)")
+	codexDir := fs.String("codex", codexHome(), "Codex home, for its session rollouts (empty: no Codex)")
+	host := fs.String("host", "", "install, uninstall (required), hook (default claude-code), resume (default codex): claude-code or codex")
+	notID := fs.String("not", "", "resume: a session id to leave out (default: the session written to in the last two minutes)")
+	archive := fs.String("archive", "", "raw copies folder (empty: no copy; default <data>/raw)")
+	repo := fs.String("repo", "", "git repository for commit checks (empty: none; default from config)")
+	scope := fs.String("scope", "", "folders in scope, comma-separated (empty: all; default from config)")
+	trigger := fs.String("trigger", "manual", "what started this import (hook name)")
+	n := fs.Int("n", 10, "hits")
+	who := fs.String("who", "", "only this speaker")
+	all := fs.Bool("all", false, "also search thinking, tool results, summaries, injected text and excluded sessions")
+	since := fs.String("since", "", "only events on or after this date (YYYY-MM-DD)")
+	mode := fs.String("mode", "", "install -host codex (required): agents (a block in AGENTS.md) or hooks (Codex hooks in CODEX_HOME/hooks.json)")
+	migrate := fs.Bool("migrate", false, "install, uninstall: take over TRACE hooks that name no home (installed before -home existed)")
+	if err := fs.Parse(os.Args[2:]); err != nil {
+		fmt.Fprintln(os.Stderr, "trace:", err)
+		return // only a hook gets here (ContinueOnError); fail open
+	}
+	given := map[string]bool{}
+	fs.Visit(func(f *flag.Flag) { given[f.Name] = true })
 	home := traceHome()
+	if given["home"] {
+		home = *homeFlag
+	}
+	// Always absolute: the home is written into hooks and AGENTS.md, which run from other folders.
+	if h, aerr := filepath.Abs(home); home == "" || aerr != nil {
+		fmt.Fprintln(os.Stderr, "trace: -home needs a folder")
+		if cmd == "hook" {
+			return
+		}
+		os.Exit(2)
+	} else {
+		home = h
+	}
+	activeHome = home
 	var err error
 	if cfg, err = loadConfig(home); err != nil {
 		fmt.Fprintln(os.Stderr, "trace: config.json is not valid JSON, nothing done:", err)
@@ -42,50 +87,82 @@ func main() {
 		}
 		os.Exit(1)
 	}
+	userHome, _ := os.UserHomeDir()
 	data := dataDir(home, cfg)
-	dbPath := fs.String("db", filepath.Join(data, "trace.db"), "database file")
-	claudeProjects, claudeHistory := filepath.Join(userHome, ".claude", "projects"), filepath.Join(userHome, ".claude", "history.jsonl")
-	if cfg.Claude != nil && !*cfg.Claude {
-		claudeProjects, claudeHistory = "", ""
+	def := func(name string, p *string, v string) {
+		if !given[name] {
+			*p = v
+		}
 	}
-	projects := fs.String("projects", claudeProjects, "Claude Code transcripts folder (empty: none)")
-	history := fs.String("history", claudeHistory, "Claude Code prompt log (empty: none)")
-	codexDir := fs.String("codex", codexHome(), "Codex home, for its session rollouts (empty: no Codex)")
-	host := fs.String("host", "codex", "resume: which agent's sessions to show (codex or claude-code)")
-	notID := fs.String("not", "", "resume: a session id to leave out (default: the session written to in the last two minutes)")
-	archive := fs.String("archive", filepath.Join(data, "raw"), "raw copies folder (empty: no copy)")
-	repo := fs.String("repo", cfg.Repo, "git repository for commit checks (empty: none)")
-	scope := fs.String("scope", string(cfg.Scope), "folders in scope, comma-separated (empty: all)")
-	trigger := fs.String("trigger", "manual", "what started this import (hook name)")
-	n := fs.Int("n", 10, "hits")
-	who := fs.String("who", "", "only this speaker")
-	all := fs.Bool("all", false, "also search thinking, tool results, summaries, injected text and excluded sessions")
-	since := fs.String("since", "", "only events on or after this date (YYYY-MM-DD)")
-	fs.Parse(os.Args[2:])
+	def("db", dbPath, filepath.Join(data, "trace.db"))
+	if cfg.Claude == nil || *cfg.Claude {
+		def("projects", projects, filepath.Join(userHome, ".claude", "projects"))
+		def("history", history, filepath.Join(userHome, ".claude", "history.jsonl"))
+	}
+	def("archive", archive, filepath.Join(data, "raw"))
+	def("repo", repo, cfg.Repo)
+	def("scope", scope, string(cfg.Scope))
+	switch {
+	case given["host"] && *host != "claude-code" && *host != "codex":
+		err = fmt.Errorf("unknown -host %q: claude-code or codex", *host)
+		if cmd == "hook" {
+			fmt.Fprintln(os.Stderr, "trace:", err)
+			return
+		}
+		fail(err)
+	case cmd == "hook":
+		def("host", host, "claude-code") // the hooks installed before -host existed are Claude Code's
+	case cmd == "resume":
+		def("host", host, "codex")
+	}
 	cfg.Repo = *repo
+	cfg.Scope = scopeList(*scope) // the hook's scope gate and the import read the same scope
 	compileConfig()
 
 	switch cmd {
 	case "hook":
-		// Fail open: a hook error must never block or fail the host's turn.
-		if err := hook(readHookInput(os.Stdin), os.Args[2:], *dbPath, func(db *sql.DB, trigger string) error {
+		// Fail open: a hook error must never block or fail the host's turn. A panic exits 2, which both hosts read
+		// as "block" on UserPromptSubmit, PostToolUse and Stop, so it is caught and the hook exits 0.
+		defer func() {
+			if r := recover(); r != nil {
+				fmt.Fprintln(os.Stderr, "trace hook: internal error:", r)
+				os.Exit(0)
+			}
+		}()
+		if err := hook(readHookInput(os.Stdin), os.Args[2:], *dbPath, *host, *projects, func(db *sql.DB, trigger string) error {
 			return runImport(db, *projects, *history, *codexDir, *archive, *repo, *scope, trigger)
 		}, os.Stdout); err != nil {
 			fmt.Fprintln(os.Stderr, "trace hook:", err)
 		}
 		return
 	case "install", "uninstall":
-		hostSet := false // -host defaults to codex for resume; install only means Codex when asked for
-		fs.Visit(func(f *flag.Flag) { hostSet = hostSet || f.Name == "host" })
-		if cmd == "install" && hostSet && *host == "codex" {
+		// Nothing is written until the host is known: without -host, install used to mean Claude Code.
+		if !given["host"] {
+			fail(fmt.Errorf("%s needs -host claude-code or -host codex; nothing done", cmd))
+		}
+		first := func(projects, history, scope string) {
+			fmt.Println("first import...")
+			if ierr := importOnce(*dbPath, time.Minute, func(db *sql.DB) error {
+				return runImport(db, projects, history, *codexDir, *archive, *repo, scope, "install")
+			}); ierr != nil {
+				err = fmt.Errorf("the integration is installed, but the first import failed; run `trace import -home %s` again to retry:\n%w", home, ierr)
+			}
+		}
+		if *host == "codex" {
 			cwd, _ := os.Getwd()
-			if err = installCodex(home, cwd, *codexDir, os.Stdout); err != nil {
+			if cmd == "uninstall" {
+				err = uninstallCodex(home, cwd, *codexDir, *migrate, os.Stdout)
 				break
 			}
-			fmt.Println("first import (later ones run from trace resume)...")
-			err = importOnce(*dbPath, time.Minute, func(db *sql.DB) error {
-				return runImport(db, "", "", *codexDir, *archive, *repo, cwd, "install")
-			})
+			exe := ""
+			if *mode == "hooks" {
+				if exe, err = selfPath(); err != nil {
+					break
+				}
+			}
+			if err = installCodex(home, cwd, *codexDir, *mode, exe, *migrate, os.Stdout); err == nil {
+				first("", "", cwd)
+			}
 			break
 		}
 		exe := ""
@@ -94,15 +171,14 @@ func main() {
 				break
 			}
 		}
-		if err = install(claudeSettings(), exe, optionalHooks(cfg), os.Stdout); err != nil || cmd == "uninstall" {
-			break
+		if cmd == "install" && cfg.Claude != nil && !*cfg.Claude {
+			fmt.Println("note: this home's config.json says claude: false, so Claude Code will see this memory but its own sessions are not imported")
 		}
-		fmt.Println("first import (later ones run from the hooks)...")
-		err = importOnce(*dbPath, time.Minute, func(db *sql.DB) error {
-			return runImport(db, *projects, *history, *codexDir, *archive, *repo, *scope, "install")
-		})
+		if err = install(claudeSettings(), exe, home, optionalHooks(cfg), *migrate, os.Stdout); err == nil && cmd == "install" {
+			first(*projects, *history, *scope)
+		}
 	case "resume":
-		// For hosts that run no hooks (Codex Desktop): the agent runs this itself when a session starts.
+		// AGENTS.md mode: the agent runs this itself when a session starts, instead of a hook.
 		if ierr := importOnce(*dbPath, 5*time.Second, func(db *sql.DB) error {
 			return runImport(db, *projects, *history, *codexDir, *archive, *repo, *scope, "resume")
 		}); ierr != nil {
@@ -152,7 +228,7 @@ func main() {
 		// The rule card a Claude Code session in this folder gets, and why it holds what it holds.
 		cwd, _ := os.Getwd()
 		db, _ := openReadOnly(*dbPath)
-		text, note := sessionCard(db, cwd, roleFor(cwd, projectRole(cwd)))
+		text, note := sessionCard(db, cwd, "", roleFor(cwd, projectRole(cwd)), "claude-code") // a Codex card needs a session's rollout
 		if db != nil {
 			db.Close()
 		}
@@ -164,7 +240,7 @@ func main() {
 			fmt.Fprintln(os.Stderr, "note:", note)
 		}
 		if cfg.Reinject == nil {
-			fmt.Fprintln(os.Stderr, `re-injection is off; "reinject": {} in config.json turns it on (then run trace install)`)
+			fmt.Fprintln(os.Stderr, `re-injection is off; "reinject": {} in config.json turns it on (then run trace install -host claude-code)`)
 		}
 		fmt.Fprintf(os.Stderr, "card: %d characters, about %d tokens; it comes back every %.0f tokens of new context\n\n",
 			len(text), len(text)/4, cfg.Reinject.factor()*float64(len(text))/4)

@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bufio"
 	"bytes"
 	"crypto/sha256"
 	"database/sql"
@@ -19,7 +20,8 @@ import (
 // context grows: in Gamage's raw data (arXiv 2604.20911) a rule falls under 50% compliance once the context is about
 // 7 to 12 times its size. So TRACE re-injects a short card of the project's rules each time factor × the card's
 // tokens of new context have entered, measured from the host's own token counts in the transcript. Opt-in: without
-// "reinject" in config.json no hook is added for it. Claude Code only for now; Codex Desktop runs no hooks.
+// "reinject" in config.json no hook is added for it. Claude Code and the Codex CLI/TUI (hooks mode); Codex Desktop
+// runs no hooks.
 
 type reinjectCfg struct {
 	Factor float64 `json:"factor"` // new context, in card sizes, before the card comes again; 0: 7
@@ -214,17 +216,88 @@ func card(srcs []source, rules string, budget int) (text, note string) {
 		body = clip(body, budget)
 		note = strings.TrimPrefix(note+"; the card was cut at the budget", "; ")
 	}
-	exe, _ := os.Executable()
 	return "## Rules in force (re-injected by trace as the session grows; the files and the user's words are the source)\n\n" + body +
-		fmt.Sprintf("\nEverything said before: `%s search <words>`. Search before saying you cannot confirm something.\n", exe), note
+		fmt.Sprintf("\nEverything said before: `%s <words>`. Search before saying you cannot confirm something.\n", searchCmd()), note
 }
 
-// contextTokens is the context size of the last model call in a Claude Code transcript (its input, cached or not),
-// read from the file's tail. It lags one step: the tool result just returned is not in it yet.
-func contextTokens(transcript string) int {
-	f, err := os.Open(transcript)
+// codexInstructionsRe is the message a Codex rollout records with the AGENTS.md text it loaded (global and project,
+// after its trust check, overrides, fallback names and byte budget): "# AGENTS.md instructions for <cwd>", then the
+// text between <INSTRUCTIONS> and </INSTRUCTIONS>.
+var codexInstructionsRe = regexp.MustCompile(`(?s)\A# AGENTS\.md instructions for [^\n]*\n\n<INSTRUCTIONS>\n?(.*?)\n?</INSTRUCTIONS>\s*\z`)
+
+// codexSources are the instructions Codex loaded for the session whose rollout this is, read from the rollout, so they
+// are what Codex showed the model and not a re-run of its discovery (agents_md.rs), which depends on its trust state
+// and config layers. The last such message in the whole rollout wins: Codex records the instructions again when they
+// change or after a compaction. The store keeps how far the rollout was read and what it held, so each call reads
+// only what Codex appended since; a rollout shorter than that offset was replaced and is read again from the start.
+// Without a writable store (db nil or read-only) the whole rollout is read.
+func codexSources(db *sql.DB, rollout string) []source {
+	f, err := os.Open(rollout)
 	if err != nil {
-		return 0
+		return nil
+	}
+	defer f.Close()
+	st, err := f.Stat()
+	if err != nil {
+		return nil
+	}
+	var off int64
+	text := ""
+	if db != nil {
+		db.QueryRow("select offset, text from codex_instructions where rollout = ?", rollout).Scan(&off, &text)
+	}
+	if off > st.Size() {
+		off, text = 0, ""
+	}
+	r := bufio.NewReaderSize(io.NewSectionReader(f, off, st.Size()-off), 1<<20)
+	read := off
+	for {
+		line, err := r.ReadBytes('\n')
+		if err != nil { // a last line without its newline is still being written: read it next time
+			break
+		}
+		read += int64(len(line))
+		if t, ok := codexInstructions(line); ok {
+			text = t
+		}
+	}
+	if db != nil && read != off {
+		db.Exec("insert into codex_instructions(rollout, offset, text) values (?, ?, ?) on conflict(rollout) do update set offset = excluded.offset, text = excluded.text", rollout, read, text)
+	}
+	if strings.TrimSpace(text) == "" {
+		return nil
+	}
+	return []source{{"AGENTS.md (as Codex loaded it)", text}}
+}
+
+// codexInstructions returns the instructions text of one rollout line, when it is the AGENTS.md message.
+func codexInstructions(line []byte) (string, bool) {
+	if !bytes.Contains(line, []byte("AGENTS.md instructions for")) {
+		return "", false
+	}
+	var r struct {
+		Type    string `json:"type"`
+		Payload struct {
+			Type, Role string
+			Content    []struct{ Text string }
+		} `json:"payload"`
+	}
+	if json.Unmarshal(line, &r) != nil || r.Type != "response_item" || r.Payload.Type != "message" || r.Payload.Role != "user" {
+		return "", false
+	}
+	for _, c := range r.Payload.Content {
+		if m := codexInstructionsRe.FindStringSubmatch(c.Text); m != nil {
+			return m[1], true
+		}
+	}
+	return "", false
+}
+
+// fileTail is the last 512 KB of a file, split into lines (the first may be cut).
+func fileTail(path string) [][]byte {
+	f, err := os.Open(path)
+	if err != nil {
+		return nil
 	}
 	defer f.Close()
 	st, _ := f.Stat()
@@ -233,7 +306,39 @@ func contextTokens(transcript string) int {
 		off = 0
 	}
 	b, _ := io.ReadAll(io.NewSectionReader(f, off, st.Size()-off))
-	lines := bytes.Split(b, []byte("\n"))
+	return bytes.Split(b, []byte("\n"))
+}
+
+// contextTokens is the context size of the last model call in a transcript, read from the file's tail. It lags at
+// least one step: the tool result just returned is not in it yet, which a threshold tolerates.
+// Claude Code: the call's input, cached or not. Codex: last_token_usage.total_tokens of the last token_count event,
+// what Codex itself counts as in the window (tokens_in_context_window, protocol.rs); total_token_usage is the sum over
+// the session, and after a compaction last_token_usage is Codex's own estimate of what is left, so the drop resets
+// the baseline (reinjection). A token_count with no info (rate limits only) is skipped.
+func contextTokens(transcript, host string) int {
+	lines := fileTail(transcript)
+	if host == "codex" {
+		for i := len(lines) - 1; i >= 0; i-- {
+			if !bytes.Contains(lines[i], []byte(`"token_count"`)) {
+				continue
+			}
+			var e struct {
+				Type    string `json:"type"`
+				Payload struct {
+					Type string `json:"type"`
+					Info *struct {
+						Last struct {
+							Total int `json:"total_tokens"`
+						} `json:"last_token_usage"`
+					} `json:"info"`
+				} `json:"payload"`
+			}
+			if json.Unmarshal(lines[i], &e) == nil && e.Type == "event_msg" && e.Payload.Type == "token_count" && e.Payload.Info != nil && e.Payload.Info.Last.Total > 0 {
+				return e.Payload.Info.Last.Total
+			}
+		}
+		return 0
+	}
 	for i := len(lines) - 1; i >= 0; i-- {
 		if !bytes.Contains(lines[i], []byte(`"usage"`)) {
 			continue
@@ -321,12 +426,16 @@ func newLines(old, cur string) string {
 	return strings.Join(add, "\n")
 }
 
-// sessionCard builds the card for a session in cwd, with the user's rules from the store when it is readable.
-func sessionCard(db *sql.DB, cwd, role string) (string, string) {
-	home, _ := os.UserHomeDir()
+// sessionCard builds the card for a session of host in cwd (transcript is its transcript or rollout), with the user's
+// rules from this host's sessions in the store when it is readable.
+func sessionCard(db *sql.DB, cwd, transcript, role, host string) (string, string) {
 	var rules strings.Builder
 	if db != nil {
-		refusals(db, &rules, userName(), "claude-code", role)
+		refusals(db, &rules, userName(), host, role)
 	}
+	if host == "codex" {
+		return card(codexSources(db, transcript), rules.String(), cfg.Reinject.budget())
+	}
+	home, _ := os.UserHomeDir()
 	return card(claudeSources(cwd, home), rules.String(), cfg.Reinject.budget())
 }

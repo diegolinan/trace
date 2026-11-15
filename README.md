@@ -50,7 +50,7 @@ TRACE takes a different approach:
   - SubagentStart: tells helper agents that they are helpers, not the agent that started them.
   - PostToolUse, only when `checks` are configured: runs the project's checks after the tool calls they name, and shows a failure to the agent at once.
   - UserPromptSubmit and PostToolUse on every tool, only when `reinject` is configured: the rule card (below).
-- **Rule card (opt-in, experimental).** Two memory problems, one tool: across sessions, what happened and where the work stopped; within a session, which rules are in force. Agents stop attending to their instructions as context grows, long before it fills: in published measurements a rule fell below 50% compliance once the context was about 7 to 12 times its size. TRACE reads the size of the context from the host's own token counts in the transcript, and each time enough new context has entered (by default 7 times the card's size) it shows the agent a short card of the project's rules again. The card is built by code, never reworded: the instruction files whole when they fit (CLAUDE.md and what it imports, CLAUDE.local.md, auto memory's MEMORY.md), otherwise only the text you mark between `<!-- trace:rules -->` and `<!-- /trace:rules -->`; then what the user refused or set as a rule in the last 14 days, verbatim. When a file changes, only the new lines are shown. Subagents get no card. Whether this lowers violations is not yet measured; the checks log and `trace stats` are there to measure it. `trace rules` shows the card a session in the current folder would get.
+- **Rule card (opt-in, experimental).** Two memory problems, one tool: across sessions, what happened and where the work stopped; within a session, which rules are in force. Agents stop attending to their instructions as context grows, long before it fills: in published measurements a rule fell below 50% compliance once the context was about 7 to 12 times its size. TRACE reads the size of the context from the host's own token counts in the transcript, and each time enough new context has entered (by default 7 times the card's size) it shows the agent a short card of the project's rules again. The card is built by code, never reworded: the instruction files whole when they fit (CLAUDE.md and what it imports, CLAUDE.local.md, auto memory's MEMORY.md), otherwise only the text you mark between `<!-- trace:rules -->` and `<!-- /trace:rules -->`; then what the user refused or set as a rule in the last 14 days, verbatim. When a file changes, only the new lines are shown. Subagents get no card. Whether this lowers violations is not yet measured; the checks log and `trace stats` are there to measure it. `trace rules` shows the card a Claude Code session in the current folder would get (a Codex card depends on the session's rollout).
 - **Checks.** A rule the agent has in context still gets broken: agents stop attending to their instructions as a session grows. A rule a command can verify is better checked than repeated. Each check names the tools it follows (for example `Bash`), a pattern for the file or command (for example `git commit`), and a command; a non-zero exit is a violation, and its output reaches the agent before its next step. Every run is logged, passes too, so `trace stats` shows how often each rule breaks.
 - **Search.** Word and trigram search over everything stored.
 - **Secrets.** API keys, tokens and private keys are redacted before anything is stored. The raw copies are not redacted: they are byte copies of files already on the same disk.
@@ -58,12 +58,12 @@ TRACE takes a different approach:
 
 ## Install
 
-One command, no Go needed. Each installer downloads the latest release built for your machine, checks its SHA-256, and runs `trace install`.
+TRACE works with **Claude Code** and the **Codex CLI/TUI**. One command, no Go needed. Each installer first installs the binary (the latest release for your machine, its SHA-256 checked), then the integration for the agent you name in `TRACE_HOST`: `claude-code` or `codex`. Without it, nothing is downloaded. For `codex`, run it from the project folder and also set `TRACE_CODEX_MODE` to `hooks` or `agents` (see below).
 
 **macOS and Linux**
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/diegolinan/trace/main/install.sh | sh
+curl -fsSL https://raw.githubusercontent.com/diegolinan/trace/main/install.sh | TRACE_HOST=claude-code sh
 ```
 
 This puts `trace` in `~/.local/bin`. Set `TRACE_BIN_DIR` to choose another folder.
@@ -71,56 +71,93 @@ This puts `trace` in `~/.local/bin`. Set `TRACE_BIN_DIR` to choose another folde
 **Windows (PowerShell)**
 
 ```powershell
-irm https://raw.githubusercontent.com/diegolinan/trace/main/install.ps1 | iex
+$env:TRACE_HOST = 'claude-code'; irm https://raw.githubusercontent.com/diegolinan/trace/main/install.ps1 | iex
 ```
 
-This puts `trace.exe` in `%LOCALAPPDATA%\trace` and adds that folder to your user PATH. Set `TRACE_NO_PATH=1` to leave PATH alone.
+This puts `trace.exe` in `%LOCALAPPDATA%	race` and adds that folder to your user PATH. Set `TRACE_NO_PATH=1` to leave PATH alone.
+
+An existing binary that differs from the release is replaced only with `TRACE_UPDATE=1`. If the integration fails after the binary is in place, the installer says so and exits with an error.
 
 **With Go (1.27 or newer)**
 
 ```sh
 go install github.com/diegolinan/trace@latest
-trace install
+trace install -host claude-code
 ```
 
-### What `trace install` changes
+### Where the memory lives
 
-1. It adds five hooks to Claude Code's user settings (`~/.claude/settings.json`, or `$CLAUDE_CONFIG_DIR/settings.json`): SessionStart, Stop, PreCompact, SessionEnd and SubagentStart. PostToolUse is added when `checks` are configured, limited to the tools they name; with `reinject`, PostToolUse on every tool and UserPromptSubmit (each call takes about 0.1 s). Each one runs this binary with `hook`.
+Each memory is one folder, its home: `config.json`, `trace.db` and the raw copies. It is `-home <folder>` on any command, else `$TRACE_HOME`, else `~/.trace`. The installer writes the home's absolute path into what it installs, so the hooks and `AGENTS.md` always open that memory, whatever the folder they run from. Use separate homes for separate memories, for example one for Claude Code and one for a Codex project.
+
+### What `trace install -host claude-code` changes
+
+1. It adds five hooks to Claude Code's user settings (`~/.claude/settings.json`, or `$CLAUDE_CONFIG_DIR/settings.json`): SessionStart, Stop, PreCompact, SessionEnd and SubagentStart. PostToolUse is added when `checks` are configured, limited to the tools they name; with `reinject`, PostToolUse on every tool and UserPromptSubmit (each call takes about 0.1 s). Each one runs this binary with `hook -home <home>`.
    - Other settings and hooks are kept.
-   - The previous file is saved as `settings.json.trace-backup`.
-   - A settings file that is not valid JSON is never touched.
-2. It runs the first import of your existing transcripts into `~/.trace`.
+   - One TRACE home per settings file. If the file already runs TRACE with another home, nothing is written; uninstall that one first.
+   - Hooks from an install made before `-home` existed are taken over only with `-migrate`.
+   - The previous file is saved as `settings.json.trace-backup`. A settings file that is not valid JSON is never touched, and one that changes while TRACE writes it is left as the other writer left it.
+2. It runs the first import of your existing transcripts into the home. If that fails, the hooks stay installed and the command exits with an error that says how to retry.
+
+The hooks are user-wide, so they fire in every project. Outside the home's `scope` they do nothing: no import, no output. A session that started in scope keeps its memory after it `cd`s elsewhere.
 
 Then restart open Claude Code sessions: they read hooks when they start. To check that it works, use a session, then run `trace stats`. Each hook run shows under "last runs".
 
-Running `trace install` again is safe. After moving the binary, run it again to point the hooks at the new place.
+Running the same install again changes nothing. After moving the binary, run it again to point the hooks at the new place.
+
+### What `trace install -host codex` changes
+
+Run it from the project folder with one of two modes, one per home; there is no default, because they promise different things:
+
+- `-mode agents` asks Codex, through a block in that folder's `AGENTS.md`, to run `trace resume -home <home>` when a session starts. The block is marked with the home, so a later install or uninstall touches only its own. Codex runs it only because `AGENTS.md` asks; nothing checks that a session did.
+- `-mode hooks` registers TRACE's hooks in `$CODEX_HOME/hooks.json` (`~/.codex/hooks.json`), the same functions as for Claude Code, with the same `config.json`:
+  - SessionStart, every source: on a new, resumed, cleared or forked session it shows where the last one stopped; after a compaction, with `reinject`, the rule card. Codex runs it when the first prompt is sent, not when the TUI opens.
+  - Stop imports each finished turn. Interrupt (Codex only; Claude Code has no such event) imports a turn cut short. SessionEnd imports at a clean shutdown, best effort: Codex gives it 1 s by default and 3 s at most.
+  - SubagentStart tells a subagent it is not its parent.
+  - PostToolUse and UserPromptSubmit, as for Claude Code, only with `checks` or `reinject`. The card's instructions are the ones Codex itself loaded (its `AGENTS.md` chain, overrides and byte budget, after its trust check), read from the session's rollout; the context size is Codex's own count for the window, written after each model response, so the card can come one response late.
+  - Not possible in Codex: steering the compaction summary (Codex ignores PreCompact output, so PreCompact is not registered), and replacing a tool's output.
+  - No hook runs when Codex is killed or crashes, on either host: the last finished turn or interruption is what is stored, and the rest comes in at the next import.
+  - The hooks that give context set `additionalContextLimit` to 4,000 tokens, so Codex does not cut them at its 2,500-token default.
+  - They fire in every project, and outside the home's `scope` they do nothing; each call still starts trace (and, on Windows, PowerShell) before that check, so with `checks` or `reinject` every tool call of every Codex session pays it. Codex runs a hook only after you review and trust it in Codex; the installer never trusts it for you. On Windows the hook starts PowerShell with the call encoded, because Codex may run hooks through cmd or PowerShell; the installer prints the decoded script. That adds about 260 ms per call on the Windows machine it was measured on, and a failing exit code may arrive as 1 rather than its own value. Elsewhere the command is quoted for sh, bash and zsh (not fish).
+
+Both modes:
+
+- If the home has no `config.json`, it writes one that reads no Claude Code transcripts (`"claude": false`) and keeps the threads that ran in this folder. An existing config is used only if it already does that; a Claude Code memory is never turned into a Codex one.
+- Everything is checked before the first write: the other mode already installed for this home, another home's block or hooks, a `trace resume` request outside a block, or an older install's line (taken over only with `-migrate`) stop it. If the second write fails, the config it just wrote is removed again while it is still what it wrote.
+
+Status of hooks mode, on Windows: under Codex 0.169.0 (app server and `codex exec`, with a local test model server and throwaway homes), the hooks stay untrusted and do not run until trusted; once trusted, SessionStart and Stop run on a new session and on a resumed one after a restart, and the block reaches the request Codex sends to the model. The commands also ran through cmd and PowerShell 5.1 with paths holding spaces, an apostrophe and ñ. The other events (Interrupt, SessionEnd, SubagentStart, PostToolUse, UserPromptSubmit, SessionStart after clear and compact) are built on payloads captured from Codex 0.169.0 and on its source, and tested against the output Codex accepts; they then ran under Codex 0.169.0 with TRACE as the hook, in a throwaway profile with a local test model, and every event completed. In real use (Windows, Codex 0.169.0 engine behind a 0.167.2 TUI, a real model), a phrase sent in one session was stored at Stop and, after `/clear`, the new session's model gave it back with no search and no tool call. Reported checked by the author on Windows (2026-11-14): Ctrl-C and /quit in the TUI, shell and patch tool calls, other Codex versions and PowerShell 7. Not checked yet: macOS and Linux, and a compaction with a real model.
+
+A Codex thread reads `hooks.json` when it starts, so hooks installed while a session is open do not show in its `/hooks` until it is reopened (`/quit`, then resume, which then offers the new hooks for review).
 
 ### Uninstall
 
 ```sh
-trace uninstall      # removes TRACE's hooks, and only those
+trace uninstall -host claude-code   # removes this home's hooks, and only those
+trace uninstall -host codex -mode hooks|agents       # removes this home's hooks from hooks.json and its block from AGENTS.md in the current folder
 ```
 
-Then delete the binary, and `~/.trace` if you also want the data gone.
+The data stays in the home. Then delete the binary, and the home if you also want the data gone.
 
 ## Commands
 
 ```
-trace install                add the hooks to Claude Code's user settings and do the first import
-trace install -host codex    a Codex-only memory for the current folder (see Status)
-trace uninstall              remove the hooks (the data stays in ~/.trace)
-trace import                 read what is new in every transcript in scope; safe to run any time
-trace hook                   for host hooks; never fails the host's turn
-trace resume                 where the last session in this checkout stopped, for agents without hooks
-                             [-host codex|claude-code]
-trace search <words>         [-n 10] [-who user|assistant|subagent] [-all] [-since 2026-11-01]
-trace rules                  the rule card a session in this folder would get, and why
-trace stats                  counts, last runs, checks, rule cards, hook output that never reached the session
+trace install -host claude-code   add the hooks to Claude Code's user settings and do the first import
+trace install -host codex -mode hooks|agents   a Codex memory for the current folder (no default mode)
+trace uninstall -host <agent>     remove what install added for this home (the data stays)
+trace import                      read what is new in every transcript in scope; safe to run any time
+trace hook                        for host hooks; never fails the host's turn
+trace resume                      where the last session in this checkout stopped, for agents without hooks
+                                  [-host codex|claude-code]
+trace search <words>              [-n 10] [-who user|assistant|subagent] [-all] [-since 2026-11-01]
+trace rules                       the rule card a session in this folder would get, and why
+trace stats                       counts, last runs, checks, rule cards, hook output that never reached the session
+
+-home <folder>                    on any command: the memory to use
+-migrate                          install, uninstall: take over what an install before -home wrote
 ```
 
 ## Configuration
 
-TRACE's home is `$TRACE_HOME`, or `~/.trace` when that is not set. Settings are read from `<home>/config.json`. Every setting is optional, and without the file the defaults apply. A file that is not valid JSON stops every command except `hook`, which does nothing, rather than run on the defaults (the default scope is every project). A UTF-8 BOM is accepted.
+TRACE's home is `-home`, else `$TRACE_HOME`, else `~/.trace`. Settings are read from `<home>/config.json`. Every setting is optional, and without the file the defaults apply. A file that is not valid JSON stops every command except `hook`, which does nothing, rather than run on the defaults (the default scope is every project). A UTF-8 BOM is accepted.
 
 | setting | meaning | default |
 |---|---|---|
@@ -163,17 +200,10 @@ A check runs after a tool call when `on` matches the tool's name (a regexp, as i
 }
 ```
 
-After adding, changing or removing checks or `reinject`, run `trace install` again: the hooks only listen to what the configuration needs.
+After adding, changing or removing checks or `reinject`, run `trace install` again (`-host claude-code`, or `-host codex -mode hooks`; Codex then asks you to trust the changed hooks): the hooks only listen to what the configuration needs. On Codex a check's `on` matches Codex's tool names, which are not yet verified for shell commands and patches (a fixture in Codex's source names a shell call `Bash`, with the command in `tool_input`); checks on Codex are built but have not run on a real Codex tool call.
 
 ## Status
 
 - **Used daily on Windows.** CI runs the tests on Linux, macOS and Windows; the hooks have only been used for real on Windows.
-- **Codex is supported, without hooks.** Codex Desktop does not run hooks ([openai/codex#21639](https://github.com/openai/codex/issues/21639)), so a Codex session gets its "where you stopped" block by running `trace resume` itself, asked by a line in the project's `AGENTS.md`. For a Codex-only memory, run this from the project folder:
-
-  ```
-  TRACE_HOME=~/.trace-codex trace install -host codex                  # macOS, Linux
-  $env:TRACE_HOME = "$HOME\.trace-codex"; trace install -host codex     # Windows PowerShell
-  ```
-
-  It writes a new `config.json` there (`"claude": false`, scope: this folder), adds the `trace resume` line to `AGENTS.md`, and imports. It never touches Claude Code's settings and never overwrites a config. If no thread ran in this folder, it lists the folders they did run in, to put in `scope`. Leave out `TRACE_HOME` when this machine has no Claude Code memory in `~/.trace`.
+- **Claude Code and Codex CLI/TUI.** Codex Desktop is not supported. Codex gets its block through `AGENTS.md` or through Codex hooks (see Install); hooks mode is checked on Windows with Codex 0.169.0 only.
 - **The marks are experimental** and not used by the hooks.
