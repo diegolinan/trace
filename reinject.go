@@ -217,7 +217,7 @@ func card(srcs []source, rules string, budget int) (text, note string) {
 		note = strings.TrimPrefix(note+"; the card was cut at the budget", "; ")
 	}
 	return "## Rules in force (re-injected by trace as the session grows; the files and the user's words are the source)\n\n" + body +
-		fmt.Sprintf("\nEverything said before: `%s <words>`. Search before saying you cannot confirm something.\n", searchCmd()), note
+		fmt.Sprintf("\nEverything said before: `%s <words>`. Search before saying you cannot confirm something; if nothing comes up, search again in the other language and with synonyms.\n", searchCmd()), note
 }
 
 // codexInstructionsRe is the message a Codex rollout records with the AGENTS.md text it loaded (global and project,

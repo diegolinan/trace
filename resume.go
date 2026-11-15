@@ -92,7 +92,7 @@ func resumeBlock(db *sql.DB, sid, source, role, host string, w io.Writer) error 
 		300); err != nil {
 		return err
 	}
-	fmt.Fprintf(w, "Everything else said or done: `%s <words>` (-all widens it). Search before saying you cannot confirm something.\n", searchCmd())
+	fmt.Fprintf(w, "Everything else said or done: `%s <words>` (-all widens it). Search before saying you cannot confirm something; if nothing comes up, search again in the other language and with synonyms.\n", searchCmd())
 	return nil
 }
 
