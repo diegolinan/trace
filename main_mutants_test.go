@@ -140,7 +140,11 @@ func TestInstallCodexHooksFirstImport(t *testing.T) {
 		t.Fatalf("install: exit %d\n%s\n%s", code, out, errOut)
 	}
 	b, err := os.ReadFile(filepath.Join(codexDir, "hooks.json"))
-	if err != nil || !strings.Contains(string(b), filepath.ToSlash(exe)) {
+	want := exe // install writes the path resolved, which on Windows also expands 8.3 short names (C:\Users\RUNNER~1)
+	if real, rerr := filepath.EvalSymlinks(exe); rerr == nil {
+		want = real
+	}
+	if err != nil || !strings.Contains(string(b), filepath.ToSlash(want)) {
 		t.Fatalf("hooks.json does not run this binary (%v): %s", err, b)
 	}
 	if !exists(filepath.Join(root, "trace", "trace.db")) {
