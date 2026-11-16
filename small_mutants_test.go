@@ -444,7 +444,7 @@ func TestRedactionMendRunsOnce(t *testing.T) {
 }
 
 // The compressed-key mend runs once per store (SPEC I3): a store at version 1 keeps its rows as stored and moves on
-// to version 2.
+// to the current version, 3.
 func TestZstMendRunsOnce(t *testing.T) {
 	dir := t.TempDir()
 	db, err := openDB(filepath.Join(dir, "m.db"))
@@ -462,8 +462,8 @@ func TestZstMendRunsOnce(t *testing.T) {
 	if n := count(t, db, "select count(*) from event where uuid = ?", key); n != 1 {
 		t.Errorf("a mended store's row was mended again: %d rows keep the key", n)
 	}
-	if n := count(t, db, "pragma user_version"); n != 2 {
-		t.Errorf("user_version %d, want 2", n)
+	if n := count(t, db, "pragma user_version"); n != 3 {
+		t.Errorf("user_version %d, want 3", n)
 	}
 }
 

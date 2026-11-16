@@ -33,6 +33,15 @@ type config struct {
 	Checks []check `json:"checks"`
 	// Reinject turns on the rule card (reinject.go); absent, nothing is re-injected and no hook is added for it.
 	Reinject *reinjectCfg `json:"reinject"`
+	// NotTypedByUser are periods when someone else typed in the user's terminal (SPEC I10).
+	NotTypedByUser []period `json:"not_typed_by_user"`
+}
+
+// period is a span of UTC dates, both included, with a note saying why.
+type period struct {
+	From string `json:"from"`
+	To   string `json:"to"`
+	Note string `json:"note"`
 }
 
 type namedRe struct {

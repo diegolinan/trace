@@ -521,7 +521,7 @@ func (t *transcriptRead) ensureSession(r *row) error {
 	if !t.sub {
 		wrole = roleFor(r.Cwd, t.role)
 	}
-	if strings.HasPrefix(r.Entrypoint, "sdk") && t.role != "subagent" {
+	if programEntry(r.Entrypoint) && t.role != "subagent" {
 		wrole = "worker"
 	}
 	if _, err := t.tx.Exec(`insert or ignore into session(id, host, role, parent_id, cwd, branch_first, branch_last, version_first, started_at, ended_at, excluded)

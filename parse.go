@@ -130,10 +130,7 @@ func boolp(b bool) *bool { return &b }
 // parseRow maps one transcript row to events. sub is true for a subagent's own transcript, where the
 // user-side prompt was written by the parent agent, not by the user.
 func parseRow(r *row, sub bool) parsed {
-	rp := rowParser{asker: "user", answerer: "assistant"}
-	if sub {
-		rp.asker, rp.answerer = "assistant", "subagent"
-	}
+	rp := sides(sub, r.Entrypoint)
 	switch r.Type {
 	case "ai-title":
 		rp.p.title = r.AiTitle
@@ -151,6 +148,24 @@ func parseRow(r *row, sub bool) parsed {
 		rp.attachment(r)
 	}
 	return rp.p
+}
+
+// sides is who speaks on each side of a transcript: in a subagent's, the parent agent asks; in a session a program
+// started, the program does (SPEC I9); else the user.
+func sides(sub bool, entrypoint string) rowParser {
+	switch {
+	case sub:
+		return rowParser{asker: "assistant", answerer: "subagent"}
+	case programEntry(entrypoint):
+		return rowParser{asker: "program", answerer: "assistant"}
+	}
+	return rowParser{asker: "user", answerer: "assistant"}
+}
+
+// programEntry says a program started the session: `claude -p` and the SDKs (sdk-cli, sdk-ts, sdk-py) or an MCP
+// client. The terminal, the editors and the desktop app are a person typing.
+func programEntry(entrypoint string) bool {
+	return strings.HasPrefix(entrypoint, "sdk") || entrypoint == "mcp"
 }
 
 // rowParser collects one row's events; asker and answerer are who speaks on each side of this transcript.

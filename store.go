@@ -188,7 +188,44 @@ func migrate(db *sql.DB) error {
 	if err := mendZstKeys(db); err != nil {
 		return err
 	}
-	return mendRedaction(db)
+	if err := mendRedaction(db); err != nil {
+		return err
+	}
+	return mendWorkerPrompts(db)
+}
+
+// mendWorkerPrompts runs once per store (user_version 2 to 3): what a program wrote in a session it started was
+// stored as the user's before SPEC I9. MCP-started sessions of that time are not known as such and stay as they are.
+func mendWorkerPrompts(db *sql.DB) error {
+	var v int
+	if err := db.QueryRow("pragma user_version").Scan(&v); err != nil || v >= 3 {
+		return err
+	}
+	tx, err := db.Begin()
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	if _, err := tx.Exec(`update event set speaker = 'program' where speaker = 'user'
+		and session_id in (select id from session where host = 'claude-code' and role = 'worker')`); err != nil {
+		return err
+	}
+	if _, err := tx.Exec("pragma user_version = 3"); err != nil {
+		return err
+	}
+	return tx.Commit()
+}
+
+// markNotTypedByUser stores as the program's what the user's sessions hold from the periods config.json says
+// someone else typed in the user's terminal (SPEC I10). It runs on every import, so a period added later applies.
+func markNotTypedByUser(db *sql.DB) error {
+	for _, p := range cfg.NotTypedByUser {
+		if _, err := db.Exec(`update event set speaker = 'program' where speaker = 'user' and substr(ts, 1, 10) between ? and ?
+			and session_id in (select id from session where role <> 'subagent')`, p.From, p.To); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 // addColumns adds the columns added after the first import; "duplicate column" means the store already has them.

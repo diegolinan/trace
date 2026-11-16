@@ -481,6 +481,9 @@ func runImport(db *sql.DB, projects, history, codex, archive, scope, trigger str
 	if err := activeTime(db, im.touched); err != nil {
 		errs = append(errs, err.Error())
 	}
+	if err := markNotTypedByUser(db); err != nil {
+		errs = append(errs, err.Error())
+	}
 	msg := strings.Join(errs, "\n")
 	db.Exec("update ingest_run set ended_at = ?, files_seen = ?, events_added = ?, error = nullif(?, '') where id = ?",
 		time.Now().UTC().Format(time.RFC3339), len(files), im.added, msg, runID)

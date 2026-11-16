@@ -86,6 +86,14 @@ folder. TRACE behaves the same with it or without it.
 - **I8.** When the import cannot write a transcript's raw copy, its session names or the rule-file texts it
   loaded, that file's import fails and keeps nothing of it, so the next run reads it again. Tests:
   `TestRawCopyFailureKeepsNothing`, `TestNameStoreFailureKeepsNothing`, `TestRuleTextStoreFailureKeepsNothing`.
+- **I9.** A prompt in a Claude Code session a program started (entrypoint `sdk-*` or `mcp`) was written by that
+  program, not typed by the user: it is stored with speaker `program`, so it is never shown or re-injected as the
+  user's words. A store made before this gets the same correction once. Tests: `TestProgramPromptsAreNotTheUsers`,
+  `TestOldWorkerPromptsBecomeProgram`.
+- **I10.** `not_typed_by_user` in config.json lists periods, as UTC dates from and to (both included), when someone
+  or something other than the user typed in the user's terminal. A prompt of a main session inside one, from a
+  transcript or from the prompt log, is stored with speaker `program`; every import applies the list again. Test:
+  `TestNotTypedByUserPeriod`.
 
 ## E. Wrong input says so
 
