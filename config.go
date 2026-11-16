@@ -39,9 +39,10 @@ type config struct {
 
 // period is a span of UTC dates, both included, with a note saying why.
 type period struct {
-	From string `json:"from"`
-	To   string `json:"to"`
-	Note string `json:"note"`
+	From    string `json:"from"`
+	To      string `json:"to"`
+	Session string `json:"session"`
+	Note    string `json:"note"`
 }
 
 type namedRe struct {

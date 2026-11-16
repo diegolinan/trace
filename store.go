@@ -233,8 +233,9 @@ func mendWorkerPrompts(db *sql.DB) error {
 // someone else typed in the user's terminal (SPEC I10). It runs on every import, so a period added later applies.
 func markNotTypedByUser(db *sql.DB) error {
 	for _, p := range cfg.NotTypedByUser {
-		if _, err := db.Exec(`update event set speaker = 'program' where speaker = 'user' and substr(ts, 1, 10) between ? and ?
-			and session_id in (select id from session where role <> 'subagent')`, p.From, p.To); err != nil {
+		if _, err := db.Exec(`update event set speaker = 'program' where speaker = 'user' and (session_id = ?
+			or substr(ts, 1, 10) between ? and ? and session_id in (select id from session where role <> 'subagent'))`,
+			p.Session, p.From, p.To); err != nil {
 			return err
 		}
 	}

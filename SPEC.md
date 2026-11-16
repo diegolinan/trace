@@ -92,8 +92,10 @@ folder. TRACE behaves the same with it or without it.
   `TestOldWorkerPromptsBecomeProgram`.
 - **I10.** `not_typed_by_user` in config.json lists periods, as UTC dates from and to (both included), when someone
   or something other than the user typed in the user's terminal. A prompt of a main session inside one, from a
-  transcript or from the prompt log, is stored with speaker `program`; every import applies the list again. Test:
-  `TestNotTypedByUserPeriod`.
+  transcript or from the prompt log, is stored with speaker `program`; every import applies the list again. An entry
+  may name a `session` instead of dates: what seems typed by the user in that one session is stored the same way,
+  and the user's words in other sessions on the same days stay theirs. Tests: `TestNotTypedByUserPeriod`,
+  `TestNotTypedByUserSession`.
 - **I11.** A Codex thread a program started (`source` `exec` or `mcp` in its session_meta) stores its user messages
   with speaker `program`, as I9 does for Claude Code. Test: `TestCodexProgramThreadsAreNotTheUsers`.
 - **I12.** A Claude Code prompt the user sent by accepting a suggestion the model wrote (`promptSource`
@@ -130,6 +132,52 @@ sees a board, only an agent that remembers and asks.
 - **T4.** On the first user prompt after a task's time, the prompt hook adds one line naming the task, its time
   and the words that asked for it. Each task is announced once; an announced task stays open until closed. Test:
   `TestDueTaskAnnouncedOnceAtNextPrompt`.
+
+## A. Alarm
+
+The alarm brings a task back at its time even when nobody is typing: at the time, it writes a message into a live
+agent session, and that message opens a turn and carries the order. One core serves every program; only the
+deliverer, which writes into one program's live session, is per program. Agreed with Diego on 2026-11-16 after two
+live tests per program (`system/research/2026-11-16_trace-tasks/clock-prior-art.md`).
+
+- **A1.** One alarm per store. `trace alarm` sleeps until the next open task with a time that has not fired, fires
+  it, and rereads the store when a task is added, closed or moved. A second `trace alarm` on the same store exits at
+  once and fires nothing. The start hook and `trace task add -at` start the alarm when it is not running; started
+  twice in a row, one runs. With no open task left that has a time, the alarm exits. Tests:
+  `TestAlarmRunsOnce`, `TestTaskAddStartsAlarm`, `TestAlarmExitsWhenNothingIsDue`.
+- **A2.** A task fires once. Firing claims the task (when, deliverer, target session) in one store transaction; a
+  fired task is never fired again by any path: the alarm, the prompt hook (T4) or the start block. T4's line counts
+  as a fire. Test: `TestTaskFiresOnce`.
+- **A3.** Times are stored in UTC with the zone they were given in. A task whose time passed while no alarm ran
+  (sleep, reboot, no session) fires once when the alarm next runs, and its message says how late it is. Test:
+  `TestLateTaskFiresOnceSayingHowLate`.
+- **A4.** The message is an order, not a time. It names the task's id, its time and the words that asked for it,
+  and tells the agent: if it is in the middle of something, finish it, then end the reply by telling the user;
+  then run `trace task told <id>`; close the task only after asking the user. Test: `TestAlarmMessageIsAnOrder`.
+- **A5.** It wakes one session: the live session where the asking message was written; if that one is gone, the
+  live session used last whose folder is inside the folder tree this TRACE serves. Never a session outside that
+  tree, even if it is the only one open; never more than one. Tests: `TestAlarmWakesAskingSessionElseLastInTree`,
+  `TestAlarmNeverWakesOutsideTree`.
+- **A6.** Deliverers. Claude Code: the session's native inbox (live-session registry, its peer key, the
+  cross-session message envelope). Codex: the `codex app-server` daemon through that daemon's own executable
+  (`app-server proxy`), `turn/start` on an idle thread, `turn/steer` on a running turn. Code that knows a program
+  lives only in its deliverer. Tests (fake inbox, fake daemon): `TestClaudeDelivererWritesPeerMessage`,
+  `TestCodexDelivererStartsIdleSteersBusy`.
+- **A7.** When no live session qualifies, or delivery fails, the task stays fired and not told: the start block
+  lists it as late and the prompt hook names it on the next prompt. A failed delivery is recorded with its reason,
+  and `trace stats` shows each deliverer's last failure, so an update that breaks a deliverer shows up. Test:
+  `TestFailedDeliveryFallsBackAndIsReported`.
+- **A8.** Told. `trace task told <id>` records that the user was told (when, which session). While a task fired into
+  a session is not told, that session's stop hook keeps the turn going and names the task (Claude Code: exit 2 with
+  the reason on stderr; Codex: `decision: "block"` with a `reason`). When the hook already kept the turn going once
+  (`stop_hook_active`), it lets the turn end, so it cannot loop. Tests: `TestStopHookHoldsUntilTold`,
+  `TestStopHookDoesNotLoop`.
+- **A9.** What a deliverer sends is not the user's words. Each sent message is recorded (session, time, hash of
+  the text); the import stores the matching user message as speaker `program`, kind `alarm`, on both programs
+  (Codex records it as a plain user message, with no mark of its own). Test: `TestAlarmMessageStoredAsProgram`.
+
+Not decided yet: a notification to the user's desktop or phone when no session is open; starting an agent
+(`claude -p`, `codex exec`) for tasks the agent should do alone; an MCP entry point for adding tasks.
 
 ## C. Checks
 

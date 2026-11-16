@@ -114,6 +114,21 @@ func TestAcceptedSuggestionIsNotTheUsersWords(t *testing.T) {
 }
 
 // SPEC I10: in a configured period, prompts typed in the user's terminal were someone else's.
+func TestNotTypedByUserSession(t *testing.T) {
+	old := cfg
+	t.Cleanup(func() { cfg = old })
+	cfg.NotTypedByUser = []period{{Session: "driven", Note: "a test that typed into its own thread"}}
+	f := newMutFix(t)
+	f.write(t, "driven.jsonl", mutLine(mutUser("d1", 0, "lo escribió un programa", "entrypoint", "cli")))
+	f.write(t, "mine.jsonl", mutLine(mutUser("m1", 0, "lo escribí yo, el mismo día", "entrypoint", "cli")))
+	f.importAll(t)
+	for id, want := range map[string]string{"driven": "program", "mine": "user"} {
+		if got := mutStr(t, f.db, "select speaker from event where session_id = ? and kind = 'prompt'", id); got != want {
+			t.Errorf("%s prompt speaker = %s, want %s", id, got, want)
+		}
+	}
+}
+
 func TestNotTypedByUserPeriod(t *testing.T) {
 	old := cfg
 	t.Cleanup(func() { cfg = old })
