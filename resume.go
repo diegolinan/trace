@@ -61,10 +61,13 @@ func resumeBlock(db *sql.DB, sid, source, role, host, cwd string, w io.Writer) e
 	b.section("Pinned by "+user+" (\"remember this\"), any session",
 		`select e.ts, 'pin', e.text from anchor a join event e on e.id = a.event_id where a.type = 'pin' order by e.ts desc limit 5`,
 		300)
+	if b.err == nil {
+		b.err = taskSection(db, w, user)
+	}
 	if b.err != nil {
 		return b.err
 	}
-	fmt.Fprintf(w, "Everything else said or done: %s (-all widens it). Search before saying you cannot confirm something; if nothing comes up, search again in the other language and with synonyms.\n", searchCmd())
+	fmt.Fprintf(w, "Everything else said or done: %s (-all widens it). Search before saying you cannot confirm something; if nothing comes up, search again in the other language and with synonyms.\n", traceCmd("search", " <words>"))
 	return nil
 }
 
@@ -161,27 +164,28 @@ func (b *blockWriter) section(title, q string, each int, args ...any) {
 // activeHome is the TRACE home this run uses (main sets it).
 var activeHome string
 
-// searchCmd is the search an agent is told to run, as the text it reads: this binary, with -home when the memory is
-// not the default one, so the agent of a second memory does not search (and import into) the default store.
-func searchCmd() string {
+// traceCmd is a trace command an agent is told to run, verb then rest, as the text it reads: this binary, with -home
+// when the memory is not the default one, so the agent of a second memory does not search (and import into) the
+// default store.
+func traceCmd(verb, rest string) string {
 	exe, _ := os.Executable()
 	home := ""
 	if activeHome != "" && !sameHome(activeHome, traceHome()) {
 		home = activeHome
 	}
-	return searchLine(shellPath(exe), home)
+	return cmdLine(shellPath(exe), home, verb, rest)
 }
 
-// searchLine is the search command in backticks. A path that stayed quoted on Windows is not a command in
-// PowerShell, so that form is given beside it (SPEC S2).
-func searchLine(exe, home string) string {
-	cmd := exe + " search"
+// cmdLine is the command in backticks; rest starts with a space when there is one. A path that stayed quoted on
+// Windows is not a command in PowerShell, so that form is given beside it (SPEC S2).
+func cmdLine(exe, home, verb, rest string) string {
+	cmd := exe + " " + verb
 	if home != "" {
 		cmd += ` -home "` + home + `"`
 	}
-	line := "`" + cmd + " <words>`"
+	line := "`" + cmd + rest + "`"
 	if runtime.GOOS == "windows" && strings.HasPrefix(exe, `"`) {
-		line += " (in PowerShell: `& " + cmd + " <words>`)"
+		line += " (in PowerShell: `& " + cmd + rest + "`)"
 	}
 	return line
 }

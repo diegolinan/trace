@@ -172,8 +172,8 @@ func TestStartBlockSearchNamesOnlyAnotherHome(t *testing.T) {
 // A path that needs no quotes is a command as written in every shell: no PowerShell form beside it (SPEC S2).
 func TestSearchLineUnquotedPathAlone(t *testing.T) {
 	exe := filepath.Join(t.TempDir(), "trace.exe")
-	if got, want := searchLine(exe, ""), "`"+exe+" search <words>`"; got != want {
-		t.Errorf("searchLine = %s, want %s", got, want)
+	if got, want := cmdLine(exe, "", "search", " <words>"), "`"+exe+" search <words>`"; got != want {
+		t.Errorf("cmdLine = %s, want %s", got, want)
 	}
 }
 

@@ -14,8 +14,8 @@ func TestGDSearchLineQuotedPathFormPerShell(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		want += " (in PowerShell: `& " + exe + " search <words>`)"
 	}
-	if got := searchLine(exe, ""); got != want {
-		t.Errorf("on %s searchLine = %s, want %s", runtime.GOOS, got, want)
+	if got := cmdLine(exe, "", "search", " <words>"); got != want {
+		t.Errorf("on %s cmdLine = %s, want %s", runtime.GOOS, got, want)
 	}
 }
 

@@ -15,6 +15,7 @@
 //	trace search <words>    [-n 10] [-who user|assistant|subagent] [-all] [-since 2026-11-01]
 //	trace rules             the rule card a session in this folder gets (re-injection, opt-in)
 //	trace stats
+//	trace task add -text "<what>" [-at "YYYY-MM-DD HH:MM"] | done <id> | drop <id> | list   the user's tasks
 package main
 
 import (
@@ -30,7 +31,7 @@ import (
 
 func main() {
 	if len(os.Args) < 2 {
-		fmt.Fprintln(os.Stderr, "usage: trace install -host claude-code|codex | uninstall -host ... | import | restore | hook | resume | search <words> | rules | stats")
+		fmt.Fprintln(os.Stderr, "usage: trace install -host claude-code|codex | uninstall -host ... | import | restore | hook | resume | search <words> | rules | stats | task add|done|drop|list")
 		os.Exit(2)
 	}
 	cmd := os.Args[1]
@@ -58,6 +59,7 @@ func main() {
 // opts are one command's settings: its flags, with what config.json and the defaults fill in for the flags not given.
 type opts struct {
 	cmd, home, dbPath, projects, history, codexDir, host, notID, archive, scope, trigger, who, since, mode string
+	text, at                                                                                               string
 	n                                                                                                      int
 	all, migrate                                                                                           bool
 	given                                                                                                  map[string]bool
@@ -83,11 +85,17 @@ func parseArgs(cmd string, args []string) (opts, error) {
 	if cmd == "hook" {
 		onErr = flag.ContinueOnError
 	}
+	n := 0
+	if cmd == "task" {
+		n = min(1, len(args)) // flag parsing stops at the first word, so the subcommand comes off first
+	}
+	sub := args[:n:n] // capped, so appending to it never writes over args
+	args = args[n:]
 	fs := o.flagSet(onErr)
 	if err := fs.Parse(args); err != nil {
 		return o, usageError{err} // only a hook gets here (ContinueOnError)
 	}
-	o.args = fs.Args()
+	o.args = append(sub, fs.Args()...)
 	o.given = map[string]bool{}
 	fs.Visit(func(f *flag.Flag) { o.given[f.Name] = true })
 	if err := o.resolveHome(); err != nil {
@@ -126,6 +134,8 @@ func (o *opts) flagSet(onErr flag.ErrorHandling) *flag.FlagSet {
 	fs.BoolVar(&o.all, "all", false, "also search thinking, tool results, summaries, injected text and excluded sessions")
 	fs.StringVar(&o.since, "since", "", "only events on or after this date (YYYY-MM-DD)")
 	fs.StringVar(&o.mode, "mode", "", "install -host codex (required): agents (a block in AGENTS.md) or hooks (Codex hooks in CODEX_HOME/hooks.json)")
+	fs.StringVar(&o.text, "text", "", "task add: what the task is")
+	fs.StringVar(&o.at, "at", "", "task add: when, as YYYY-MM-DD HH:MM in local time or RFC 3339")
 	fs.BoolVar(&o.migrate, "migrate", false, "install, uninstall: take over TRACE hooks that name no home (installed before -home existed)")
 	fs.String("repo", "", "ignored: kept so hooks written for an older TRACE still run (SPEC G5)")
 	return fs
@@ -198,6 +208,7 @@ var commands = map[string]func(opts) error{
 	"search":    cmdSearch,
 	"stats":     cmdStats,
 	"rules":     cmdRules,
+	"task":      cmdTask,
 }
 
 // runHook answers a host hook. Fail open: a hook error must never block or fail the host's turn.

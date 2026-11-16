@@ -3,6 +3,7 @@ package main
 import (
 	"database/sql"
 	"encoding/json"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -89,6 +90,10 @@ func TestNoSecretInTheStore(t *testing.T) {
 	now := time.Now()
 	reinjection(db, "s9", 1000, text, 7, now)
 	reinjection(db, "s9", 1000000, text, 7, now)
+	// A task the agent writes down (task).
+	if err := taskAdd(db, "rotate "+tok, time.Time{}, io.Discard); err != nil {
+		t.Fatal(err)
+	}
 	if secretScan(t, db, tok) == 0 {
 		t.Error("no redacted text was stored at all: the paths above did not write")
 	}

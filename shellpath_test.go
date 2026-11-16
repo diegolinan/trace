@@ -24,7 +24,7 @@ func TestShellPath(t *testing.T) {
 		t.Errorf("shellPath(%q) = %q: neither a path without a space nor the quoted path", exe, got)
 	}
 	// The line an agent reads: one form per shell when the path stays quoted on Windows.
-	line := searchLine(got, "")
+	line := cmdLine(got, "", "search", " <words>")
 	if strings.HasPrefix(got, `"`) && runtime.GOOS == "windows" && !strings.Contains(line, "`& "+got+" search <words>`") {
 		t.Errorf("no PowerShell form beside the quoted path: %s", line)
 	}

@@ -139,6 +139,19 @@ create table if not exists check_run (
   ok integer not null,
   output text
 );
+-- The user's tasks (SPEC T): asked_event and closed_event are the typed messages that asked for and closed each one.
+-- No foreign key: an event can be removed (mendZstKeys) and its task must stay.
+create table if not exists task (
+  id integer primary key,
+  text text not null,
+  due text,
+  asked_event integer,
+  created_at text not null,
+  closed_at text,
+  closed_how text,
+  closed_event integer,
+  announced_at text
+);
 create virtual table if not exists event_fts using fts5(text, content='event', content_rowid='id', tokenize='unicode61 remove_diacritics 2');
 create virtual table if not exists event_tri using fts5(text, content='event', content_rowid='id', tokenize='trigram');
 create trigger if not exists event_ai after insert on event begin

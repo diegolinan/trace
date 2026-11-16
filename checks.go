@@ -122,12 +122,16 @@ func anyCheckApplies(in hookInput, cs []check) bool {
 	return false
 }
 
-// ruleHook answers PostToolUse and UserPromptSubmit: the failed checks first, then the rule card when it is due
-// (reinject.go), as one output under Claude Code's 10,000-character cap. Checks run in the session's own folder.
+// ruleHook answers PostToolUse and UserPromptSubmit: the tasks due (a prompt only), the failed checks, then the rule
+// card when it is due (reinject.go), as one output under Claude Code's 10,000-character cap. Checks run in the session's
+// own folder.
 func ruleHook(in hookInput, role, host, dbPath string, checks bool, w io.Writer) error {
 	store := &lazyStore{path: dbPath}
 	defer store.close()
 	var parts []string
+	if text := dueTasks(in, store); text != "" {
+		parts = append(parts, text)
+	}
 	if checks && in.Event == "PostToolUse" && anyCheckApplies(in, cfg.Checks) {
 		// In the session's own folder (SPEC G6), not a repository root above it.
 		if text := runChecks(store.open(), in, cfg.Checks, runShell); text != "" {

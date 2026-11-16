@@ -153,6 +153,11 @@ trace resume                      where the last session in this folder stopped,
 trace search <words>              [-n 10] [-who user|assistant|subagent] [-all] [-since 2026-11-01]
 trace rules                       the rule card a session in this folder would get, and why
 trace stats                       counts, last runs, checks, rule cards, hook output that never reached the session
+trace task add -text "<what>"     a task the user asked to be reminded of, tied to the message that asked
+                                  [-at "YYYY-MM-DD HH:MM" (local) or RFC 3339]; prints its id and the time as understood
+trace task done|drop <id>         close an open task, with the message that closed it
+trace task list                   the open tasks, oldest first (the start block shows the first 5; a due one is
+                                  announced once on the next prompt, when UserPromptSubmit is installed)
 
 -home <folder>                    on any command: the memory to use
 -migrate                          install, uninstall: take over what an install before -home wrote

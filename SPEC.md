@@ -108,6 +108,29 @@ folder. TRACE behaves the same with it or without it.
 - **E2.** A search whose words are all punctuation is "search needs words", as an empty one is. Test:
   `TestSearchNeedsRealWords`.
 
+## T. Tasks
+
+A task is something the user asked to be reminded of or noted for later. The store is the board: one per TRACE
+home, shared by every agent that writes to it. The agent records and closes tasks with commands; the user never
+sees a board, only an agent that remembers and asks.
+
+- **T1.** `trace task add -text "<what>" [-at "<when>"]` reads what is new first (as search does), then records an
+  open task tied to the newest message the user typed (speaker `user`, kind `prompt` or `steering`) in the store:
+  the message that asked. It prints the task's id and, with `-at`, the time as understood, with its weekday, so
+  the agent can confirm it to the user. `-at` takes `YYYY-MM-DD HH:MM` in local time or RFC 3339; anything else
+  is refused and nothing is stored. Tests: `TestTaskAddTiesToAskingMessage`, `TestTaskAddEchoesTheTime`,
+  `TestTaskAddRefusesABadTime`.
+- **T2.** `trace task done <id>` and `trace task drop <id>` close an open task, recording when and the newest
+  message the user typed (the words that closed it). Closing a closed or unknown task fails and changes nothing.
+  `trace task list` prints the open tasks, oldest first, each with its id, age, time if any, and the words that
+  asked for it. Test: `TestTaskCloseAndList`.
+- **T3.** The start block lists the open tasks (at most 5, oldest first; with how many more there are) with the
+  words that asked for them, and tells the agent: when the user asks to be reminded of something or to note it
+  for later, run `trace task add`; close a task only after asking the user. Test: `TestStartBlockShowsOpenTasks`.
+- **T4.** On the first user prompt after a task's time, the prompt hook adds one line naming the task, its time
+  and the words that asked for it. Each task is announced once; an announced task stays open until closed. Test:
+  `TestDueTaskAnnouncedOnceAtNextPrompt`.
+
 ## C. Checks
 
 - **C1.** A check's `run` reaches the shell exactly as written, quotes included (`sh -c` on Unix; on Windows,
