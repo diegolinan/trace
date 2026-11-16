@@ -10,6 +10,7 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"time"
 
@@ -31,22 +32,36 @@ func hostName(host string) string {
 	return host
 }
 
-// liveSession is the newest session of this host and role when it was written to in the last two minutes: the
-// session asking for `trace resume` is itself, and the block should show the one before it.
+// resumeCall matches a tool call that runs trace resume (trace or trace.exe, quoted or not; the input is stored as
+// JSON, so a quote may come as \"), not a file named resume.go.
+var resumeCall = regexp.MustCompile(`(?i)trace(?:\.exe)?\\?["']?\s+resume\b`)
+
+// liveSession is the session asking for `trace resume`, so the block shows the one before it (SPEC S1): among the
+// sessions of this host and role written to in the last two minutes, the one whose last stored event is that call
+// (the host writes the call before running it, and resume imports first); with none, the newest of them.
 func liveSession(db *sql.DB, host, role string) string {
-	var id string
 	cut := time.Now().UTC().Add(-2 * time.Minute).Format(time.RFC3339)
-	db.QueryRow(`select id from session where host = ? and role = ? and ended_at >= ? order by ended_at desc limit 1`, host, role, cut).Scan(&id)
-	return id
+	rows, err := db.Query(`select s.id, coalesce((select e.kind || ' ' || coalesce(e.text, '') from event e where e.session_id = s.id
+		order by e.seq desc limit 1), '') from session s where s.host = ? and s.role = ? and s.ended_at >= ? order by s.ended_at desc`, host, role, cut)
+	if err != nil {
+		return ""
+	}
+	defer rows.Close()
+	newest := ""
+	for rows.Next() {
+		var id, last string
+		rows.Scan(&id, &last)
+		if newest == "" {
+			newest = id
+		}
+		if strings.HasPrefix(last, "tool_call ") && resumeCall.MatchString(last) {
+			return id
+		}
+	}
+	return newest
 }
 
-func codexHome() string {
-	if d := os.Getenv("CODEX_HOME"); d != "" {
-		return d
-	}
-	u, _ := os.UserHomeDir()
-	return filepath.Join(u, ".codex")
-}
+func codexHome() string { return envOrHome("CODEX_HOME", ".codex") }
 
 // codexFiles lists every rollout, plain or compressed. A missing Codex home is no Codex, not an error.
 func codexFiles(home string) []string {
@@ -173,217 +188,333 @@ func (im *importer) importCodex(path string) error {
 		return err
 	}
 	defer tx.Rollback()
-	if _, err := tx.Exec("insert or ignore into source_file(host, path) values ('codex', ?)", path); err != nil {
-		return err
-	}
-	var fileID, from int64
-	var size sql.NullInt64
-	var oldMtime, skipped sql.NullString
-	if err := tx.QueryRow("select id, read_to_byte, size, mtime, skipped from source_file where path = ?", path).Scan(&fileID, &from, &size, &oldMtime, &skipped); err != nil {
-		return err
-	}
-	if skipped.Valid {
-		return nil
-	}
-	zst := strings.HasSuffix(path, ".zst")
-	if zst && size.Int64 == st.Size() && oldMtime.String == mtime {
-		return nil
-	}
-	if !zst && st.Size() == from {
-		return nil
-	}
-	rc, err := openRollout(path)
+	f, err := loadRolloutRow(tx, path)
 	if err != nil {
 		return err
 	}
-	meta, ok := codexFirst(rc)
-	rc.Close()
+	if f.skipped.String == "scope:"+im.scope { // the mark holds only for the scope that set it (SPEC I1)
+		return nil
+	}
+	cleared, err := f.clearMark(tx)
+	if err != nil {
+		return err
+	}
+	zst := strings.HasSuffix(path, ".zst")
+	if f.unchanged(zst, cleared, st.Size(), mtime) {
+		return nil
+	}
+	meta, ok, err := rolloutMeta(path)
+	if err != nil {
+		return err
+	}
 	if !ok {
 		return nil // still being created, or not a rollout: the next run tries again
 	}
 	if !inScope(meta.Cwd, im.scope) {
-		_, err := tx.Exec("update source_file set skipped = 'scope', size = ?, mtime = ? where id = ?", st.Size(), mtime, fileID)
-		if err != nil {
+		if err := f.mark(tx, im.scope, st.Size(), mtime); err != nil {
 			return err
 		}
 		return tx.Commit()
 	}
-	if zst || st.Size() < from {
-		from = 0
+	if zst || st.Size() < f.from {
+		f.from = 0
 	}
-	rc, err = openRollout(path)
-	if err != nil {
-		return err
-	}
-	defer rc.Close()
-	if !zst {
-		if _, err := rc.(*os.File).Seek(from, io.SeekStart); err != nil {
-			return err
-		}
-	}
-	end, bad, err := im.readCodex(tx, rc, path, meta, from, fileID)
-	if err != nil {
-		return fmt.Errorf("%s: %w", path, err)
-	}
-	if zst {
-		end = st.Size()
-	}
-	if _, err := tx.Exec("update source_file set size = ?, mtime = ?, read_to_byte = ?, bad_lines = bad_lines + ?, last_error = null where id = ?",
-		st.Size(), mtime, end, bad, fileID); err != nil {
+	if err := im.readRollout(tx, path, meta, zst, f, st.Size(), mtime); err != nil {
 		return err
 	}
 	return tx.Commit()
 }
 
+// rolloutRow is what the store remembers of a rollout file.
+type rolloutRow struct {
+	id, from       int64
+	size           sql.NullInt64
+	mtime, skipped sql.NullString
+}
+
+func loadRolloutRow(tx *sql.Tx, path string) (rolloutRow, error) {
+	var f rolloutRow
+	if _, err := tx.Exec("insert or ignore into source_file(host, path) values ('codex', ?)", path); err != nil {
+		return f, err
+	}
+	err := tx.QueryRow("select id, read_to_byte, size, mtime, skipped from source_file where path = ?", path).Scan(&f.id, &f.from, &f.size, &f.mtime, &f.skipped)
+	return f, err
+}
+
+// clearMark drops a mark set under another scope, or before marks named one, so the rollout is read again from
+// the start (SPEC I1); true when there was one.
+func (f *rolloutRow) clearMark(tx *sql.Tx) (bool, error) {
+	if !f.skipped.Valid {
+		return false, nil
+	}
+	f.from = 0
+	_, err := tx.Exec("update source_file set skipped = null, read_to_byte = 0 where id = ?", f.id)
+	return true, err
+}
+
+// mark keeps a rollout outside scope out of later runs under the same scope, with the size and time it had.
+func (f rolloutRow) mark(tx *sql.Tx, scope string, size int64, mtime string) error {
+	_, err := tx.Exec("update source_file set skipped = ?, size = ?, mtime = ? where id = ?", "scope:"+scope, size, mtime, f.id)
+	return err
+}
+
+// unchanged says there is nothing new to read: a compressed copy with the size and time it had when read (unless a
+// mark was just cleared: they were stored with the mark), or a plain file read to its end.
+func (f rolloutRow) unchanged(zst, cleared bool, size int64, mtime string) bool {
+	if zst {
+		return !cleared && f.size.Int64 == size && f.mtime.String == mtime
+	}
+	return size == f.from
+}
+
+// rolloutMeta is a rollout's first record, its session_meta; false while it is not there.
+func rolloutMeta(path string) (codexMeta, bool, error) {
+	rc, err := openRollout(path)
+	if err != nil {
+		return codexMeta{}, false, err
+	}
+	defer rc.Close()
+	m, ok := codexFirst(rc)
+	return m, ok, nil
+}
+
+// readRollout reads a rollout from f.from (a compressed one from its start) and records how far it was read.
+func (im *importer) readRollout(tx *sql.Tx, path string, meta codexMeta, zst bool, f rolloutRow, size int64, mtime string) error {
+	rc, err := openRollout(path)
+	if err != nil {
+		return err
+	}
+	defer rc.Close()
+	if !zst {
+		if _, err := rc.(*os.File).Seek(f.from, io.SeekStart); err != nil {
+			return err
+		}
+	}
+	end, bad, err := im.readCodex(tx, rc, path, meta, f.from, f.id)
+	if err != nil {
+		return fmt.Errorf("%s: %w", path, err)
+	}
+	if zst {
+		end = size
+	}
+	_, err = tx.Exec("update source_file set size = ?, mtime = ?, read_to_byte = ?, bad_lines = bad_lines + ?, last_error = null where id = ?",
+		size, mtime, end, bad, f.id)
+	return err
+}
+
+// codexPayload is the part of a rollout line's payload trace reads, for every record kind.
+type codexPayload struct {
+	Type      string          `json:"type"`
+	Role      string          `json:"role"`
+	Content   []codexText     `json:"content"`
+	Item      json.RawMessage `json:"item"`
+	Name      string          `json:"name"`
+	Namespace string          `json:"namespace"`
+	Input     string          `json:"input"`
+	Arguments string          `json:"arguments"`
+	CallID    string          `json:"call_id"`
+	Output    json.RawMessage `json:"output"`
+	Author    string          `json:"author"`
+	Recipient string          `json:"recipient"`
+	Message   string          `json:"message"`
+	Reason    string          `json:"reason"`
+	Model     string          `json:"model"`
+}
+
+type codexItem struct {
+	Type        string      `json:"type"`
+	Content     []codexText `json:"content"`
+	SummaryText []string    `json:"summary_text"`
+}
+
+// codexSig names a rollout record's kind: the line type, then the payload's, the item's or the message role.
+func codexSig(l codexLine, p codexPayload) (string, codexItem) {
+	sig := l.Type
+	if p.Type != "" && l.Type != "turn_context" && l.Type != "compacted" {
+		sig += "/" + p.Type
+	}
+	var item codexItem
+	if p.Type == "item_completed" {
+		json.Unmarshal(p.Item, &item)
+		sig += "/" + item.Type
+	}
+	if l.Type == "response_item" && p.Type == "message" {
+		sig += "/" + p.Role
+	}
+	return sig, item
+}
+
+// codexEvents are the events one rollout record of kind sig yields, in order; known is false for a kind trace does
+// not map. A compaction yields its boundary and then its summary. A pure mapping: storing is readCodex's job.
+func codexEvents(sig string, p codexPayload, item codexItem) (events []ev, known bool) {
+	switch sig {
+	case "event_msg/item_completed/UserMessage":
+		return []ev{{speaker: "user", kind: "prompt", text: joinTexts(item.Content)}}, true
+	case "event_msg/user_message": // before item_completed existed
+		return []ev{{speaker: "user", kind: "prompt", text: p.Message}}, true
+	case "event_msg/item_completed/AgentMessage":
+		return []ev{{speaker: "assistant", kind: "reply", text: joinTexts(item.Content)}}, true
+	case "event_msg/item_completed/Reasoning":
+		return []ev{{speaker: "assistant", kind: "thinking", text: strings.Join(item.SummaryText, "\n")}}, true
+	case "response_item/custom_tool_call", "response_item/function_call":
+		return []ev{codexCall(p)}, true
+	case "response_item/custom_tool_call_output", "response_item/function_call_output":
+		return []ev{{speaker: "tool", kind: "tool_result", text: headTail(outputText(p.Output)), toolUse: p.CallID}}, true
+	case "response_item/agent_message":
+		return []ev{{speaker: "relay", kind: "relay", text: p.Author + " -> " + p.Recipient + ": " + joinTexts(p.Content)}}, true
+	case "response_item/message/user", "response_item/message/developer":
+		return []ev{{speaker: "harness", kind: "injected", text: joinTexts(p.Content)}}, true
+	case "compacted":
+		return []ev{{speaker: "harness", kind: "boundary", text: "compacted"}, {speaker: "model-summary", kind: "summary", text: p.Message}}, true
+	case "event_msg/turn_aborted":
+		return []ev{{speaker: "harness", kind: "boundary", text: "turn aborted: " + p.Reason}}, true
+	case "turn_context":
+		return nil, true
+	}
+	return nil, false
+}
+
+// codexCall is a tool call: a namespaced tool is named namespace.name; a function call's input is its arguments.
+func codexCall(p codexPayload) ev {
+	name, in := p.Name, p.Input
+	if p.Namespace != "" {
+		name = p.Namespace + "." + p.Name
+	}
+	if in == "" {
+		in = p.Arguments
+	}
+	return ev{speaker: "assistant", kind: "tool_call", text: name + " " + clip(in, 4000), toolName: name, toolInput: in, toolUse: p.CallID}
+}
+
+// codexRead is one pass over a rollout: the thread's session and what is needed to store its events in order.
+type codexRead struct {
+	im            *importer
+	tx            *sql.Tx
+	sid, path     string
+	meta          codexMeta
+	sub           bool
+	fileID        int64
+	seq, comp     int
+	bad           int
+	lastTs, model string
+	toolNames     map[string]string
+}
+
 func (im *importer) readCodex(tx *sql.Tx, r io.Reader, path string, meta codexMeta, from, fileID int64) (int64, int, error) {
-	sid := meta.ID
-	sub := meta.ParentThreadID != "" || bytes.Contains(meta.Source, []byte(`"subagent"`))
+	c := &codexRead{im: im, tx: tx, sid: meta.ID, fileID: fileID, path: path, meta: meta, toolNames: map[string]string{}}
+	c.sub = meta.ParentThreadID != "" || bytes.Contains(meta.Source, []byte(`"subagent"`))
 	role, parent := "subagent", meta.ParentThreadID
-	if !sub {
+	if !c.sub {
 		role, parent = roleFor(meta.Cwd, projectRole(meta.Cwd)), ""
 	}
 	if _, err := tx.Exec(`insert or ignore into session(id, host, role, parent_id, cwd, branch_first, branch_last, version_first, started_at, ended_at, excluded)
 		values (?, 'codex', ?, nullif(?, ''), ?, ?, ?, ?, ?, ?, nullif(?, ''))`,
-		sid, role, parent, meta.Cwd, meta.Git.Branch, meta.Git.Branch, meta.CliVersion, meta.Timestamp, meta.Timestamp, excludedFor(folderName(meta.Cwd))); err != nil {
+		c.sid, role, parent, meta.Cwd, meta.Git.Branch, meta.Git.Branch, meta.CliVersion, meta.Timestamp, meta.Timestamp, excludedFor(folderName(meta.Cwd))); err != nil {
 		return from, 0, err
 	}
-	var seq, comp int
-	tx.QueryRow("select coalesce(max(seq), 0) from event where session_id = ?", sid).Scan(&seq)
+	tx.QueryRow("select coalesce(max(seq), 0) from event where session_id = ?", c.sid).Scan(&c.seq)
 	if from > 0 {
-		tx.QueryRow("select compactions from session where id = ?", sid).Scan(&comp)
+		tx.QueryRow("select compactions from session where id = ?", c.sid).Scan(&c.comp)
 	}
-	var lastTs, model string
-	toolNames := map[string]string{}
-	bad := 0
-	put := func(key string, at int64, ts string, e ev) error {
-		if e.text == "" && e.toolInput == "" {
-			return nil
-		}
-		if e.kind == "tool_call" && e.toolUse != "" {
-			toolNames[e.toolUse] = e.toolName
-		}
-		if e.kind == "tool_result" && e.toolUse != "" {
-			e.toolName = toolNames[e.toolUse]
-			if e.toolName == "" {
-				tx.QueryRow("select tool_name from event where tool_use_id = ? and kind = 'tool_call'", e.toolUse).Scan(&e.toolName)
-			}
-			if relayTool(e.toolName) {
-				e.speaker, e.kind = "relay", "relay"
-			}
-		}
-		seq++
-		_, err := im.insertEvent(tx, key, sid, seq, ts, "", comp, fileID, at, e)
-		return err
-	}
-	end, err := lines(r, from, func(line []byte, at int64) error {
-		head := line[:min(len(line), 400)]
-		for _, h := range heavy {
-			if bytes.Contains(head, h) {
-				return nil
-			}
-		}
-		var l codexLine
-		if json.Unmarshal(line, &l) != nil {
-			bad++
-			return nil
-		}
-		if l.Ordinal != nil && sub && meta.SubagentHistoryEnd != nil && *l.Ordinal < *meta.SubagentHistoryEnd {
-			return nil // the parent's history, copied into the subagent's file
-		}
-		key := fmt.Sprintf("codex:%s:@%s:%d", sid, filepath.Base(path), at) // rows written before ordinals existed
-		if l.Ordinal != nil {
-			key = fmt.Sprintf("codex:%s:%d", sid, *l.Ordinal)
-		}
-		if l.Timestamp != "" {
-			lastTs = l.Timestamp
-		}
-		var p struct {
-			Type      string          `json:"type"`
-			Role      string          `json:"role"`
-			Content   []codexText     `json:"content"`
-			Item      json.RawMessage `json:"item"`
-			Name      string          `json:"name"`
-			Namespace string          `json:"namespace"`
-			Input     string          `json:"input"`
-			Arguments string          `json:"arguments"`
-			CallID    string          `json:"call_id"`
-			Output    json.RawMessage `json:"output"`
-			Author    string          `json:"author"`
-			Recipient string          `json:"recipient"`
-			Message   string          `json:"message"`
-			Reason    string          `json:"reason"`
-			Model     string          `json:"model"`
-		}
-		json.Unmarshal(l.Payload, &p)
-		sig := l.Type
-		if p.Type != "" && l.Type != "turn_context" && l.Type != "compacted" {
-			sig += "/" + p.Type
-		}
-		var item struct {
-			Type        string      `json:"type"`
-			Content     []codexText `json:"content"`
-			SummaryText []string    `json:"summary_text"`
-		}
-		if p.Type == "item_completed" {
-			json.Unmarshal(p.Item, &item)
-			sig += "/" + item.Type
-		}
-		if l.Type == "response_item" && p.Type == "message" {
-			sig += "/" + p.Role
-		}
-		if l.Type == "response_item" && p.Type == "additional_tools" {
-			sig = "response_item/additional_tools"
-		}
-		ts := l.Timestamp
-		switch sig {
-		case "turn_context":
-			if p.Model != "" {
-				model = p.Model
-			}
-			return nil
-		case "event_msg/item_completed/UserMessage":
-			return put(key+":0", at, ts, ev{speaker: "user", kind: "prompt", text: joinTexts(item.Content)})
-		case "event_msg/user_message": // before item_completed existed
-			return put(key+":0", at, ts, ev{speaker: "user", kind: "prompt", text: p.Message})
-		case "event_msg/item_completed/AgentMessage":
-			return put(key+":0", at, ts, ev{speaker: "assistant", kind: "reply", text: joinTexts(item.Content)})
-		case "event_msg/item_completed/Reasoning":
-			return put(key+":0", at, ts, ev{speaker: "assistant", kind: "thinking", text: strings.Join(item.SummaryText, "\n")})
-		case "response_item/custom_tool_call", "response_item/function_call":
-			name, in := p.Name, p.Input
-			if p.Namespace != "" {
-				name = p.Namespace + "." + p.Name
-			}
-			if in == "" {
-				in = p.Arguments
-			}
-			return put(key+":0", at, ts, ev{speaker: "assistant", kind: "tool_call", text: name + " " + clip(in, 4000), toolName: name, toolInput: in, toolUse: p.CallID})
-		case "response_item/custom_tool_call_output", "response_item/function_call_output":
-			return put(key+":0", at, ts, ev{speaker: "tool", kind: "tool_result", text: headTail(outputText(p.Output)), toolUse: p.CallID})
-		case "response_item/agent_message":
-			return put(key+":0", at, ts, ev{speaker: "relay", kind: "relay", text: p.Author + " -> " + p.Recipient + ": " + joinTexts(p.Content)})
-		case "response_item/message/user", "response_item/message/developer":
-			return put(key+":0", at, ts, ev{speaker: "harness", kind: "injected", text: joinTexts(p.Content)})
-		case "compacted":
-			comp++
-			if err := put(key+":0", at, ts, ev{speaker: "harness", kind: "boundary", text: "compacted"}); err != nil {
-				return err
-			}
-			return put(key+":1", at, ts, ev{speaker: "model-summary", kind: "summary", text: p.Message})
-		case "event_msg/turn_aborted":
-			return put(key+":0", at, ts, ev{speaker: "harness", kind: "boundary", text: "turn aborted: " + p.Reason})
-		}
-		if !codexSkip[sig] {
-			im.unmapped["codex "+sig]++
-		}
-		return nil
-	})
+	end, err := lines(r, from, c.line)
 	if err != nil {
-		return end, bad, err
+		return end, c.bad, err
 	}
 	_, err = tx.Exec(`update session set ended_at = max(coalesce(ended_at, ''), ?), model = coalesce(nullif(?, ''), model), compactions = max(compactions, ?) where id = ?`,
-		lastTs, model, comp, sid)
-	return end, bad, err
+		c.lastTs, c.model, c.comp, c.sid)
+	return end, c.bad, err
+}
+
+// line reads one rollout line: a blob or a broken line is skipped (a broken one counted), the parent's copied
+// history too, and any other record goes through codexEvents into the store.
+func (c *codexRead) line(line []byte, at int64) error {
+	if codexHeavy(line) {
+		return nil
+	}
+	var l codexLine
+	if json.Unmarshal(line, &l) != nil {
+		c.bad++
+		return nil
+	}
+	if c.parentHistory(l) {
+		return nil
+	}
+	if l.Timestamp != "" {
+		c.lastTs = l.Timestamp
+	}
+	var p codexPayload
+	json.Unmarshal(l.Payload, &p)
+	sig, item := codexSig(l, p)
+	c.note(sig, p)
+	events, known := codexEvents(sig, p, item)
+	if !known && !codexSkip[sig] {
+		c.im.unmapped["codex "+sig]++
+	}
+	key := codexKey(c.sid, c.path, l, at)
+	for i, e := range events {
+		if err := c.put(fmt.Sprintf("%s:%d", key, i), at, l.Timestamp, e); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// parentHistory says a subagent's line is the parent's history, copied into the subagent's file.
+func (c *codexRead) parentHistory(l codexLine) bool {
+	end := c.meta.SubagentHistoryEnd
+	return c.sub && l.Ordinal != nil && end != nil && *l.Ordinal < *end
+}
+
+// note keeps what a record says about the thread: the model a turn ran with, and a compaction.
+func (c *codexRead) note(sig string, p codexPayload) {
+	if sig == "turn_context" && p.Model != "" {
+		c.model = p.Model
+	}
+	if sig == "compacted" {
+		c.comp++
+	}
+}
+
+// codexHeavy says a line is one of the base64 blobs of hundreds of MB, from its first 400 bytes, before any parse.
+func codexHeavy(line []byte) bool {
+	head := line[:min(len(line), 400)]
+	for _, h := range heavy {
+		if bytes.Contains(head, h) {
+			return true
+		}
+	}
+	return false
+}
+
+// codexKey keys a record by thread and ordinal. Rows written before ordinals existed are keyed by the plain file's
+// name and the byte offset, so its compressed copy (same bytes, same offsets) keys alike (SPEC I3).
+func codexKey(sid, path string, l codexLine, at int64) string {
+	if l.Ordinal != nil {
+		return fmt.Sprintf("codex:%s:%d", sid, *l.Ordinal)
+	}
+	return fmt.Sprintf("codex:%s:@%s:%d", sid, strings.TrimSuffix(filepath.Base(path), ".zst"), at)
+}
+
+// put stores one event with words, naming the tool a result answers; a relay tool's result is another agent's words.
+func (c *codexRead) put(key string, at int64, ts string, e ev) error {
+	if e.text == "" && e.toolInput == "" {
+		return nil
+	}
+	if e.kind == "tool_call" && e.toolUse != "" {
+		c.toolNames[e.toolUse] = e.toolName
+	}
+	if e.kind == "tool_result" && e.toolUse != "" {
+		e.toolName = c.toolNames[e.toolUse]
+		if e.toolName == "" {
+			c.tx.QueryRow("select tool_name from event where session_id = ? and tool_use_id = ? and kind = 'tool_call'", c.sid, e.toolUse).Scan(&e.toolName) // its own session's call (SPEC I5)
+		}
+		if relayTool(e.toolName) {
+			e.speaker, e.kind = "relay", "relay"
+		}
+	}
+	c.seq++
+	err := c.im.insertEvent(c.tx, key, c.sid, c.seq, ts, "", c.comp, c.fileID, at, e)
+	return err
 }
 
 // codexNames copies thread names from session_index.jsonl, for threads already stored (so names of threads

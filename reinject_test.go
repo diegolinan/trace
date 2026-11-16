@@ -8,40 +8,6 @@ import (
 	"time"
 )
 
-// The sources are the files Claude Code loads, imports included and code skipped; MEMORY.md comes from the
-// configured auto-memory folder; a worktree's memory folder is derived from the main repository.
-func TestClaudeSources(t *testing.T) {
-	home, repo := t.TempDir(), t.TempDir()
-	write := func(p, s string) {
-		os.MkdirAll(filepath.Dir(p), 0o755)
-		os.WriteFile(p, []byte(s), 0o644)
-	}
-	os.Mkdir(filepath.Join(repo, ".git"), 0o755)
-	write(filepath.Join(repo, "CLAUDE.md"), "@MANIFEST.md\nsee @docs/a.md too\n```\n@NOT.md\n```\n")
-	write(filepath.Join(repo, "MANIFEST.md"), "manifest @CLAUDE.md") // a loop is read once
-	write(filepath.Join(repo, "docs", "a.md"), "a rule")
-	write(filepath.Join(repo, "NOT.md"), "inside code")
-	write(filepath.Join(repo, "CLAUDE.local.md"), "local")
-	write(filepath.Join(home, ".claude", "CLAUDE.md"), "user")
-	mem := filepath.Join(home, "mem")
-	write(filepath.Join(repo, ".claude", "settings.local.json"), `{"autoMemoryDirectory":"`+filepath.ToSlash(mem)+`"}`)
-	write(filepath.Join(mem, "MEMORY.md"), "- [x](x.md)\n@NOTANIMPORT.md")
-	write(filepath.Join(mem, "NOTANIMPORT.md"), "no")
-	var got []string
-	for _, s := range claudeSources(filepath.Join(repo, "docs"), home) {
-		got = append(got, filepath.Base(s.label))
-	}
-	if strings.Join(got, " ") != "CLAUDE.md CLAUDE.md MANIFEST.md a.md CLAUDE.local.md MEMORY.md" {
-		t.Fatalf("sources: %v", got)
-	}
-	// A linked worktree: the .git file points into the main repository.
-	wt := t.TempDir()
-	write(filepath.Join(wt, ".git"), "gitdir: "+filepath.ToSlash(repo)+"/.git/worktrees/wt\n")
-	if root, main := gitRoots(filepath.Join(wt)); root != wt || filepath.Clean(main) != filepath.Clean(repo) {
-		t.Fatalf("worktree roots: %s %s", root, main)
-	}
-}
-
 // The card is whole when it fits; over the budget only marked blocks go in, and the note names the files without.
 func TestCard(t *testing.T) {
 	srcs := []source{{"A.md", "rule one"}, {"B.md", "intro\n" + rulesOpen + "\nnever push\n" + rulesClose + "\nmore"}}

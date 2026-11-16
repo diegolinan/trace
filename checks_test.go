@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"errors"
 	"path/filepath"
 	"strings"
@@ -19,7 +20,7 @@ func TestChecks(t *testing.T) {
 		{Name: "bad", On: "(", Run: "x"},
 	}
 	var ran []string
-	shell := func(dir, cmd string) (string, error) {
+	shell := func(_ context.Context, dir, cmd string) (string, error) {
 		ran = append(ran, dir+" "+cmd)
 		if strings.Contains(dir, "dirty") {
 			return "new.md has no inbound link\n", errors.New("exit status 1")
@@ -56,7 +57,7 @@ func TestChecks(t *testing.T) {
 		t.Fatal("matcher: none without checks, every tool when one has no tool")
 	}
 	// The real shell: output and a non-zero exit come back on every platform.
-	if out, err := runShell(t.TempDir(), "echo bad && exit 3"); err == nil || !strings.Contains(out, "bad") {
+	if out, err := runShell(context.Background(), t.TempDir(), "echo bad && exit 3"); err == nil || !strings.Contains(out, "bad") {
 		t.Fatalf("runShell: %q %v", out, err)
 	}
 }

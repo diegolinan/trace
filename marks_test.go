@@ -23,7 +23,7 @@ func TestHomeAndConfig(t *testing.T) {
 	}
 	// With a BOM, as Windows PowerShell writes it.
 	os.WriteFile(filepath.Join(dir, "config.json"), []byte("\xef\xbb\xbf"+`{"data":"D:/d","repo":"D:/r","scope":"X","claude":false}`), 0o644)
-	if c, err := loadConfig(dir); err != nil || c.Repo != "D:/r" || c.Scope != "X" || dataDir(dir, c) != "D:/d" || c.Claude == nil || *c.Claude {
+	if c, err := loadConfig(dir); err != nil || c.Scope != "X" || dataDir(dir, c) != "D:/d" || c.Claude == nil || *c.Claude {
 		t.Fatalf("config not read: %+v %v", c, err)
 	}
 	// A bad file must stop the run: defaults would widen the scope to every project.

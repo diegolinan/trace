@@ -8,6 +8,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"unicode/utf16"
 )
@@ -140,8 +141,8 @@ func parseCodexHooks(b []byte) (map[string]any, error) {
 }
 
 // codexHooksPlan returns hooks.json's new content with this home's entries replaced by exe's (removed when exe is
-// empty; the same bytes when there were none). Another home's TRACE entries stop install; every other key and hook is
-// kept.
+// empty; the same bytes when there were none). Every other key and hook is kept, other TRACE homes' entries too:
+// several memories can share a Codex home, each hook leaving out what is outside its own scope.
 func codexHooksPlan(old []byte, exe, home string) ([]byte, error) {
 	file, err := parseCodexHooks(old)
 	if err != nil {
@@ -152,38 +153,17 @@ func codexHooksPlan(old []byte, exe, home string) ([]byte, error) {
 		hooks = map[string]any{}
 	}
 	removed := false
+	mine := func(h any) bool { // another memory's are kept: installCodex checked that the scopes do not overlap
+		owner := codexHookOwner(h)
+		if owner != "" && sameHome(owner, home) {
+			removed = true
+			return true
+		}
+		return false
+	}
 	for ev, groups := range hooks {
 		gs, _ := groups.([]any)
-		var kept []any
-		for _, g := range gs {
-			group, _ := g.(map[string]any)
-			inner, _ := group["hooks"].([]any)
-			var keep []any
-			for _, h := range inner {
-				switch owner := codexHookOwner(h); {
-				case owner == "":
-					keep = append(keep, h)
-				case !sameHome(owner, home):
-					if exe != "" {
-						return nil, fmt.Errorf("already runs TRACE for another home (%s); one per Codex home: uninstall that one with -home first", owner)
-					}
-					keep = append(keep, h)
-				default:
-					removed = true
-				}
-			}
-			if len(keep) == len(inner) {
-				kept = append(kept, g)
-			} else if len(keep) > 0 {
-				c := map[string]any{}
-				for k, v := range group {
-					c[k] = v
-				}
-				c["hooks"] = keep
-				kept = append(kept, c)
-			}
-		}
-		if len(kept) == 0 {
+		if kept := withoutMine(gs, mine); len(kept) == 0 {
 			delete(hooks, ev)
 		} else {
 			hooks[ev] = kept
@@ -193,25 +173,66 @@ func codexHooksPlan(old []byte, exe, home string) ([]byte, error) {
 		return old, nil // nothing of this home's: the file is not rewritten
 	}
 	if exe != "" {
-		for _, ev := range codexHookEvents(cfg) {
-			g := map[string]any{"hooks": []any{codexHookEntry(exe, home, ev)}}
-			if ev.matcher != "" {
-				g["matcher"] = ev.matcher
-			}
-			list, _ := hooks[ev.name].([]any)
-			hooks[ev.name] = append(list, g)
-		}
+		addCodexHooks(hooks, exe, home)
 	}
 	if len(hooks) == 0 {
 		delete(file, "hooks")
 	} else {
 		file["hooks"] = hooks
 	}
-	if len(file) == 0 && len(old) == 0 {
-		return nil, nil
-	}
 	b, _ := json.MarshalIndent(file, "", "  ")
 	return append(b, '\n'), nil
+}
+
+// addCodexHooks appends this home's group to every event TRACE hooks in Codex, with the event's matcher if any.
+func addCodexHooks(hooks map[string]any, exe, home string) {
+	for _, ev := range codexHookEvents(cfg) {
+		g := map[string]any{"hooks": []any{codexHookEntry(exe, home, ev)}}
+		if ev.matcher != "" {
+			g["matcher"] = ev.matcher
+		}
+		list, _ := hooks[ev.name].([]any)
+		hooks[ev.name] = append(list, g)
+	}
+}
+
+// codexHookHomes lists the TRACE homes whose hooks hooks.json holds.
+func codexHookHomes(b []byte) []string {
+	file, err := parseCodexHooks(b)
+	if err != nil {
+		return nil
+	}
+	var out []string
+	hooks, _ := file["hooks"].(map[string]any)
+	for _, groups := range hooks {
+		gs, _ := groups.([]any)
+		for _, g := range gs {
+			group, _ := g.(map[string]any)
+			inner, _ := group["hooks"].([]any)
+			for _, h := range inner {
+				if o := codexHookOwner(h); o != "" && !slices.ContainsFunc(out, func(x string) bool { return sameHome(x, o) }) {
+					out = append(out, o)
+				}
+			}
+		}
+	}
+	return out
+}
+
+// scopesOverlap says whether two memories could both keep one conversation: an empty scope keeps every folder, and
+// two entries overlap when either folder is in the other's scope (inScope, both ways).
+func scopesOverlap(a, b string) bool {
+	if strings.TrimSpace(a) == "" || strings.TrimSpace(b) == "" {
+		return true
+	}
+	for _, x := range strings.Split(a, ",") {
+		for _, y := range strings.Split(b, ",") {
+			if x, y = strings.TrimSpace(x), strings.TrimSpace(y); x != "" && y != "" && (inScope(x, y) || inScope(y, x)) {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 // codexHooksHave says whether hooks.json holds this home's entries; a file it cannot read is an error, never "no".

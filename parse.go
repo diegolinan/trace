@@ -9,6 +9,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"unicode/utf8"
 )
 
 // row is one line of a Claude Code transcript; only the fields trace reads.
@@ -117,34 +118,16 @@ func headTail(s string) string {
 		return s
 	}
 	h, t := s[:keep], s[len(s)-keep:]
-	for len(h) > 0 && !validTail(h) {
+	for len(h) > 0 { // a character cut at the end decodes as one bad byte
+		if r, size := utf8.DecodeLastRuneInString(h); r != utf8.RuneError || size != 1 {
+			break
+		}
 		h = h[:len(h)-1]
 	}
-	for len(t) > 0 && (t[0]&0xC0) == 0x80 {
+	for len(t) > 0 && !utf8.RuneStart(t[0]) { // a character cut at the start
 		t = t[1:]
 	}
 	return h + fmt.Sprintf("\n[… %d chars cut, full text in the raw copy …]\n", len(s)-len(h)-len(t)) + t
-}
-
-// validTail reports whether s does not end inside a multi-byte UTF-8 character.
-func validTail(s string) bool {
-	for i := len(s) - 1; i >= 0 && i >= len(s)-4; i-- {
-		c := s[i]
-		if c < 0x80 {
-			return true
-		}
-		if c >= 0xC0 {
-			need := 2
-			if c >= 0xE0 {
-				need = 3
-			}
-			if c >= 0xF0 {
-				need = 4
-			}
-			return len(s)-i >= need
-		}
-	}
-	return true
 }
 
 var exitRe = regexp.MustCompile(`^(?:Error: )?Exit code (\d+)`)
@@ -154,141 +137,187 @@ func boolp(b bool) *bool { return &b }
 // parseRow maps one transcript row to events. sub is true for a subagent's own transcript, where the
 // user-side prompt was written by the parent agent, not by the user.
 func parseRow(r *row, sub bool) parsed {
-	var p parsed
-	asker, answerer := "user", "assistant"
+	rp := rowParser{asker: "user", answerer: "assistant"}
 	if sub {
-		asker, answerer = "assistant", "subagent"
-	}
-	add := func(e ev) {
-		if strings.TrimSpace(e.text) != "" {
-			p.events = append(p.events, e)
-		}
+		rp.asker, rp.answerer = "assistant", "subagent"
 	}
 	switch r.Type {
 	case "ai-title":
-		p.title = r.AiTitle
+		rp.p.title = r.AiTitle
 	case "custom-title":
-		p.title, p.custom = r.CustomTitle, true
+		rp.p.title, rp.p.custom = r.CustomTitle, true
 	case "agent-name": // /rename writes both rows; an older name may survive only here
-		p.title, p.custom = r.AgentName, true
+		rp.p.title, rp.p.custom = r.AgentName, true
 	case "system":
-		switch r.Subtype {
-		case "compact_boundary":
-			p.compacted = true
-			t := "conversation compacted"
-			if m := r.CompactMetadata; m != nil {
-				t = fmt.Sprintf("conversation compacted (%s, %d tokens before)", m.Trigger, m.PreTokens)
-			}
-			add(ev{speaker: "harness", kind: "boundary", text: t})
-		case "away_summary":
-			s, _ := asText(r.Content)
-			add(ev{speaker: "model-summary", kind: "summary", text: s})
-		}
+		rp.system(r)
 	case "user":
-		if r.Message == nil {
-			return p
-		}
-		if r.IsCompactSummary {
-			s, _ := asText(r.Message.Content)
-			add(ev{speaker: "model-summary", kind: "summary", text: s})
-			return p
-		}
-		s, isStr := asText(r.Message.Content)
-		if r.IsMeta {
-			switch {
-			case strings.Contains(s, "<agent-message"):
-				add(ev{speaker: "subagent", kind: "handback", text: s})
-			case strings.Contains(s, "<cross-session-message"):
-				add(ev{speaker: "relay", kind: "relay", text: s})
-			}
-			return p
-		}
-		if isStr {
-			t := strings.TrimSpace(s)
-			switch {
-			case strings.HasPrefix(t, "<task-notification"):
-				add(ev{speaker: "harness", kind: "boundary", text: s})
-			case strings.HasPrefix(t, "<local-command-"):
-			case strings.HasPrefix(t, "<bash-stdout"):
-				add(ev{speaker: "tool", kind: "tool_result", text: headTail(s)})
-			case strings.HasPrefix(t, "<agent-message"):
-				add(ev{speaker: "subagent", kind: "handback", text: s})
-			default: // typed text
-				add(typed(asker, s))
-			}
-			return p
-		}
-		var bs []block
-		json.Unmarshal(r.Message.Content, &bs)
-		for _, b := range bs {
-			switch b.Type {
-			case "text":
-				add(typed(asker, b.Text))
-			case "tool_result":
-				p.events = append(p.events, toolResult(r, b)...)
-			}
-		}
+		rp.user(r)
 	case "assistant":
-		if r.Message == nil {
-			return p
+		rp.assistant(r)
+	case "attachment":
+		rp.attachment(r)
+	}
+	return rp.p
+}
+
+// rowParser collects one row's events; asker and answerer are who speaks on each side of this transcript.
+type rowParser struct {
+	p               parsed
+	asker, answerer string
+}
+
+// add keeps an event that has words.
+func (rp *rowParser) add(e ev) {
+	if strings.TrimSpace(e.text) != "" {
+		rp.p.events = append(rp.p.events, e)
+	}
+}
+
+func (rp *rowParser) system(r *row) {
+	switch r.Subtype {
+	case "compact_boundary":
+		rp.p.compacted = true
+		t := "conversation compacted"
+		if m := r.CompactMetadata; m != nil {
+			t = fmt.Sprintf("conversation compacted (%s, %d tokens before)", m.Trigger, m.PreTokens)
 		}
+		rp.add(ev{speaker: "harness", kind: "boundary", text: t})
+	case "away_summary":
+		s, _ := asText(r.Content)
+		rp.add(ev{speaker: "model-summary", kind: "summary", text: s})
+	}
+}
+
+func (rp *rowParser) user(r *row) {
+	if r.Message == nil {
+		return
+	}
+	s, isStr := asText(r.Message.Content)
+	switch {
+	case r.IsCompactSummary:
+		rp.add(ev{speaker: "model-summary", kind: "summary", text: s})
+	case r.IsMeta:
+		rp.meta(s)
+	case isStr:
+		rp.userText(s)
+	default:
 		var bs []block
 		json.Unmarshal(r.Message.Content, &bs)
 		for _, b := range bs {
 			switch b.Type {
 			case "text":
-				add(ev{speaker: answerer, kind: "reply", text: b.Text})
-			case "thinking":
-				add(ev{speaker: answerer, kind: "thinking", text: b.Thinking})
-			case "tool_use", "server_tool_use":
-				in := string(b.Input)
-				add(ev{speaker: answerer, kind: "tool_call", text: b.Name + " " + clip(in, 4000), toolName: b.Name, toolInput: in, toolUse: b.ID})
-			case "advisor_tool_result":
-				s, _ := asText(b.Content)
-				if s == "" {
-					s = string(b.Content)
-				}
-				add(ev{speaker: "advisor", kind: "reply", text: s})
+				rp.add(typed(rp.asker, b.Text))
+			case "tool_result":
+				rp.p.events = append(rp.p.events, toolResult(r, b)...)
 			}
-		}
-	case "attachment":
-		var a attachment
-		if json.Unmarshal(r.Attachment, &a) != nil {
-			return p
-		}
-		switch a.Type {
-		case "queued_command":
-			s, _ := asText(a.Prompt)
-			if a.Origin != nil && a.Origin.Kind == "human" {
-				add(ev{speaker: "user", kind: "steering", text: s})
-			} else if a.Origin != nil && a.Origin.Kind == "peer" {
-				add(ev{speaker: "subagent", kind: "handback", text: s})
-			}
-		case "hook_additional_context":
-			s, _ := asText(a.Content)
-			add(ev{speaker: "harness", kind: "injected", text: s})
-		case "hook_success":
-			if a.HookEvent == "SessionStart" || a.HookEvent == "UserPromptSubmit" || a.HookEvent == "SubagentStart" {
-				s, _ := asText(a.Content)
-				add(ev{speaker: "harness", kind: "injected", text: s})
-			}
-		case "instructions":
-			if len(a.Files) == 0 {
-				return p
-			}
-			var all strings.Builder
-			var paths []string
-			for _, f := range a.Files {
-				fmt.Fprintf(&all, "== %s (%s)\n%s\n", f.Path, f.Type, f.Content)
-				paths = append(paths, f.Path)
-			}
-			h := sha256.Sum256([]byte(all.String()))
-			sha := hex.EncodeToString(h[:])
-			p.loaded = map[string]string{sha: all.String()}
-			add(ev{speaker: "harness", kind: "injected", text: "rule files loaded: " + strings.Join(paths, ", "), loadedSha: sha})
 		}
 	}
-	return p
+}
+
+// meta is a harness-written user row: only a subagent's hand-back and a relayed message are words.
+func (rp *rowParser) meta(s string) {
+	switch {
+	case strings.Contains(s, "<agent-message"):
+		rp.add(ev{speaker: "subagent", kind: "handback", text: s})
+	case strings.Contains(s, "<cross-session-message"):
+		rp.add(ev{speaker: "relay", kind: "relay", text: s})
+	}
+}
+
+// userText is a user row whose content is one string: a harness notice, a command's output, a hand-back, or typed.
+func (rp *rowParser) userText(s string) {
+	t := strings.TrimSpace(s)
+	switch {
+	case strings.HasPrefix(t, "<task-notification"):
+		rp.add(ev{speaker: "harness", kind: "boundary", text: s})
+	case strings.HasPrefix(t, "<local-command-"):
+	case strings.HasPrefix(t, "<bash-stdout"):
+		rp.add(ev{speaker: "tool", kind: "tool_result", text: headTail(s)})
+	case strings.HasPrefix(t, "<agent-message"):
+		rp.add(ev{speaker: "subagent", kind: "handback", text: s})
+	default: // typed text
+		rp.add(typed(rp.asker, s))
+	}
+}
+
+func (rp *rowParser) assistant(r *row) {
+	if r.Message == nil {
+		return
+	}
+	var bs []block
+	json.Unmarshal(r.Message.Content, &bs)
+	for _, b := range bs {
+		switch b.Type {
+		case "text":
+			rp.add(ev{speaker: rp.answerer, kind: "reply", text: b.Text})
+		case "thinking":
+			rp.add(ev{speaker: rp.answerer, kind: "thinking", text: b.Thinking})
+		case "tool_use", "server_tool_use":
+			in := string(b.Input)
+			rp.add(ev{speaker: rp.answerer, kind: "tool_call", text: b.Name + " " + clip(in, 4000), toolName: b.Name, toolInput: in, toolUse: b.ID})
+		case "advisor_tool_result":
+			s, _ := asText(b.Content)
+			if s == "" {
+				s = string(b.Content)
+			}
+			rp.add(ev{speaker: "advisor", kind: "reply", text: s})
+		}
+	}
+}
+
+func (rp *rowParser) attachment(r *row) {
+	var a attachment
+	if json.Unmarshal(r.Attachment, &a) != nil {
+		return
+	}
+	switch a.Type {
+	case "queued_command":
+		rp.queued(a)
+	case "hook_additional_context":
+		s, _ := asText(a.Content)
+		rp.add(ev{speaker: "harness", kind: "injected", text: s})
+	case "hook_success":
+		if injectingHooks[a.HookEvent] {
+			s, _ := asText(a.Content)
+			rp.add(ev{speaker: "harness", kind: "injected", text: s})
+		}
+	case "instructions":
+		rp.instructions(a)
+	}
+}
+
+// injectingHooks are the hook events whose output the model sees, so it is text the session was given.
+var injectingHooks = map[string]bool{"SessionStart": true, "UserPromptSubmit": true, "SubagentStart": true}
+
+// queued is a message queued while the agent worked: the user steering it, or a peer agent's hand-back.
+func (rp *rowParser) queued(a attachment) {
+	if a.Origin == nil {
+		return
+	}
+	s, _ := asText(a.Prompt)
+	switch a.Origin.Kind {
+	case "human":
+		rp.add(ev{speaker: "user", kind: "steering", text: s})
+	case "peer":
+		rp.add(ev{speaker: "subagent", kind: "handback", text: s})
+	}
+}
+
+// instructions records which rule files the harness loaded, and their text once by its hash.
+func (rp *rowParser) instructions(a attachment) {
+	if len(a.Files) == 0 {
+		return
+	}
+	var all strings.Builder
+	var paths []string
+	for _, f := range a.Files {
+		fmt.Fprintf(&all, "== %s (%s)\n%s\n", f.Path, f.Type, f.Content)
+		paths = append(paths, f.Path)
+	}
+	h := sha256.Sum256([]byte(all.String()))
+	sha := hex.EncodeToString(h[:])
+	rp.p.loaded = map[string]string{sha: all.String()}
+	rp.add(ev{speaker: "harness", kind: "injected", text: "rule files loaded: " + strings.Join(paths, ", "), loadedSha: sha})
 }
 
 // typed files a user-role text as words only when a person typed words: interrupt markers, bridge launches by

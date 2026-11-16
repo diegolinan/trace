@@ -114,60 +114,152 @@ func installCodex(home, dir, codexDir, mode, exe string, migrate bool, w io.Writ
 		return fmt.Errorf("install -host codex needs -mode hooks (Codex hooks, run once you trust them) or -mode agents (a request in AGENTS.md), not %q; nothing done", mode)
 	}
 	cfgPath := filepath.Join(home, "config.json")
-	newCfg := false
-	if _, err := os.Stat(cfgPath); err == nil {
-		c, err := loadConfig(home)
-		if err != nil {
-			return err
-		}
-		if c.Claude == nil || *c.Claude || !inScope(dir, string(c.Scope)) {
-			return fmt.Errorf("%s exists and is not a Codex memory for this folder (it needs \"claude\": false and this folder in scope); for a separate Codex memory pass -home with a new folder", cfgPath)
-		}
-	} else if os.IsNotExist(err) {
-		newCfg = true
-	} else {
+	newCfg, err := codexConfigFits(home, dir)
+	if err != nil {
 		return err
 	}
 	agents := filepath.Join(dir, "AGENTS.md")
-	b, err := os.ReadFile(agents)
-	if err != nil && !os.IsNotExist(err) {
+	b, existed, err := readIfThere(agents)
+	if err != nil {
 		return err
 	}
-	existed := err == nil
 	hooksPath := filepath.Join(codexDir, "hooks.json")
-	hb, err := os.ReadFile(hooksPath)
-	if err != nil && !os.IsNotExist(err) {
+	hb, _, err := readIfThere(hooksPath)
+	if err != nil {
 		return err
 	}
 	text := string(b)
 	if mode == "agents" {
-		have, err := codexHooksHave(hb, home)
-		if err != nil { // exclusion cannot be checked, so nothing is written
-			return fmt.Errorf("%s %w; nothing done", hooksPath, err)
-		}
-		if have {
-			return fmt.Errorf("%s already runs TRACE's hooks for %s; the two modes are exclusive: uninstall -host codex first; nothing done", hooksPath, home)
-		}
-		if text, err = agentsPlan(string(b), home, true, migrate); err != nil {
-			return fmt.Errorf("%s: %w; nothing done", agents, err)
+		if text, err = agentsModeFits(b, hb, agents, hooksPath, home, migrate); err != nil {
+			return err
 		}
 	} else {
-		if codexDir == "" || exe == "" {
-			return fmt.Errorf("hooks mode needs the Codex home (-codex) and this binary's path; nothing done")
+		mine := dir
+		if !newCfg {
+			c, _ := loadConfig(home)
+			mine = string(c.Scope)
 		}
-		for _, m := range agentsBlockRe.FindAllStringSubmatch(string(b), -1) { // every block, not only the first
-			if sameHome(m[1], home) {
-				return fmt.Errorf("%s asks for trace resume for this home already; the two modes are exclusive: uninstall -host codex first; nothing done", agents)
-			}
-		}
-		if legacyAgentsLine.Match(b) {
-			return fmt.Errorf("%s holds a trace resume line from an older install; the two modes are exclusive: uninstall -host codex -migrate first; nothing done", agents)
-		}
-		if _, err := codexHooksPlan(hb, exe, home); err != nil {
-			return fmt.Errorf("%s %w; nothing done", hooksPath, err)
+		if err := hooksModeFits(b, hb, agents, hooksPath, codexDir, exe, home, mine); err != nil {
+			return err
 		}
 	}
+	reportRollouts(w, codexDir, dir, cfgPath)
+	cfgText := ""
+	if newCfg {
+		if cfgText, err = writeCodexConfig(home, cfgPath, dir, w); err != nil {
+			return err
+		}
+	} else {
+		fmt.Fprintln(w, "kept", cfgPath)
+	}
+	undo := func(err error) error {
+		if newCfg {
+			undoCodexConfig(cfgPath, cfgText, w)
+		}
+		return err
+	}
+	if mode == "hooks" {
+		if err := writeCodexHooks(codexDir, exe, home, hooksPath, w); err != nil {
+			return undo(err)
+		}
+		return nil
+	}
+	if text == string(b) {
+		fmt.Fprintln(w, agents, "already asks for trace resume with this home")
+		return nil
+	}
+	if err := writeChecked(agents, string(b), existed, text, ""); err != nil {
+		return undo(err)
+	}
+	fmt.Fprintln(w, "wrote the trace resume block in", agents)
+	fmt.Fprintln(w, "Codex runs it only because AGENTS.md asks: nothing checks that a session did")
+	return nil
+}
 
+// codexConfigFits says whether home has no config.json yet (true: this run writes one), or one that is a Codex
+// memory for dir; any other config is an error.
+func codexConfigFits(home, dir string) (bool, error) {
+	cfgPath := filepath.Join(home, "config.json")
+	if _, err := os.Stat(cfgPath); os.IsNotExist(err) {
+		return true, nil
+	} else if err != nil {
+		return false, err
+	}
+	c, err := loadConfig(home)
+	if err != nil {
+		return false, err
+	}
+	if c.Claude == nil || *c.Claude || !inScope(dir, string(c.Scope)) {
+		return false, fmt.Errorf("%s exists and is not a Codex memory for this folder (it needs \"claude\": false and this folder in scope); for a separate Codex memory pass -home with a new folder", cfgPath)
+	}
+	return false, nil
+}
+
+// readIfThere is a file's bytes and whether it exists; a missing file is not an error.
+func readIfThere(path string) ([]byte, bool, error) {
+	b, err := os.ReadFile(path)
+	if os.IsNotExist(err) {
+		return nil, false, nil
+	}
+	return b, err == nil, err
+}
+
+// agentsModeFits checks that this home's hooks are not in hooks.json (the modes are exclusive) and returns the
+// AGENTS.md text with this home's block.
+func agentsModeFits(b, hb []byte, agents, hooksPath, home string, migrate bool) (string, error) {
+	have, err := codexHooksHave(hb, home)
+	if err != nil { // exclusion cannot be checked, so nothing is written
+		return "", fmt.Errorf("%s %w; nothing done", hooksPath, err)
+	}
+	if have {
+		return "", fmt.Errorf("%s already runs TRACE's hooks for %s; the two modes are exclusive: uninstall -host codex first; nothing done", hooksPath, home)
+	}
+	text, err := agentsPlan(string(b), home, true, migrate)
+	if err != nil {
+		return "", fmt.Errorf("%s: %w; nothing done", agents, err)
+	}
+	return text, nil
+}
+
+// hooksModeFits checks that AGENTS.md does not ask for this home (the modes are exclusive), that hooks.json can take
+// this home's hooks, and that no other memory there keeps a scope overlapping mine.
+func hooksModeFits(b, hb []byte, agents, hooksPath, codexDir, exe, home, mine string) error {
+	if codexDir == "" || exe == "" {
+		return fmt.Errorf("hooks mode needs the Codex home (-codex) and this binary's path; nothing done")
+	}
+	for _, m := range agentsBlockRe.FindAllStringSubmatch(string(b), -1) { // every block, not only the first
+		if sameHome(m[1], home) {
+			return fmt.Errorf("%s asks for trace resume for this home already; the two modes are exclusive: uninstall -host codex first; nothing done", agents)
+		}
+	}
+	if legacyAgentsLine.Match(b) {
+		return fmt.Errorf("%s holds a trace resume line from an older install; the two modes are exclusive: uninstall -host codex -migrate first; nothing done", agents)
+	}
+	if _, err := codexHooksPlan(hb, exe, home); err != nil {
+		return fmt.Errorf("%s %w; nothing done", hooksPath, err)
+	}
+	return noOverlap(hb, hooksPath, home, mine)
+}
+
+// noOverlap: another memory's hooks may share this Codex home, but not a folder: one conversation would go to both.
+func noOverlap(hb []byte, hooksPath, home, mine string) error {
+	for _, other := range codexHookHomes(hb) {
+		if sameHome(other, home) {
+			continue
+		}
+		oc, err := loadConfig(other)
+		if err != nil {
+			return fmt.Errorf("%s holds the hooks of another TRACE memory, %s, whose config.json cannot be read to check that the two scopes do not overlap: %v; nothing done", hooksPath, other, err)
+		}
+		if scopesOverlap(mine, string(oc.Scope)) {
+			return fmt.Errorf("%s holds the hooks of another TRACE memory, %s, whose scope (%q) overlaps this one's (%q): a conversation there would be stored in both; narrow one scope, or uninstall that memory first; nothing done", hooksPath, other, string(oc.Scope), mine)
+		}
+	}
+	return nil
+}
+
+// reportRollouts says how many Codex rollouts ran in dir, and when none did, the folders they ran in.
+func reportRollouts(w io.Writer, codexDir, dir, cfgPath string) {
 	cwds := map[string]int{}
 	for _, f := range codexFiles(codexDir) {
 		if r, err := openRollout(f); err == nil {
@@ -190,57 +282,47 @@ func installCodex(home, dir, codexDir, mode, exe string, migrate bool, w io.Writ
 			fmt.Fprintf(w, "  %5d  %s\n", cwds[c], c)
 		}
 	}
+}
 
-	cfgText := ""
-	if newCfg {
-		cb, _ := json.MarshalIndent(map[string]any{"claude": false, "scope": []string{dir}}, "", "  ")
-		cfgText = string(append(cb, '\n'))
-		if err := os.MkdirAll(home, 0o755); err != nil {
-			return err
-		}
-		if err := writeChecked(cfgPath, "", false, cfgText, ""); err != nil {
-			return err
-		}
-		fmt.Fprintln(w, "wrote", cfgPath)
-	} else {
-		fmt.Fprintln(w, "kept", cfgPath)
+// writeCodexConfig writes a config.json that never reads Claude Code and keeps the threads that ran in dir.
+func writeCodexConfig(home, cfgPath, dir string, w io.Writer) (string, error) {
+	cb, _ := json.MarshalIndent(map[string]any{"claude": false, "scope": []string{dir}}, "", "  ")
+	cfgText := string(append(cb, '\n'))
+	if err := os.MkdirAll(home, 0o755); err != nil {
+		return "", err
 	}
-	undo := func(err error) error {
-		if newCfg { // undo this run's own write, only while it is still what this run wrote
-			if now, rerr := os.ReadFile(cfgPath); rerr == nil && string(now) == cfgText && os.Remove(cfgPath) == nil {
-				fmt.Fprintln(w, "removed", cfgPath, "again")
-			} else {
-				fmt.Fprintln(w, "left", cfgPath, "in place: it changed after this run wrote it, or could not be removed")
-			}
-		}
+	if err := writeChecked(cfgPath, "", false, cfgText, ""); err != nil {
+		return "", err
+	}
+	fmt.Fprintln(w, "wrote", cfgPath)
+	return cfgText, nil
+}
+
+// undoCodexConfig removes the config this run wrote, only while it is still what this run wrote.
+func undoCodexConfig(cfgPath, cfgText string, w io.Writer) {
+	if now, err := os.ReadFile(cfgPath); err == nil && string(now) == cfgText && os.Remove(cfgPath) == nil {
+		fmt.Fprintln(w, "removed", cfgPath, "again")
+		return
+	}
+	fmt.Fprintln(w, "left", cfgPath, "in place: it changed after this run wrote it, or could not be removed")
+}
+
+// writeCodexHooks registers this home's hooks in hooks.json and says what it did.
+func writeCodexHooks(codexDir, exe, home, hooksPath string, w io.Writer) error {
+	changed, err := setCodexHooks(codexDir, exe, home, w)
+	if err != nil {
 		return err
 	}
-	if mode == "hooks" {
-		changed, err := setCodexHooks(codexDir, exe, home, w)
-		if err != nil {
-			return undo(err)
+	if !changed {
+		fmt.Fprintln(w, hooksPath, "already runs TRACE's hooks for this home")
+	} else {
+		var names []string
+		for _, ev := range codexHookEvents(cfg) {
+			names = append(names, ev.name)
 		}
-		if !changed {
-			fmt.Fprintln(w, hooksPath, "already runs TRACE's hooks for this home")
-		} else {
-			var names []string
-			for _, ev := range codexHookEvents(cfg) {
-				names = append(names, ev.name)
-			}
-			fmt.Fprintf(w, "wrote TRACE's hooks (%s) in %s\n", strings.Join(names, ", "), hooksPath)
-		}
-		fmt.Fprintln(w, "registered; Codex runs them only after you review and trust them in Codex")
-		return nil
+		fmt.Fprintf(w, "wrote TRACE's hooks (%s) in %s\n", strings.Join(names, ", "), hooksPath)
 	}
-	if text == string(b) {
-		fmt.Fprintln(w, agents, "already asks for trace resume with this home")
-		return nil
-	}
-	if err := writeChecked(agents, string(b), existed, text, ""); err != nil {
-		return undo(err)
-	}
-	fmt.Fprintln(w, "wrote the trace resume block in", agents)
-	fmt.Fprintln(w, "Codex runs it only because AGENTS.md asks: nothing checks that a session did")
+	fmt.Fprintln(w, "registered; Codex runs them only after you review and trust them in Codex")
 	return nil
 }
 
@@ -255,42 +337,60 @@ func uninstallCodex(home, dir, codexDir string, migrate bool, w io.Writer) error
 			return err
 		}
 	}
-	ag := filePlan{path: filepath.Join(dir, "AGENTS.md")}
-	b, err := os.ReadFile(ag.path)
-	if err != nil && !os.IsNotExist(err) {
+	ag, err := planAgentsRemoval(dir, home, migrate)
+	if err != nil {
 		return err
-	}
-	ag.old, ag.existed = b, err == nil
-	if ag.existed {
-		text, err := agentsPlan(string(b), home, false, migrate)
-		if err != nil {
-			return fmt.Errorf("%s: %w; nothing done", ag.path, err)
-		}
-		ag.next = []byte(text)
 	}
 	if !hooks.changed() && !ag.changed() {
 		fmt.Fprintln(w, "no TRACE hooks or AGENTS.md block for", home, "here; nothing to remove")
 		return nil
 	}
+	if err := writeBoth(hooks, ag, home, w); err != nil {
+		return err
+	}
+	fmt.Fprintln(w, "the memory in", home, "is kept")
+	return nil
+}
+
+// planAgentsRemoval is dir/AGENTS.md without this home's block (and, with migrate, an older install's line).
+func planAgentsRemoval(dir, home string, migrate bool) (filePlan, error) {
+	ag := filePlan{path: filepath.Join(dir, "AGENTS.md")}
+	b, existed, err := readIfThere(ag.path)
+	if err != nil {
+		return ag, err
+	}
+	ag.old, ag.existed = b, existed
+	if existed {
+		text, err := agentsPlan(string(b), home, false, migrate)
+		if err != nil {
+			return ag, fmt.Errorf("%s: %w; nothing done", ag.path, err)
+		}
+		ag.next = []byte(text)
+	}
+	return ag, nil
+}
+
+// writeBoth writes the hooks plan, then the AGENTS.md plan; when the second write fails, the first is undone.
+func writeBoth(hooks, ag filePlan, home string, w io.Writer) error {
 	if hooks.changed() {
 		if err := hooks.write(); err != nil {
 			return err
 		}
 		fmt.Fprintln(w, "removed TRACE's hooks for", home, "from", hooks.path)
 	}
-	if ag.changed() {
-		if err := ag.write(); err != nil {
-			if hooks.changed() {
-				if uerr := hooks.undo(); uerr != nil {
-					return fmt.Errorf("%v; and the hooks removal could not be undone: %v", err, uerr)
-				}
-				fmt.Fprintln(w, "put TRACE's hooks back in", hooks.path)
-			}
-			return err
-		}
-		fmt.Fprintln(w, "removed the trace resume block from", ag.path)
+	if !ag.changed() {
+		return nil
 	}
-	fmt.Fprintln(w, "the memory in", home, "is kept")
+	if err := ag.write(); err != nil {
+		if hooks.changed() {
+			if uerr := hooks.undo(); uerr != nil {
+				return fmt.Errorf("%v; and the hooks removal could not be undone: %v", err, uerr)
+			}
+			fmt.Fprintln(w, "put TRACE's hooks back in", hooks.path)
+		}
+		return err
+	}
+	fmt.Fprintln(w, "removed the trace resume block from", ag.path)
 	return nil
 }
 

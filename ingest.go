@@ -11,7 +11,6 @@ import (
 	"fmt"
 	"io"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"regexp"
 	"strings"
@@ -21,12 +20,7 @@ import (
 type importer struct {
 	db         *sql.DB
 	archiveDir string // raw copies, one .gz per transcript, appended as new gzip members
-	repo       string // git repository used to verify commit ids
 	scope      string // only history.jsonl prompts whose project folder contains this
-	shaCache   map[string]string
-	git        *exec.Cmd // one `git cat-file --batch-check` per run, fed one candidate per line
-	gitIn      io.WriteCloser
-	gitOut     *bufio.Reader
 	added      int
 	touched    map[string]bool // sessions that got events this run
 	unmapped   map[string]int  // row kinds no rule stores, counted so a new format shows up
@@ -37,6 +31,9 @@ type importer struct {
 // It also returns the files under <session>/tool-results, relative to projectsDir: the full output the
 // transcript keeps only as a 2 KB preview, which Claude Code's cleanup deletes with the session.
 func transcriptFiles(projectsDir, scope string) (out, results []string, err error) {
+	if st, serr := os.Stat(projectsDir); serr == nil && !st.IsDir() { // a wrong -projects says so (SPEC E1)
+		return nil, nil, fmt.Errorf("%s is a file, not a Claude Code projects folder", projectsDir)
+	}
 	dirs, err := os.ReadDir(projectsDir)
 	if os.IsNotExist(err) {
 		return nil, nil, nil // no Claude Code on this machine (a Codex-only user)
@@ -121,89 +118,123 @@ func sessionFor(path string) (id, role, parent, excluded string) {
 	return base, folderRole(project), "", excludedFor(project)
 }
 
-// excludedFor keeps probe and test folders out of recall (mnemos polluted its own store with test runs).
+// excludedFor keeps probe and test folders out of recall (mnemos polluted its own store with test runs). project is
+// a Claude Code transcript folder name or a Codex cwd; both are compared by their normalized name (SPEC I4).
+// shortcut: a Claude Code folder name has lost its separators, so a project folder whose name holds "temp" or "tmp"
+// between separators (my-temp-tool) is left out too; upgrade to real path segments if a user hits it.
 func excludedFor(project string) string {
-	if strings.Contains(project, "-Temp-") || strings.Contains(project, "scratch") {
-		return "probe or test folder: " + project
+	name := folderName(project)
+	for _, w := range []string{"-temp-", "-tmp-", "-var-folders-", "scratch"} {
+		if strings.Contains(name, w) {
+			return "probe or test folder: " + project
+		}
 	}
 	return ""
 }
 
-func (im *importer) importFile(path, host string) (int, error) {
+func (im *importer) importFile(path, host string) error {
 	st, err := os.Stat(path)
 	if err != nil {
-		return 0, err
+		return err
 	}
 	// Everything from reading the offset to storing the new one happens in one IMMEDIATE transaction (the
 	// driver's default since v0.37.0), so two importers cannot both read the same bytes (concurrency hunt).
 	tx, err := im.db.Begin()
 	if err != nil {
-		return 0, err
+		return err
 	}
 	defer tx.Rollback()
-	var fileID, from, archBytes int64
-	var tailSha sql.NullString
-	if _, err := tx.Exec("insert or ignore into source_file(host, path) values (?, ?)", host, path); err != nil {
-		return 0, err
-	}
-	if err := tx.QueryRow("select id, read_to_byte, tail_sha, archive_bytes from source_file where path = ?", path).Scan(&fileID, &from, &tailSha, &archBytes); err != nil {
-		return 0, err
+	row, err := loadTranscriptRow(tx, host, path)
+	if err != nil {
+		return err
 	}
 	f, err := os.Open(path)
 	if err != nil {
-		return 0, err
+		return err
 	}
 	defer f.Close()
-	// Claude Code rewrites transcripts in place (compaction temp-file swap #81843, Remote Control resume
-	// #104123), so a file that did not shrink can still be a different file: check the bytes before the offset.
-	restart := st.Size() < from || (from > 0 && tailSha.Valid && tailHash(f, from) != tailSha.String)
-	// A raw copy (.gz, `trace restore`) cannot be read from a byte offset inside its compressed stream: when its
-	// size changed it is read whole again; uuids keep that idempotent. read_to_byte stores its compressed size.
 	gz := strings.HasSuffix(path, ".gz")
-	if gz && st.Size() != from {
-		restart = true
+	restart := row.rewritten(f, st.Size(), gz)
+	if !restart && st.Size() == row.from {
+		return nil
 	}
-	if !restart && st.Size() == from {
-		return 0, nil
-	}
+	from := row.from
 	if restart {
 		from = 0 // uuids keep the re-read idempotent
 	}
-	if _, err := f.Seek(from, io.SeekStart); err != nil {
-		return 0, err
-	}
-	var r io.Reader = f
-	if gz {
-		zr, err := gzip.NewReader(f) // multistream: the archive appends one member per import
-		if err != nil {
-			return 0, fmt.Errorf("%s: %w", path, err)
-		}
-		r = cutTail{zr}
-	}
-	var n, bad int
-	var end int64
-	var archived string
-	if host == "prompt-log" {
-		n, end, err = im.readHistory(tx, r, from, fileID)
-	} else {
-		n, bad, end, err = im.readTranscript(tx, r, path, from, fileID)
-	}
+	r, err := readerAt(f, path, from, gz)
 	if err != nil {
-		return 0, fmt.Errorf("%s: %w", path, err)
+		return err
+	}
+	bad, end, err := im.readFile(tx, host, r, path, from, row.id)
+	if err != nil {
+		return fmt.Errorf("%s: %w", path, err)
 	}
 	if gz {
 		end = st.Size()
 	}
+	archived, archBytes := "", row.archBytes
 	if end > from && im.archiveDir != "" {
 		if archived, archBytes, err = im.archive(path, from, end, restart, archBytes); err != nil {
-			return 0, err
+			return err
 		}
 	}
 	if _, err := tx.Exec("update source_file set size = ?, mtime = ?, read_to_byte = ?, tail_sha = ?, bad_lines = bad_lines + ?, archived_as = coalesce(nullif(?, ''), archived_as), archive_bytes = ?, last_error = null where id = ?",
-		st.Size(), st.ModTime().UTC().Format(time.RFC3339), end, tailHash(f, end), bad, archived, archBytes, fileID); err != nil {
-		return 0, err
+		st.Size(), st.ModTime().UTC().Format(time.RFC3339), end, tailHash(f, end), bad, archived, archBytes, row.id); err != nil {
+		return err
 	}
-	return n, tx.Commit()
+	return tx.Commit()
+}
+
+// transcriptRow is what the store remembers of a transcript or prompt-log file.
+type transcriptRow struct {
+	id, from, archBytes int64
+	tailSha             sql.NullString
+}
+
+func loadTranscriptRow(tx *sql.Tx, host, path string) (transcriptRow, error) {
+	var row transcriptRow
+	if _, err := tx.Exec("insert or ignore into source_file(host, path) values (?, ?)", host, path); err != nil {
+		return row, err
+	}
+	err := tx.QueryRow("select id, read_to_byte, tail_sha, archive_bytes from source_file where path = ?", path).Scan(&row.id, &row.from, &row.tailSha, &row.archBytes)
+	return row, err
+}
+
+// rewritten says the file must be read again from its start. Claude Code rewrites transcripts in place (compaction
+// temp-file swap #81843, Remote Control resume #104123), so a file that did not shrink can still be a different
+// file: the bytes before the offset are checked. A raw copy (.gz, `trace restore`) cannot be read from a byte offset
+// inside its compressed stream: when its size changed it is read whole again; read_to_byte stores its compressed size.
+func (row transcriptRow) rewritten(f *os.File, size int64, gz bool) bool {
+	if size < row.from || (row.from > 0 && row.tailSha.Valid && tailHash(f, row.from) != row.tailSha.String) {
+		return true
+	}
+	return gz && size != row.from
+}
+
+// readerAt reads f from the byte offset from; a raw copy is read through gzip, multistream since the archive
+// appends one member per import.
+func readerAt(f *os.File, path string, from int64, gz bool) (io.Reader, error) {
+	if _, err := f.Seek(from, io.SeekStart); err != nil {
+		return nil, err
+	}
+	if !gz {
+		return f, nil
+	}
+	zr, err := gzip.NewReader(f)
+	if err != nil {
+		return nil, fmt.Errorf("%s: %w", path, err)
+	}
+	return cutTail{zr}, nil
+}
+
+// readFile reads a prompt log or a transcript, by host.
+func (im *importer) readFile(tx *sql.Tx, host string, r io.Reader, path string, from, fileID int64) (bad int, end int64, err error) {
+	if host == "prompt-log" {
+		end, err = im.readHistory(tx, r, from, fileID)
+		return 0, end, err
+	}
+	return im.readTranscript(tx, r, path, from, fileID)
 }
 
 // cutTail ends a raw copy at a member cut short (a run killed mid-archive, which the next archive run trims):
@@ -289,136 +320,194 @@ type sessionState struct {
 	known      bool
 }
 
-func (im *importer) readTranscript(tx *sql.Tx, f io.Reader, path string, from, fileID int64) (int, int, int64, error) {
-	sid, role, parent, excluded := sessionFor(path)
-	sub := role == "subagent"
-	ss := sessionState{id: sid}
-	tx.QueryRow("select coalesce(max(seq), 0) from event where session_id = ?", sid).Scan(&ss.seq)
+// transcriptRead is one pass over a Claude Code transcript: the session it belongs to and what the rows read so far
+// say about it.
+type transcriptRead struct {
+	im                                       *importer
+	tx                                       *sql.Tx
+	sid, role, parent, excluded              string
+	sub                                      bool
+	from, fileID                             int64
+	ss                                       sessionState
+	toolNames                                map[string]string
+	boundaries                               map[string]bool
+	lastBranch, lastVersion, firstTs, lastTs string
+	title, model                             string
+	customTitle                              bool
+}
+
+func (im *importer) readTranscript(tx *sql.Tx, f io.Reader, path string, from, fileID int64) (int, int64, error) {
+	t := &transcriptRead{im: im, tx: tx, from: from, fileID: fileID, toolNames: map[string]string{}, boundaries: map[string]bool{}}
+	t.sid, t.role, t.parent, t.excluded = sessionFor(path)
+	t.sub = t.role == "subagent"
+	t.ss = sessionState{id: t.sid}
+	tx.QueryRow("select coalesce(max(seq), 0) from event where session_id = ?", t.sid).Scan(&t.ss.seq)
 	var comp sql.NullInt64
-	if tx.QueryRow("select compactions from session where id = ?", sid).Scan(&comp) == nil {
-		ss.known, ss.compaction = true, int(comp.Int64)
+	if tx.QueryRow("select compactions from session where id = ?", t.sid).Scan(&comp) == nil {
+		t.ss.known, t.ss.compaction = true, int(comp.Int64)
 	}
-	if sub && !ss.known {
+	if t.sub && !t.ss.known {
 		if b, err := os.ReadFile(strings.TrimSuffix(path, ".jsonl") + ".meta.json"); err == nil {
 			var m struct {
 				AgentType string `json:"agentType"`
 			}
 			json.Unmarshal(b, &m)
-			defer tx.Exec("update session set agent_type = ? where id = ?", m.AgentType, sid)
+			defer tx.Exec("update session set agent_type = ? where id = ?", m.AgentType, t.sid)
 		}
 	}
 	if from == 0 {
-		ss.compaction = 0 // a full re-read counts compactions again from the start
+		t.ss.compaction = 0 // a full re-read counts compactions again from the start
 	}
-	toolNames := map[string]string{}
-	var lastBranch, lastVersion, firstTs, lastTs, title, model string
-	customTitle := false
-	added, bad := 0, 0
-	boundaries := map[string]bool{}
-	one := func(r *row, at int64) error {
-		if r.Timestamp != "" {
-			if firstTs == "" {
-				firstTs = r.Timestamp
-			}
-			lastTs = r.Timestamp
-		}
-		if r.GitBranch != "" {
-			lastBranch = r.GitBranch
-		}
-		if r.Version != "" {
-			lastVersion = r.Version
-		}
-		if r.Message != nil && r.Message.Model != "" && r.Message.Model != "<synthetic>" {
-			model = r.Message.Model
-		}
-		if !ss.known && r.Timestamp != "" {
-			wrole := role
-			if !sub {
-				wrole = roleFor(r.Cwd, role)
-			}
-			if strings.HasPrefix(r.Entrypoint, "sdk") && role != "subagent" {
-				wrole = "worker"
-			}
-			if _, err := tx.Exec(`insert or ignore into session(id, host, role, parent_id, cwd, branch_first, branch_last, version_first, started_at, ended_at, excluded)
-				values (?, 'claude-code', ?, nullif(?, ''), ?, ?, ?, ?, ?, ?, nullif(?, ''))`,
-				sid, wrole, parent, r.Cwd, r.GitBranch, r.GitBranch, r.Version, r.Timestamp, r.Timestamp, excluded); err != nil {
-				return err
-			}
-			ss.known = true
-		}
-		p := parseRow(r, sub)
-		if p.title != "" && (p.custom || !customTitle) {
-			title, customTitle = p.title, customTitle || p.custom
-		}
-		if p.custom && p.title != "" { // name rows carry no timestamp: the last timestamp seen dates them
-			if _, err := tx.Exec("insert or ignore into session_name(session_id, name, first_seen) values (?, ?, nullif(?, ''))", sid, p.title, lastTs); err != nil {
-				return err
-			}
-		}
-		for sha, text := range p.loaded {
-			if _, err := tx.Exec("insert or ignore into loaded_text(sha, first_seen, text) values (?, ?, ?)", sha, r.Timestamp, text); err != nil {
-				return err
-			}
-		}
-		// Compaction replays old rows with their uuids (#92089): count each boundary once.
-		if p.compacted && !boundaries[r.UUID] && (from == 0 || !seen(tx, r.UUID+":0")) {
-			boundaries[r.UUID] = true
-			ss.compaction++
-		}
-		if r.UUID == "" || r.Timestamp == "" || !ss.known {
-			return nil
-		}
-		for i, e := range p.events {
-			if e.kind == "tool_call" && e.toolUse != "" {
-				toolNames[e.toolUse] = e.toolName
-			}
-			if e.kind == "tool_result" && e.toolUse != "" {
-				e.toolName = toolNames[e.toolUse]
-				if e.toolName == "" {
-					tx.QueryRow("select tool_name from event where tool_use_id = ? and kind = 'tool_call'", e.toolUse).Scan(&e.toolName)
-				}
-				if relayTool(e.toolName) { // another agent's words, never this one's (Wu 2026)
-					e.speaker, e.kind = "relay", "relay"
-				}
-				if e.exitCode == nil && e.isError != nil && !*e.isError && (e.toolName == "Bash" || e.toolName == "PowerShell") {
-					zero := 0
-					e.exitCode = &zero
-				}
-			}
-			ss.seq++
-			ok, err := im.insertEvent(tx, fmt.Sprintf("%s:%d", r.UUID, i), sid, ss.seq, r.Timestamp, r.GitBranch, ss.compaction, fileID, at, e)
-			if err != nil {
-				return err
-			}
-			if ok {
-				added++
-			}
-		}
-		return nil
-	}
+	bad := 0
 	end, err := lines(f, from, func(line []byte, at int64) error {
 		rs, b := records(line)
 		bad += b // unrecoverable pieces are counted; the raw copy still has their bytes
 		for i := range rs {
-			if err := one(&rs[i], at); err != nil {
+			if err := t.row(&rs[i], at); err != nil {
 				return err
 			}
 		}
 		return nil
 	})
 	if err != nil {
-		return 0, bad, end, err
+		return bad, end, err
 	}
-	if ss.known {
-		if _, err := tx.Exec(`update session set ended_at = max(coalesce(ended_at, ''), ?), branch_last = coalesce(nullif(?, ''), branch_last),
-			version_first = coalesce(version_first, nullif(?, '')), model = coalesce(nullif(?, ''), model), compactions = ?,
-			title = case when ? <> '' then ? else title end,
-			started_at = min(coalesce(started_at, ?), coalesce(nullif(?, ''), started_at)) where id = ?`,
-			lastTs, lastBranch, lastVersion, model, ss.compaction, title, title, firstTs, firstTs, sid); err != nil {
-			return 0, bad, end, err
+	if err := t.finish(); err != nil {
+		return bad, end, err
+	}
+	return bad, end, nil
+}
+
+// row reads one transcript row into the session and its events.
+func (t *transcriptRead) row(r *row, at int64) error {
+	t.note(r)
+	if err := t.ensureSession(r); err != nil {
+		return err
+	}
+	p := parseRow(r, t.sub)
+	if err := t.names(r, p); err != nil {
+		return err
+	}
+	// Compaction replays old rows with their uuids (#92089): count each boundary once.
+	if p.compacted && !t.boundaries[r.UUID] && (t.from == 0 || !seen(t.tx, r.UUID+":0")) {
+		t.boundaries[r.UUID] = true
+		t.ss.compaction++
+	}
+	if r.UUID == "" || r.Timestamp == "" || !t.ss.known {
+		return nil
+	}
+	return t.store(r, p.events, at)
+}
+
+// store inserts a row's events in order, each keyed by the row's uuid and its place in the row.
+func (t *transcriptRead) store(r *row, events []ev, at int64) error {
+	for i, e := range events {
+		t.resolveTool(&e)
+		t.ss.seq++
+		if err := t.im.insertEvent(t.tx, fmt.Sprintf("%s:%d", r.UUID, i), t.sid, t.ss.seq, r.Timestamp, r.GitBranch, t.ss.compaction, t.fileID, at, e); err != nil {
+			return err
 		}
 	}
-	return added, bad, end, nil
+	return nil
+}
+
+// note keeps what the session's record takes from its rows: first and last time, branch, version, model.
+func (t *transcriptRead) note(r *row) {
+	if r.Timestamp != "" {
+		if t.firstTs == "" {
+			t.firstTs = r.Timestamp
+		}
+		t.lastTs = r.Timestamp
+	}
+	if r.GitBranch != "" {
+		t.lastBranch = r.GitBranch
+	}
+	if r.Version != "" {
+		t.lastVersion = r.Version
+	}
+	if r.Message != nil && r.Message.Model != "" && r.Message.Model != "<synthetic>" {
+		t.model = r.Message.Model
+	}
+}
+
+// ensureSession stores the session at its first timed row, with the role its folder gives it.
+func (t *transcriptRead) ensureSession(r *row) error {
+	if t.ss.known || r.Timestamp == "" {
+		return nil
+	}
+	wrole := t.role
+	if !t.sub {
+		wrole = roleFor(r.Cwd, t.role)
+	}
+	if strings.HasPrefix(r.Entrypoint, "sdk") && t.role != "subagent" {
+		wrole = "worker"
+	}
+	if _, err := t.tx.Exec(`insert or ignore into session(id, host, role, parent_id, cwd, branch_first, branch_last, version_first, started_at, ended_at, excluded)
+		values (?, 'claude-code', ?, nullif(?, ''), ?, ?, ?, ?, ?, ?, nullif(?, ''))`,
+		t.sid, wrole, t.parent, r.Cwd, r.GitBranch, r.GitBranch, r.Version, r.Timestamp, r.Timestamp, t.excluded); err != nil {
+		return err
+	}
+	t.ss.known = true
+	return nil
+}
+
+// names keeps the session's title (a /rename beats the harness's), every name it was given, and the rule files
+// the harness loaded.
+func (t *transcriptRead) names(r *row, p parsed) error {
+	if p.title != "" && (p.custom || !t.customTitle) {
+		t.title, t.customTitle = p.title, t.customTitle || p.custom
+	}
+	if p.custom && p.title != "" { // name rows carry no timestamp: the last timestamp seen dates them
+		if _, err := t.tx.Exec("insert or ignore into session_name(session_id, name, first_seen) values (?, ?, nullif(?, ''))", t.sid, p.title, t.lastTs); err != nil {
+			return err
+		}
+	}
+	for sha, text := range p.loaded {
+		if _, err := t.tx.Exec("insert or ignore into loaded_text(sha, first_seen, text) values (?, ?, ?)", sha, r.Timestamp, redacted(text)); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// resolveTool names the tool a result answers, from this read or the store; a relay tool's result is another
+// agent's words, and a shell's result that is not an error exited 0.
+func (t *transcriptRead) resolveTool(e *ev) {
+	if e.kind == "tool_call" && e.toolUse != "" {
+		t.toolNames[e.toolUse] = e.toolName
+	}
+	if e.kind != "tool_result" || e.toolUse == "" {
+		return
+	}
+	e.toolName = t.toolNames[e.toolUse]
+	if e.toolName == "" {
+		t.tx.QueryRow("select tool_name from event where session_id = ? and tool_use_id = ? and kind = 'tool_call'", t.sid, e.toolUse).Scan(&e.toolName) // its own session's call (SPEC I5)
+	}
+	if relayTool(e.toolName) { // another agent's words, never this one's (Wu 2026)
+		e.speaker, e.kind = "relay", "relay"
+	}
+	if e.exitCode == nil && shellSucceeded(e) {
+		zero := 0
+		e.exitCode = &zero
+	}
+}
+
+// shellSucceeded says a shell tool's result is marked not an error: it exited 0.
+func shellSucceeded(e *ev) bool {
+	return e.isError != nil && !*e.isError && (e.toolName == "Bash" || e.toolName == "PowerShell")
+}
+
+// finish updates the session's record with what the rows said.
+func (t *transcriptRead) finish() error {
+	if !t.ss.known {
+		return nil
+	}
+	_, err := t.tx.Exec(`update session set ended_at = max(coalesce(ended_at, ''), ?), branch_last = coalesce(nullif(?, ''), branch_last),
+		version_first = coalesce(version_first, nullif(?, '')), model = coalesce(nullif(?, ''), model), compactions = ?,
+		title = case when ? <> '' then ? else title end,
+		started_at = min(coalesce(started_at, ?), coalesce(nullif(?, ''), started_at)) where id = ?`,
+		t.lastTs, t.lastBranch, t.lastVersion, t.model, t.ss.compaction, t.title, t.title, t.firstTs, t.firstTs, t.sid)
+	return err
 }
 
 func seen(tx *sql.Tx, uuid string) bool {
@@ -427,86 +516,28 @@ func seen(tx *sql.Tx, uuid string) bool {
 }
 
 // insertEvent stores one event with its anchors; false when the uuid was already there.
-func (im *importer) insertEvent(tx *sql.Tx, uuid, sid string, seq int, ts, branch string, comp int, fileID, at int64, e ev) (bool, error) {
+func (im *importer) insertEvent(tx *sql.Tx, uuid, sid string, seq int, ts, branch string, comp int, fileID, at int64, e ev) error {
 	text, red := redact(e.text)
 	input, red2 := redact(e.toolInput)
-	if red2 != "" && red == "" {
-		red = red2
-	}
+	red = kindsIn(red + "," + red2) // every kind removed, from the text and the input alike (SPEC P2)
 	res, err := tx.Exec(`insert or ignore into event(uuid, session_id, seq, ts, speaker, kind, text, tool_name, tool_input, tool_use_id, is_error, exit_code, branch, compaction_no, loaded_sha, file_id, byte_offset, redacted)
 		values (?, ?, ?, ?, ?, ?, ?, nullif(?, ''), nullif(?, ''), nullif(?, ''), ?, ?, nullif(?, ''), ?, nullif(?, ''), ?, ?, nullif(?, ''))`,
 		uuid, sid, seq, ts, e.speaker, e.kind, text, e.toolName, input, e.toolUse, e.isError, e.exitCode, branch, comp, e.loadedSha, fileID, at, red)
 	if err != nil {
-		return false, err
+		return err
 	}
 	if n, _ := res.RowsAffected(); n == 0 {
-		return false, nil
+		return nil
 	}
 	id, _ := res.LastInsertId()
 	im.touched[sid] = true
 	for _, a := range anchors(text, e.kind, e.toolName) {
-		typ, val, verified := a.typ, a.value, sql.NullInt64{}
-		if typ == "sha?" {
-			full := im.commit(val)
-			if full == "" {
-				continue
-			}
-			typ, val, verified = "commit", full, sql.NullInt64{Int64: 1, Valid: true}
-		}
-		if _, err := tx.Exec("insert into anchor(event_id, type, value, verified) values (?, ?, ?, ?)", id, typ, val, verified); err != nil {
-			return false, err
+		if _, err := tx.Exec("insert into anchor(event_id, type, value) values (?, ?, ?)", id, a.typ, a.value); err != nil {
+			return err
 		}
 	}
 	im.added++
-	return true, nil
-}
-
-var fullShaRe = regexp.MustCompile(`^([0-9a-f]{40}) commit`)
-
-// commit returns the full id when git knows the candidate as a commit, "" otherwise. One git process serves the
-// whole run: a process per candidate made imports take 50-110 s once agents read repos full of hashes (2026-11-10).
-func (im *importer) commit(c string) string {
-	if v, ok := im.shaCache[c]; ok {
-		return v
-	}
-	v := ""
-	if im.repo != "" && im.startGit() {
-		fmt.Fprintln(im.gitIn, c)
-		line, err := im.gitOut.ReadString('\n')
-		if err != nil { // git died: stop asking it this run
-			im.closeGit()
-			im.repo = ""
-		} else if m := fullShaRe.FindStringSubmatch(line); m != nil {
-			v = m[1]
-		}
-	}
-	im.shaCache[c] = v
-	return v
-}
-
-func (im *importer) startGit() bool {
-	if im.git != nil {
-		return true
-	}
-	cmd := exec.Command("git", "-C", im.repo, "cat-file", "--batch-check")
-	in, err := cmd.StdinPipe()
-	if err != nil {
-		return false
-	}
-	out, err := cmd.StdoutPipe()
-	if err != nil || cmd.Start() != nil {
-		return false
-	}
-	im.git, im.gitIn, im.gitOut = cmd, in, bufio.NewReader(out)
-	return true
-}
-
-func (im *importer) closeGit() {
-	if im.git != nil {
-		im.gitIn.Close()
-		im.git.Wait()
-		im.git = nil
-	}
+	return nil
 }
 
 // archive appends the bytes just read to <archiveDir>/<project>/<file>.gz as a new gzip member (gunzip
@@ -514,66 +545,87 @@ func (im *importer) closeGit() {
 // to size, the length recorded with the last committed import, so a member left half-written by a killed
 // run is dropped instead of breaking every later read.
 func (im *importer) archive(path string, from, end int64, restart bool, size int64) (string, int64, error) {
+	dst, err := archivePath(im.archiveDir, path)
+	if err != nil {
+		return "", 0, err
+	}
+	if err := os.MkdirAll(filepath.Dir(dst), 0o755); err != nil {
+		return "", 0, err
+	}
+	if restart {
+		if err := keepReplaced(dst); err != nil {
+			return "", 0, err
+		}
+	}
+	if restart || from == 0 {
+		size = 0
+	}
+	n, err := appendMember(dst, path, from, end, size)
+	return dst, n, err
+}
+
+// archivePath is where path's raw copy goes: the same place under archiveDir as under the projects folder, a
+// subagent's (<project>/<sid>/subagents/[workflows/<wf>/]agent-x.jsonl) beside its parent's, and ~/.claude/history.jsonl
+// at .claude/history.jsonl.gz.
+func archivePath(archiveDir, path string) (string, error) {
 	projectsDir := filepath.Dir(filepath.Dir(path)) // <projects>/<project>/<sid>.jsonl
 	for d := filepath.Dir(path); filepath.Dir(d) != d; d = filepath.Dir(d) {
-		if filepath.Base(d) == "subagents" { // <projects>/<project>/<sid>/subagents/[workflows/<wf>/]agent-x.jsonl
+		if filepath.Base(d) == "subagents" {
 			projectsDir = filepath.Dir(filepath.Dir(filepath.Dir(d)))
 			break
 		}
 	}
 	rel, err := filepath.Rel(projectsDir, path)
 	if err != nil {
-		return "", 0, err
+		return "", err
 	}
-	dst := filepath.Join(im.archiveDir, rel+".gz")
-	if err := os.MkdirAll(filepath.Dir(dst), 0o755); err != nil {
-		return "", 0, err
+	return filepath.Join(archiveDir, rel+".gz"), nil
+}
+
+// keepReplaced moves the copy of a transcript that was rewritten (possibly losing history, #104123) beside the new
+// one, named by when it was replaced.
+func keepReplaced(dst string) error {
+	if _, err := os.Stat(dst); err != nil {
+		return nil
 	}
-	if restart {
-		// The transcript was rewritten (possibly losing history, #104123): keep the old copy beside the new one.
-		if _, err := os.Stat(dst); err == nil {
-			if err := os.Rename(dst, strings.TrimSuffix(dst, ".gz")+".replaced-"+time.Now().UTC().Format("20060102T150405")+".gz"); err != nil {
-				return "", 0, err
-			}
-		}
-	}
-	if restart || from == 0 {
-		size = 0
-	}
+	return os.Rename(dst, strings.TrimSuffix(dst, ".gz")+".replaced-"+time.Now().UTC().Format("20060102T150405")+".gz")
+}
+
+// appendMember cuts dst back to size, then appends path's bytes from from to end as one gzip member; it returns
+// dst's new size.
+func appendMember(dst, path string, from, end, size int64) (int64, error) {
 	out, err := os.OpenFile(dst, os.O_CREATE|os.O_WRONLY, 0o644)
 	if err != nil {
-		return "", 0, err
+		return 0, err
 	}
 	defer out.Close()
 	if err := out.Truncate(size); err != nil {
-		return "", 0, err
+		return 0, err
 	}
 	if _, err := out.Seek(size, io.SeekStart); err != nil {
-		return "", 0, err
+		return 0, err
 	}
 	src, err := os.Open(path)
 	if err != nil {
-		return "", 0, err
+		return 0, err
 	}
 	defer src.Close()
 	src.Seek(from, io.SeekStart)
 	zw := gzip.NewWriter(out)
 	if _, err := io.CopyN(zw, src, end-from); err != nil {
-		return "", 0, err
+		return 0, err
 	}
 	if err := zw.Close(); err != nil {
-		return "", 0, err
+		return 0, err
 	}
-	n, err := out.Seek(0, io.SeekCurrent)
-	return dst, n, err
+	return out.Seek(0, io.SeekCurrent)
 }
 
 var pastedRe = regexp.MustCompile(`\[Pasted text #(\d+)[^\]]*\]`)
 
 // readHistory imports ~/.claude/history.jsonl prompts whose session transcript no longer exists:
 // the user's typed words from sessions Claude Code already deleted.
-func (im *importer) readHistory(tx *sql.Tx, f io.Reader, from, fileID int64) (int, int64, error) {
-	added := 0
+func (im *importer) readHistory(tx *sql.Tx, f io.Reader, from, fileID int64) (int64, error) {
 	end, err := lines(f, from, func(line []byte, at int64) error {
 		var h struct {
 			Display        string `json:"display"`
@@ -606,14 +658,10 @@ func (im *importer) readHistory(tx *sql.Tx, f io.Reader, from, fileID int64) (in
 		tx.Exec("update session set ended_at = max(ended_at, ?), started_at = min(started_at, ?) where id = ?", ts, ts, h.SessionID)
 		var seq int
 		tx.QueryRow("select coalesce(max(seq), 0) + 1 from event where session_id = ?", h.SessionID).Scan(&seq)
-		ok, err := im.insertEvent(tx, fmt.Sprintf("hist:%s:%d", h.SessionID, h.Timestamp), h.SessionID, seq, ts, "", 0, fileID, at,
+		return im.insertEvent(tx, fmt.Sprintf("hist:%s:%d", h.SessionID, h.Timestamp), h.SessionID, seq, ts, "", 0, fileID, at,
 			ev{speaker: "user", kind: "prompt", text: text})
-		if ok {
-			added++
-		}
-		return err
 	})
-	return added, end, err
+	return end, err
 }
 
 // activeTime recomputes wall time minus gaps over 5 minutes (chronos) for the sessions touched.

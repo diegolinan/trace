@@ -15,16 +15,15 @@ import (
 var cfg config
 
 // config holds every setting that belongs to one user or one setup, so none of it is written in the code.
-// Flags override data, repo and scope.
+// Flags override data and scope.
 type config struct {
 	Data       string     `json:"data"`        // where trace.db and raw/ live; empty: the home itself
-	Repo       string     `json:"repo"`        // git repository for checking commit ids; empty: no checks
 	Scope      scopeList  `json:"scope"`       // a folder or a list of folders (inScope); empty: all
 	Claude     *bool      `json:"claude"`      // false: never read Claude Code transcripts or history.jsonl
 	User       string     `json:"user"`        // the person's name in the text the agents read; empty: "the user"
-	Roles      []roleRule `json:"roles"`       // named checkouts; empty: every git checkout is its own project
+	Roles      []roleRule `json:"roles"`       // named folders; empty: every folder is its own project
 	RelayTools []string   `json:"relay_tools"` // tool-name prefixes whose results are another agent's words
-	// Anchors adds tags beside commit, path and url: name -> regexp, for example a ticket id. Matches are kept as
+	// Anchors adds tags beside path and url: name -> regexp, for example a ticket id. Matches are kept as
 	// written.
 	Anchors map[string]string `json:"anchors"`
 	// PinPhrases mark a typed message as pinned, in any language; empty: "remember this".
@@ -48,7 +47,6 @@ var (
 // compileConfig builds the patterns cfg asks for. A bad pattern is reported and skipped, never fatal: the hooks
 // must not fail a turn.
 func compileConfig() {
-	setRepo(cfg.Repo)
 	extraAnchors = nil
 	for name, p := range cfg.Anchors {
 		re, err := regexp.Compile(p)
@@ -70,13 +68,12 @@ func compileConfig() {
 	pinRe = regexp.MustCompile(`(?i)\b(?:` + strings.Join(quoted, "|") + `)\b`)
 }
 
-// roleRule names a checkout by a file in its own root, so a moved or renamed folder keeps its role (the id-not-
-// name rule: agentmemory's git-dir test, engram #1717). Folder is the fallback when the cwd no longer exists.
+// roleRule names a folder by a file in it, so a moved or renamed folder keeps its role (the id-not-name rule,
+// engram #1717). Folder is the fallback when the cwd no longer exists. A "git" key in config.json is ignored (SPEC G3).
 type roleRule struct {
 	Name     string `json:"name"`
 	Label    string `json:"label"`    // how the resume block and helper agents name it
-	Git      string `json:"git"`      // "file": a linked worktree; "dir": a main checkout; empty: either
-	Marker   string `json:"marker"`   // a file at the checkout root...
+	Marker   string `json:"marker"`   // a file in the session's folder or one above it...
 	Contains string `json:"contains"` // ...that holds this text
 	Folder   string `json:"folder"`   // transcript folder name suffix, compared without case
 }
@@ -84,12 +81,15 @@ type roleRule struct {
 // traceHome holds config.json, and the data unless config moves it: $TRACE_HOME, else ~/.trace. A junction cannot
 // move the data: the SQLite driver fails to open a file through one on Windows ("cannot find the path
 // specified"), and Go 1.23+ does not follow junctions, so "data" names the real folder instead.
-func traceHome() string {
-	if h := os.Getenv("TRACE_HOME"); h != "" {
-		return h
+func traceHome() string { return envOrHome("TRACE_HOME", ".trace") }
+
+// envOrHome is the folder the variable names, else that folder under the user's home.
+func envOrHome(variable, folder string) string {
+	if d := os.Getenv(variable); d != "" {
+		return d
 	}
 	u, _ := os.UserHomeDir()
-	return filepath.Join(u, ".trace")
+	return filepath.Join(u, folder)
 }
 
 func dataDir(home string, c config) string {
@@ -166,7 +166,7 @@ func inScope(folder, scope string) bool {
 	return false
 }
 
-// projectRole is the role of a checkout when no roles are configured: its own folder name, so the resume block
+// projectRole is the role of a folder when no roles are configured: its own folder name, so the resume block
 // shows the last session of the same project.
 func projectRole(dir string) string { return "project:" + folderName(dir) }
 
@@ -184,34 +184,32 @@ func folderRole(folder string) string {
 	return "project:" + f
 }
 
-// roleFor reads the role from the checkout's own files. A cwd that no longer exists keeps the fallback.
+// roleFor reads the role from the files in the session.s folder and the folders above it. A cwd that no longer exists keeps the fallback.
 func roleFor(cwd, fallback string) string {
 	// A path from another system (D:\x read on Linux) is not absolute here; walking up it would reach ".".
 	if !filepath.IsAbs(cwd) {
 		return fallback
 	}
-	for d := cwd; d != ""; {
-		if st, err := os.Stat(filepath.Join(d, ".git")); err == nil {
-			if len(cfg.Roles) == 0 {
-				return projectRole(d)
+	// No roles: the session's own folder (SPEC G2). Roles: the nearest folder, from cwd up, holding a role's marker
+	// (SPEC G3). A .git is one more file and is never consulted.
+	if len(cfg.Roles) == 0 {
+		return projectRole(cwd)
+	}
+	for d := cwd; ; {
+		for _, r := range cfg.Roles {
+			if r.Marker == "" {
+				continue
 			}
-			for _, r := range cfg.Roles {
-				if r.Marker == "" || r.Git == "file" && st.IsDir() || r.Git == "dir" && !st.IsDir() {
-					continue
-				}
-				if b, _ := os.ReadFile(filepath.Join(d, r.Marker)); bytes.Contains(b, []byte(r.Contains)) {
-					return r.Name
-				}
+			if b, err := os.ReadFile(filepath.Join(d, r.Marker)); err == nil && bytes.Contains(b, []byte(r.Contains)) {
+				return r.Name
 			}
-			return "other"
 		}
 		up := filepath.Dir(d)
 		if up == d {
-			break
+			return fallback
 		}
 		d = up
 	}
-	return fallback
 }
 
 // ours says whether a role gets the resume block, the summary steer and the helper line. The hooks are user-wide,
@@ -244,15 +242,4 @@ func relayTool(name string) bool {
 		}
 	}
 	return false
-}
-
-// repoRe strips the repository prefix, and any worktree under .claude/worktrees, so a path means the same thing
-// from every checkout. Nil when no repo is set.
-var repoRe *regexp.Regexp
-
-func setRepo(repo string) {
-	repoRe = nil
-	if r := strings.TrimSuffix(filepath.ToSlash(repo), "/"); r != "" {
-		repoRe = regexp.MustCompile(`(?i)` + regexp.QuoteMeta(r) + `/(?:\.claude/worktrees/[^/]+/)?`)
-	}
 }

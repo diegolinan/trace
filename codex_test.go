@@ -73,7 +73,7 @@ func TestCodexImport(t *testing.T) {
 	defer db.Close()
 	empty := t.TempDir()
 	run := func() {
-		if err := runImport(db, filepath.Join(empty, "projects"), filepath.Join(empty, "h.jsonl"), codex, "", "", "acme", "test"); err != nil {
+		if err := runImport(db, filepath.Join(empty, "projects"), filepath.Join(empty, "h.jsonl"), codex, "", "acme", "test"); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -102,7 +102,7 @@ func TestCodexImport(t *testing.T) {
 		{"select count(*) from event where session_id = 't-old' and text = 'sesión vieja comprimida'", 1},
 		{"select count(*) from event where text like '%otro cliente%'", 0},
 		{"select count(*) from session where id = 't-other'", 0},
-		{"select count(*) from source_file where skipped = 'scope'", 1},
+		{"select count(*) from source_file where skipped = 'scope:acme'", 1},
 		{"select count(*) from session_name where session_id = 't-main' and name = 'login fix'", 1},
 		{"select count(*) from session_name where name = 'secret client'", 0},
 		{"select count(*) from unmapped where signature = 'codex event_msg/brand_new_kind'", 1},
@@ -150,7 +150,7 @@ func TestCodexMissing(t *testing.T) {
 	}
 	defer db.Close()
 	dir := t.TempDir()
-	if err := runImport(db, filepath.Join(dir, "p"), filepath.Join(dir, "h"), filepath.Join(dir, "no-codex"), "", "", "", "test"); err != nil {
+	if err := runImport(db, filepath.Join(dir, "p"), filepath.Join(dir, "h"), filepath.Join(dir, "no-codex"), "", "", "test"); err != nil {
 		t.Fatalf("missing Codex home: %v", err)
 	}
 }
@@ -161,20 +161,20 @@ func TestCodexResume(t *testing.T) {
 	db, _ := openDB(filepath.Join(t.TempDir(), "c.db"))
 	defer db.Close()
 	empty := t.TempDir()
-	runImport(db, filepath.Join(empty, "p"), filepath.Join(empty, "h"), codex, "", "", "acme", "test")
+	runImport(db, filepath.Join(empty, "p"), filepath.Join(empty, "h"), codex, "", "acme", "test")
 	var role string
 	db.QueryRow("select role from session where id = 't-main'").Scan(&role)
 	var out strings.Builder
-	if err := resumeBlock(db, "", "startup", role, "codex", &out); err != nil {
+	if err := resumeBlock(db, "", "startup", role, "codex", "", &out); err != nil {
 		t.Fatal(err)
 	}
-	for _, want := range []string{"Where the last Codex session in this checkout stopped", "arreglá el login", "listo, arreglado", "login fix"} {
+	for _, want := range []string{"Where the last Codex session in this folder stopped", "arreglá el login", "listo, arreglado", "login fix"} {
 		if !strings.Contains(out.String(), want) {
 			t.Errorf("missing %q in:\n%s", want, out.String())
 		}
 	}
 	var claude strings.Builder
-	resumeBlock(db, "", "startup", role, "claude-code", &claude)
+	resumeBlock(db, "", "startup", role, "claude-code", "", &claude)
 	if claude.Len() != 0 {
 		t.Errorf("a Codex session showed as Claude Code:\n%s", claude.String())
 	}

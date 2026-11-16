@@ -21,6 +21,9 @@ var secretPatterns = []struct {
 	{"assigned-secret", regexp.MustCompile(`(?i)\b[A-Z0-9_]*(?:API_KEY|APIKEY|TOKEN|SECRET|PASSWORD)\s*[:=]\s*["']?[A-Za-z0-9._~+/-]{16,}`)},
 }
 
+// redacted is s with its secrets replaced, for text stored outside events (SPEC P1).
+func redacted(s string) string { r, _ := redact(s); return r }
+
 // redact replaces secrets with a marker and says which kinds it removed ("" when none).
 func redact(s string) (string, string) {
 	var hit []string
@@ -33,15 +36,30 @@ func redact(s string) (string, string) {
 	return s, strings.Join(hit, ",")
 }
 
+// kindsIn is the secret kinds named in a comma-separated list, each once, in the order redact checks them.
+func kindsIn(list string) string {
+	named := map[string]bool{}
+	for _, k := range strings.Split(list, ",") {
+		named[k] = true
+	}
+	var out []string
+	for _, p := range secretPatterns {
+		if named[p.name] {
+			out = append(out, p.name)
+		}
+	}
+	return strings.Join(out, ",")
+}
+
 type anchorHit struct{ typ, value string }
 
 var (
-	shaRe  = regexp.MustCompile(`\b[0-9a-f]{7,40}\b`)
 	pathRe = regexp.MustCompile(`(?:[A-Za-z]:[\\/])?(?:[\w.-]+[\\/])+[\w.-]+\.(?:md|go|mjs|js|ts|json|jsonl|py|sh|txt|yaml|yml|toml|db|ps1|html|csv)\b`)
 	urlRe  = regexp.MustCompile(`https?://[^\s<>"'\x60)\]]+`)
 )
 
-// anchors extracts code-made tags. Commit candidates come back as type "sha?" and are kept only if git knows them.
+// anchors extracts code-made tags: tools, paths, urls and the configured extra ones. Commit ids are text, not tags
+// (SPEC G5).
 func anchors(text, kind, toolName string) []anchorHit {
 	var out []anchorHit
 	seen := map[string]bool{}
@@ -57,16 +75,7 @@ func anchors(text, kind, toolName string) []anchorHit {
 	if kind == "thinking" || kind == "injected" || kind == "summary" {
 		return out // anchors come from what was said or done, not from reasoning or re-sent text
 	}
-	for _, m := range shaRe.FindAllString(text, 200) {
-		if strings.ContainsAny(m, "0123456789") && strings.ContainsAny(m, "abcdef") {
-			put("sha?", m)
-		}
-	}
-	// The repo prefix can hold a space, so strip it before matching paths.
 	slashed := strings.ReplaceAll(text, `\`, "/")
-	if repoRe != nil {
-		slashed = repoRe.ReplaceAllString(slashed, "")
-	}
 	for _, m := range pathRe.FindAllString(slashed, 200) {
 		put("path", m)
 	}

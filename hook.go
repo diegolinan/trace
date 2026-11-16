@@ -53,7 +53,7 @@ func admitted(in hookInput, host, projects string) (ok, cwdIn bool) {
 		return false, false
 	}
 	rel, err := filepath.Rel(filepath.Clean(projects), filepath.Clean(in.Transcript))
-	if err != nil || filepath.IsAbs(rel) || rel == "." || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+	if err != nil || strings.HasPrefix(rel, ".."+string(filepath.Separator)) { // "." and ".." fail nested below
 		return false, false
 	}
 	project, _, nested := strings.Cut(filepath.ToSlash(rel), "/")
@@ -70,25 +70,8 @@ func hook(in hookInput, flags []string, dbPath, host, projects string, run func(
 	if !ok {
 		return nil
 	}
-	trigger := "hook"
-	if in.Event != "" {
-		trigger = "hook:" + in.Event
-	}
-	if in.Source != "" {
-		trigger += ":" + in.Source
-	}
-	if in.SessionID != "" { // which session fired it, so a hook that misfires can be traced
-		trigger += " " + short(in.SessionID)
-	}
-	_, role, _, excluded := sessionFor(in.Transcript)
-	if host == "codex" {
-		// A Codex payload names no Claude transcript folder, so the fallback is the folder itself, the role the
-		// importer gives a Codex thread (projectRole of its cwd), also outside a git checkout.
-		role, excluded = roleFor(in.Cwd, projectRole(in.Cwd)), ""
-	} else if in.Cwd != "" {
-		role = roleFor(in.Cwd, role)
-	}
-	mine := ours(role) && excluded == ""
+	trigger := hookTrigger(in)
+	role, mine := hookRole(in, host)
 	// One dispatch for both hosts. What differs is only how output is written: Codex rejects plain stdout on Stop and
 	// ignores it on PreCompact (schema.rs, stop.rs, compact.rs, rust-v0.169.0), so it gets context only as JSON, and
 	// only on the events that carry it (contextOut).
@@ -111,17 +94,8 @@ func hook(in hookInput, flags []string, dbPath, host, projects string, run func(
 		return err
 	case in.Event == "SessionStart" && in.Source == "compact":
 		err := spawnImport(flags, trigger)
-		// The host reloads the instruction files after a compaction, but not the user's rules from conversation.
 		if mine && cfg.Reinject != nil {
-			db, _ := openReadOnly(dbPath)
-			text, _ := sessionCard(db, in.Cwd, in.Transcript, role, host)
-			if db != nil {
-				db.Close()
-			}
-			if host == "codex" {
-				return errors.Join(err, contextOut(w, "SessionStart", text))
-			}
-			fmt.Fprint(w, text)
+			return errors.Join(err, compactCard(in, dbPath, role, host, w))
 		}
 		return err
 	case in.Event != "SessionStart": // Stop, SessionEnd, Interrupt (Codex only): import, print nothing
@@ -133,17 +107,66 @@ func hook(in hookInput, flags []string, dbPath, host, projects string, run func(
 	if !mine {
 		return nil
 	}
+	return startBlock(in, dbPath, role, host, w)
+}
+
+// hookTrigger names an import by the hook that started it, and which session fired it, so a hook that misfires can
+// be traced.
+func hookTrigger(in hookInput) string {
+	trigger := "hook"
+	if in.Event != "" {
+		trigger = "hook:" + in.Event
+	}
+	if in.Source != "" {
+		trigger += ":" + in.Source
+	}
+	if in.SessionID != "" {
+		trigger += " " + short(in.SessionID)
+	}
+	return trigger
+}
+
+// hookRole is the calling session's role, and whether this memory speaks to it (a role of its own, not excluded).
+// A Codex payload names no Claude transcript folder, so the fallback is the folder itself, the role the importer
+// gives a Codex thread (projectRole of its cwd).
+func hookRole(in hookInput, host string) (role string, mine bool) {
+	_, role, _, excluded := sessionFor(in.Transcript)
+	if host == "codex" {
+		role, excluded = roleFor(in.Cwd, projectRole(in.Cwd)), ""
+	} else if in.Cwd != "" {
+		role = roleFor(in.Cwd, role)
+	}
+	return role, ours(role) && excluded == ""
+}
+
+// compactCard prints the rule card after a compaction: the host reloads the instruction files then, but not the
+// user's rules from conversation.
+func compactCard(in hookInput, dbPath, role, host string, w io.Writer) error {
+	db, _ := openReadOnly(dbPath)
+	text, _ := sessionCard(db, in.Cwd, in.Transcript, role, host)
+	if db != nil {
+		db.Close()
+	}
+	if host == "codex" {
+		return contextOut(w, "SessionStart", text)
+	}
+	_, err := fmt.Fprint(w, text)
+	return err
+}
+
+// startBlock prints where the last session stopped. Codex reads SessionStart context from JSON on stdout
+// (hooks/src/schema.rs, rust-v0.169.0); never continue:false.
+func startBlock(in hookInput, dbPath, role, host string, w io.Writer) error {
 	db, err := openReadOnly(dbPath)
 	if err != nil {
 		return err
 	}
 	defer db.Close()
 	if host != "codex" {
-		return resumeBlock(db, in.SessionID, in.Source, role, host, w)
+		return resumeBlock(db, in.SessionID, in.Source, role, host, in.Cwd, w)
 	}
-	// Codex reads SessionStart context from JSON on stdout (hooks/src/schema.rs, rust-v0.169.0); never continue:false.
 	var buf strings.Builder
-	if err := resumeBlock(db, in.SessionID, in.Source, role, host, &buf); err != nil {
+	if err := resumeBlock(db, in.SessionID, in.Source, role, host, in.Cwd, &buf); err != nil {
 		return err
 	}
 	return contextOut(w, "SessionStart", buf.String())

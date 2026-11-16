@@ -15,10 +15,10 @@ func TestInScope(t *testing.T) {
 		want          bool
 	}{
 		{`D:\Work\acme`, "", true},
-		{`D:\Work\acme`, `D:\Work\acme`, true},                           // a full path
-		{"D--Projects-BUSQUEDAS-LABORALES", "busquedas-laborales", true}, // Claude folder name, either case
-		{`D:\Projects\diegolinan.me`, "diegolinan.me", true},             // normalized like the folder
-		{`D:\Work\other`, `D:\Work\acme, D:\Work\other`, true},           // a list
+		{`D:\Work\acme`, `D:\Work\acme`, true},                 // a full path
+		{"D--Projects-ACME-SHOP", "acme-shop", true},           // Claude folder name, either case
+		{`D:\Projects\example.com`, "example.com", true},       // normalized like the folder
+		{`D:\Work\other`, `D:\Work\acme, D:\Work\other`, true}, // a list
 		{`D:\Work\third`, `D:\Work\acme,D:\Work\other`, false},
 		{`D:\Work\third`, " , ", false}, // only separators: nothing, never everything
 	} {

@@ -34,6 +34,12 @@ func runTrace(t *testing.T, root, stdin string, env map[string]string, args ...s
 		cmd.Env = append(cmd.Env, k+"="+v)
 	}
 	cmd.Dir = root
+	if d, ok := env["_DIR"]; ok {
+		cmd.Dir = d
+	}
+	// A shell sets PWD to the folder it starts in, and os.Getwd keeps that unresolved path. Without it, macOS
+	// resolves the temp folder's /var link to /private/var and the folder no longer matches the stored cwd.
+	cmd.Env = append(cmd.Env, "PWD="+cmd.Dir)
 	cmd.Stdin = strings.NewReader(stdin)
 	var o, e bytes.Buffer
 	cmd.Stdout, cmd.Stderr = &o, &e

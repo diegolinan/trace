@@ -7,9 +7,7 @@ import (
 	"fmt"
 	"io"
 	"os"
-	"os/exec"
 	"regexp"
-	"runtime"
 	"strings"
 	"time"
 )
@@ -25,7 +23,22 @@ type check struct {
 	Run   string `json:"run"`   // shell command
 }
 
-const checkTimeout = 45 * time.Second
+// applies says whether the check follows this tool call: On matches the tool's name (empty: every tool) and Match
+// the file it wrote or the command it ran. A pattern that does not compile is the error.
+func (c check) applies(tool, target string) (bool, error) {
+	on, err := regexp.Compile(`^(?:` + c.On + `)$`)
+	if err != nil {
+		return false, err
+	}
+	match, err := regexp.Compile(c.Match)
+	if err != nil {
+		return false, err
+	}
+	return (c.On == "" || on.MatchString(tool)) && match.MatchString(target), nil
+}
+
+// checkLimit is the time all the checks of one tool call share, under the hook's 60 seconds (SPEC C2).
+var checkLimit = 45 * time.Second
 
 // checkMatcher is the PostToolUse matcher for the configured checks: empty when there are none, so no hook is
 // installed and no tool call starts a process.
@@ -55,24 +68,29 @@ func toolTarget(raw json.RawMessage) string {
 
 // runChecks runs every check that matches this tool call, logs each run, and returns the text the agent sees:
 // empty when all passed. A check whose patterns do not compile is reported, never skipped silently.
-func runChecks(db *sql.DB, in hookInput, cs []check, shell func(dir, cmd string) (string, error)) string {
+func runChecks(db *sql.DB, in hookInput, cs []check, shell func(ctx context.Context, dir, cmd string) (string, error)) string {
 	target := toolTarget(in.ToolInput)
+	ctx, cancel := context.WithTimeout(context.Background(), checkLimit)
+	defer cancel()
 	var out []string
 	for _, c := range cs {
-		on, err1 := regexp.Compile(`^(?:` + c.On + `)$`)
-		match, err2 := regexp.Compile(c.Match)
-		if err1 != nil || err2 != nil {
-			out = append(out, fmt.Sprintf("TRACE check %q is misconfigured: %v %v", c.Name, err1, err2))
+		applies, err := c.applies(in.ToolName, target)
+		if err != nil {
+			out = append(out, fmt.Sprintf("TRACE check %q is misconfigured: %v", c.Name, err))
 			continue
 		}
-		if c.On != "" && !on.MatchString(in.ToolName) || !match.MatchString(target) {
+		if !applies {
 			continue
 		}
-		text, err := shell(in.Cwd, c.Run)
+		if ctx.Err() != nil {
+			out = append(out, fmt.Sprintf("TRACE check %q was not run: the checks' %s for this tool call ran out.", c.Name, checkLimit))
+			continue
+		}
+		text, err := shell(ctx, in.Cwd, c.Run)
 		ok := err == nil
 		if db != nil {
 			db.Exec("insert into check_run(ts, session_id, name, tool, target, ok, output) values (?, ?, ?, ?, ?, ?, ?)",
-				time.Now().UTC().Format(time.RFC3339), in.SessionID, c.Name, in.ToolName, target, ok, clip(text, 4000))
+				time.Now().UTC().Format(time.RFC3339), in.SessionID, c.Name, in.ToolName, redacted(target), ok, redacted(clip(text, 4000)))
 		}
 		if !ok {
 			out = append(out, fmt.Sprintf("TRACE check %q failed after %s (%v). Fix this before going on:\n%s", c.Name, in.ToolName, err, clip(strings.TrimSpace(text), 2000)))
@@ -82,15 +100,12 @@ func runChecks(db *sql.DB, in hookInput, cs []check, shell func(dir, cmd string)
 	return clip(strings.Join(out, "\n\n"), 9000)
 }
 
-// runShell runs one check command in dir, with the platform's shell and a time limit.
-func runShell(dir, command string) (string, error) {
-	ctx, cancel := context.WithTimeout(context.Background(), checkTimeout)
-	defer cancel()
-	cmd := exec.CommandContext(ctx, "sh", "-c", command)
-	if runtime.GOOS == "windows" {
-		cmd = exec.CommandContext(ctx, "cmd", "/C", command)
-	}
+// runShell runs one check command in dir with the platform's shell, until ctx ends. Then shellCommand's Cancel
+// ends every process the command started; WaitDelay stops the wait for a pipe a stray child still holds.
+func runShell(ctx context.Context, dir, command string) (string, error) {
+	cmd := shellCommand(ctx, command)
 	cmd.Dir = dir
+	cmd.WaitDelay = 2 * time.Second
 	b, err := cmd.CombinedOutput()
 	return string(b), err
 }
@@ -100,9 +115,7 @@ func runShell(dir, command string) (string, error) {
 func anyCheckApplies(in hookInput, cs []check) bool {
 	target := toolTarget(in.ToolInput)
 	for _, c := range cs {
-		on, err1 := regexp.Compile(`^(?:` + c.On + `)$`)
-		match, err2 := regexp.Compile(c.Match)
-		if err1 != nil || err2 != nil || (c.On == "" || on.MatchString(in.ToolName)) && match.MatchString(target) {
+		if ok, err := c.applies(in.ToolName, target); ok || err != nil {
 			return true
 		}
 	}
@@ -110,53 +123,69 @@ func anyCheckApplies(in hookInput, cs []check) bool {
 }
 
 // ruleHook answers PostToolUse and UserPromptSubmit: the failed checks first, then the rule card when it is due
-// (reinject.go), as one output under Claude Code's 10,000-character cap. Checks run from the root of the session's
-// git checkout, so a project's command works after the agent cd's into a subfolder.
+// (reinject.go), as one output under Claude Code's 10,000-character cap. Checks run in the session's own folder.
 func ruleHook(in hookInput, role, host, dbPath string, checks bool, w io.Writer) error {
-	var db *sql.DB
-	open := func() *sql.DB {
-		if db == nil {
-			d, err := openDB(dbPath)
-			if err != nil {
-				fmt.Fprintln(os.Stderr, "trace: running without the store:", err)
-				return nil
-			}
-			db = d
-		}
-		return db
-	}
-	defer func() {
-		if db != nil {
-			db.Close()
-		}
-	}()
+	store := &lazyStore{path: dbPath}
+	defer store.close()
 	var parts []string
 	if checks && in.Event == "PostToolUse" && anyCheckApplies(in, cfg.Checks) {
-		ci := in
-		if root, err := exec.Command("git", "-C", in.Cwd, "rev-parse", "--show-toplevel").Output(); err == nil {
-			ci.Cwd = strings.TrimSpace(string(root))
-		}
-		if text := runChecks(open(), ci, cfg.Checks, runShell); text != "" {
+		// In the session's own folder (SPEC G6), not a repository root above it.
+		if text := runChecks(store.open(), in, cfg.Checks, runShell); text != "" {
 			parts = append(parts, text)
 		}
 	}
-	// Subagents get no card: their payload names the parent's transcript, so its size would be the parent's.
-	if cfg.Reinject != nil && in.AgentID == "" {
-		if ctx := contextTokens(in.Transcript, host); ctx > 0 {
-			if d := open(); d != nil {
-				text, _ := sessionCard(d, in.Cwd, in.Transcript, role, host)
-				out, _, err := reinjection(d, in.SessionID, ctx, text, cfg.Reinject.factor(), time.Now())
-				if err != nil {
-					fmt.Fprintln(os.Stderr, "trace: re-injection:", err)
-				}
-				if out != "" {
-					parts = append(parts, out)
-				}
-			}
-		}
+	if text := dueCard(in, role, host, store); text != "" {
+		parts = append(parts, text)
 	}
 	if len(parts) == 0 {
 		return nil
 	}
 	return contextOut(w, in.Event, clip(strings.Join(parts, "\n\n"), 9500))
+}
+
+// dueCard is the rule card when enough new context has come in since it was last shown, else "". Subagents get no
+// card: their payload names the parent's transcript, so its size would be the parent's.
+func dueCard(in hookInput, role, host string, store *lazyStore) string {
+	if cfg.Reinject == nil || in.AgentID != "" {
+		return ""
+	}
+	ctx := contextTokens(in.Transcript, host)
+	if ctx <= 0 {
+		return ""
+	}
+	d := store.open()
+	if d == nil {
+		return ""
+	}
+	text, _ := sessionCard(d, in.Cwd, in.Transcript, role, host)
+	out, _, err := reinjection(d, in.SessionID, ctx, text, reinjectFactor(), time.Now())
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "trace: re-injection:", err)
+	}
+	return out
+}
+
+// lazyStore opens the store the first time it is needed, so a tool call that needs nothing opens nothing; nil when
+// it cannot be opened (the hook then runs without it).
+type lazyStore struct {
+	path string
+	db   *sql.DB
+}
+
+func (s *lazyStore) open() *sql.DB {
+	if s.db == nil {
+		d, err := openDB(s.path)
+		if err != nil {
+			fmt.Fprintln(os.Stderr, "trace: running without the store:", err)
+			return nil
+		}
+		s.db = d
+	}
+	return s.db
+}
+
+func (s *lazyStore) close() {
+	if s.db != nil {
+		s.db.Close()
+	}
 }

@@ -121,6 +121,13 @@ create table if not exists codex_instructions (
   offset integer not null,
   text text not null
 );
+-- The instruction files a Claude Code transcript last recorded as loaded, as JSON, and how far it has been read
+-- (claudeSources): transcripts only grow.
+create table if not exists claude_instructions (
+  transcript text primary key,
+  offset integer not null,
+  files text not null
+);
 -- Every run of a configured check (checks.go): passes too, so the failure rate has its denominator.
 create table if not exists check_run (
   id integer primary key,
@@ -162,11 +169,30 @@ func openDB(path string) (*sql.DB, error) {
 		return nil, err
 	}
 	db.SetMaxOpenConns(1) // one writer connection (mnemos; ncruces #404 on Windows pools)
-	if _, err := db.Exec(schema); err != nil {
+	if err := migrate(db); err != nil {
 		db.Close()
 		return nil, err
 	}
-	// Columns added after the first import; "duplicate column" means the database already has them.
+	return db, nil
+}
+
+// migrate brings a store of any age to the current schema: the tables, the columns added after the first import,
+// and the one-time mends.
+func migrate(db *sql.DB) error {
+	if _, err := db.Exec(schema); err != nil {
+		return err
+	}
+	if err := addColumns(db); err != nil {
+		return err
+	}
+	if err := mendZstKeys(db); err != nil {
+		return err
+	}
+	return mendRedaction(db)
+}
+
+// addColumns adds the columns added after the first import; "duplicate column" means the store already has them.
+func addColumns(db *sql.DB) error {
 	for _, alter := range []string{
 		"alter table source_file add column tail_sha text",                            // hash of the bytes just before read_to_byte
 		"alter table source_file add column bad_lines integer not null default 0",     // lines no JSON parse could recover
@@ -175,18 +201,84 @@ func openDB(path string) (*sql.DB, error) {
 	} {
 		_, err := db.Exec(alter)
 		if err != nil && !strings.Contains(err.Error(), "duplicate column") {
-			db.Close()
-			return nil, err
+			return err
 		}
 		if err == nil && strings.Contains(alter, "archive_bytes") {
 			// Copies made before the column existed: their current size is the committed length.
 			if err := backfillArchiveBytes(db); err != nil {
-				db.Close()
-				return nil, err
+				return err
 			}
 		}
 	}
-	return db, nil
+	return nil
+}
+
+// mendRedaction runs once per store (user_version 1 to 2): text stored outside events before it went through redact
+// is redacted now (SPEC P1). Each table is read whole first, then written, so no write runs under an open read.
+func mendRedaction(db *sql.DB) error {
+	var v int
+	if err := db.QueryRow("pragma user_version").Scan(&v); err != nil || v >= 2 {
+		return err
+	}
+	tx, err := db.Begin()
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	for _, tc := range [][2]string{{"check_run", "target"}, {"check_run", "output"}, {"loaded_text", "text"},
+		{"claude_instructions", "files"}, {"codex_instructions", "text"}, {"card", "text"}} {
+		rows, err := tx.Query("select rowid, " + tc[1] + " from " + tc[0] + " where " + tc[1] + " is not null")
+		if err != nil {
+			return err
+		}
+		fixed := map[int64]string{}
+		for rows.Next() {
+			var id int64
+			var s string
+			rows.Scan(&id, &s)
+			if r := redacted(s); r != s {
+				fixed[id] = r
+			}
+		}
+		rows.Close()
+		for id, s := range fixed {
+			if _, err := tx.Exec("update "+tc[0]+" set "+tc[1]+" = ? where rowid = ?", s, id); err != nil {
+				return err
+			}
+		}
+	}
+	if _, err := tx.Exec("pragma user_version = 2"); err != nil {
+		return err
+	}
+	return tx.Commit()
+}
+
+// mendZstKeys runs once per store (user_version 0 to 1). Codex rows without an ordinal used to be keyed by the
+// compressed file's name too, so one row could be stored twice. Each copy whose plain-keyed twin exists is removed
+// with its tags; the rest take the plain-name key (SPEC I3).
+func mendZstKeys(db *sql.DB) error {
+	var v int
+	if err := db.QueryRow("pragma user_version").Scan(&v); err != nil || v >= 1 {
+		return err
+	}
+	const zst = "uuid like 'codex:%:@%.jsonl.zst:%'"
+	const twin = "exists (select 1 from event p where p.uuid = replace(event.uuid, '.jsonl.zst:', '.jsonl:'))"
+	tx, err := db.Begin()
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	for _, q := range []string{
+		"delete from anchor where event_id in (select id from event where " + zst + " and " + twin + ")",
+		"delete from event where " + zst + " and " + twin,
+		"update event set uuid = replace(uuid, '.jsonl.zst:', '.jsonl:') where " + zst,
+		"pragma user_version = 1",
+	} {
+		if _, err := tx.Exec(q); err != nil {
+			return err
+		}
+	}
+	return tx.Commit()
 }
 
 func backfillArchiveBytes(db *sql.DB) error {

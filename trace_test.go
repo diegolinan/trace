@@ -4,7 +4,6 @@ import (
 	"compress/gzip"
 	"database/sql"
 	"encoding/json"
-	"fmt"
 	"io"
 	"os"
 	"os/exec"
@@ -50,7 +49,7 @@ func setup(t *testing.T) (dir string, db *sql.DB, run func() int) {
 	t.Cleanup(func() { db.Close() })
 	run = func() int {
 		before := count(t, db, "select count(*) from event")
-		if err := runImport(db, filepath.Join(dir, "projects"), filepath.Join(dir, "history.jsonl"), filepath.Join(dir, "codex"), filepath.Join(dir, "raw"), "", "acme", "test"); err != nil {
+		if err := runImport(db, filepath.Join(dir, "projects"), filepath.Join(dir, "history.jsonl"), filepath.Join(dir, "codex"), filepath.Join(dir, "raw"), "acme", "test"); err != nil {
 			t.Fatal(err)
 		}
 		return count(t, db, "select count(*) from event") - before
@@ -72,10 +71,16 @@ func TestMain(m *testing.M) {
 		main()
 		os.Exit(0)
 	}
+	// Started with a trace subcommand: startImport under test runs os.Executable, which is this test binary. It exits
+	// at once. Rerunning the suite here started more of itself (257 processes under one mutant), and running main()
+	// would import with the machine's own config into its real store (14 empty imports landed there on 2026-11-15).
+	if len(os.Args) > 1 && !strings.HasPrefix(os.Args[1], "-") {
+		os.Exit(0)
+	}
 	cfg = config{User: "Ana", RelayTools: []string{"mcp__relay"}, Roles: []roleRule{
-		{Name: "aux", Label: "Agent A", Git: "file", Marker: "ROLE.md", Contains: "role: aux", Folder: "claude-worktrees-aux"},
-		{Name: "main", Label: "the main agent", Git: "dir", Marker: "ROLE.md", Contains: "role: main", Folder: "work-acme"},
-	}, Repo: "D:/Work/acme", Anchors: map[string]string{"queue_id": `\bQ\d{1,3}\b`, "card": `\b(?:E\d{3}|[Cc]ard \d{1,3})\b`}}
+		{Name: "aux", Label: "Agent A", Marker: "ROLE.md", Contains: "role: aux", Folder: "claude-worktrees-aux"},
+		{Name: "main", Label: "the main agent", Marker: "ROLE.md", Contains: "role: main", Folder: "work-acme"},
+	}, Anchors: map[string]string{"queue_id": `\bQ\d{1,3}\b`, "card": `\b(?:E\d{3}|[Cc]ard \d{1,3})\b`}}
 	compileConfig()
 	clockNow = func() time.Time { return time.Date(2026, 11, 12, 0, 0, 0, 0, time.UTC) }
 	os.Exit(m.Run())
@@ -227,7 +232,7 @@ func TestRedactAndAnchors(t *testing.T) {
 		t.Fatalf("redact: %q %q", s, r)
 	}
 	a := anchors(`D:\Work\acme\.claude\worktrees\aux\system\tools\trace\main.go, card 41 y E035`, "reply", "")
-	want := map[string]bool{"path system/tools/trace/main.go": false, "card card 41": false, "card E035": false}
+	want := map[string]bool{"path D:/Work/acme/.claude/worktrees/aux/system/tools/trace/main.go": false, "card card 41": false, "card E035": false}
 	for _, h := range a {
 		if _, ok := want[h.typ+" "+h.value]; ok {
 			want[h.typ+" "+h.value] = true
@@ -249,7 +254,7 @@ func TestHookDetaches(t *testing.T) {
 	}
 	exec.Command(exe).Run() // warm-up: Windows scans a fresh binary on its first run, which is not the hook's cost
 	hook := exec.Command(exe, "hook", "-db", filepath.Join(dir, "m.db"), "-projects", filepath.Join(dir, "projects"),
-		"-history", filepath.Join(dir, "history.jsonl"), "-archive", filepath.Join(dir, "raw"), "-repo=", "-scope", "acme")
+		"-history", filepath.Join(dir, "history.jsonl"), "-archive", filepath.Join(dir, "raw"), "-scope", "acme")
 	hook.Env = append(os.Environ(), "TRACE_HOME="+dir) // never the machine's own config.json
 	cwd, _ := json.Marshal(filepath.Join(dir, "acme")) // absolute and in scope: the gate admits it
 	hook.Stdin = strings.NewReader(`{"hook_event_name":"SessionEnd","session_id":"s1","cwd":` + string(cwd) + `}`)
@@ -279,7 +284,7 @@ func TestSessionStartResume(t *testing.T) {
 	dir, db, _ := setup(t)
 	dbPath := filepath.Join(dir, "m.db")
 	run := func(db *sql.DB, trigger string) error {
-		return runImport(db, filepath.Join(dir, "projects"), filepath.Join(dir, "history.jsonl"), filepath.Join(dir, "codex"), filepath.Join(dir, "raw"), "", "acme", trigger)
+		return runImport(db, filepath.Join(dir, "projects"), filepath.Join(dir, "history.jsonl"), filepath.Join(dir, "codex"), filepath.Join(dir, "raw"), "acme", trigger)
 	}
 	var out strings.Builder
 	// A later Codex session in the same checkout shares the role (role = which checkout) but is not the same agent (host = which agent).
@@ -312,7 +317,7 @@ func TestSessionStartResume(t *testing.T) {
 	oldRoles := cfg.Roles
 	cfg.Roles = nil
 	defer func() { cfg.Roles = oldRoles }()
-	if _, err := db.Exec(`insert into session(id, host, role, started_at, ended_at) values ('cx2', 'codex', ?, '2026-11-11T11:00:00Z', '2026-11-11T12:00:00Z')`, projectRole(dir)); err != nil {
+	if _, err := db.Exec(`insert into session(id, host, role, cwd, started_at, ended_at) values ('cx2', 'codex', ?, ?, '2026-11-11T11:00:00Z', '2026-11-11T12:00:00Z')`, projectRole(dir), dir); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := db.Exec(`insert into event(session_id, seq, ts, speaker, kind, text) values ('cx2', 1, '2026-11-11T11:30:00Z', 'assistant', 'reply', 'NONCE_CODEX_71')`); err != nil {
@@ -331,26 +336,6 @@ func TestSessionStartResume(t *testing.T) {
 	}
 }
 
-// One git process answers every commit candidate of a run, known or not.
-func TestCommitBatch(t *testing.T) {
-	head, err := exec.Command("git", "rev-parse", "HEAD").Output()
-	if err != nil {
-		t.Skip("no git")
-	}
-	full := strings.TrimSpace(string(head))
-	im := &importer{repo: ".", shaCache: map[string]string{}} // the enclosing checkout, wherever this folder lives
-	defer im.closeGit()
-	for i := 0; i < 3; i++ {
-		if got := im.commit(full[:9]); got != full {
-			t.Fatalf("commit(%s) = %q, want %s", full[:9], got, full)
-		}
-		if got := im.commit(fmt.Sprintf("0000000%d", i)); got != "" {
-			t.Fatalf("unknown sha resolved to %q", got)
-		}
-		delete(im.shaCache, full[:9])
-	}
-}
-
 // The role comes from the checkout's own binding files, so a moved folder keeps it; the folder name is the fallback.
 func TestRoleFor(t *testing.T) {
 	dir := t.TempDir()
@@ -366,7 +351,7 @@ func TestRoleFor(t *testing.T) {
 	mk("main/ROLE.md", "role: main\n")
 	mk("other-wt/.git", "gitdir: y")
 	for cwd, want := range map[string]string{
-		"moved-b": "aux", "moved-b/system/tools": "aux", "main": "main", "other-wt": "other", "gone": "fallback",
+		"moved-b": "aux", "moved-b/system/tools": "aux", "main": "main", "other-wt": "fallback", "gone": "fallback", // SPEC G3: the .git files are ignored
 	} {
 		if got := roleFor(filepath.Join(dir, cwd), "fallback"); got != want {
 			t.Errorf("roleFor(%s) = %s, want %s", cwd, got, want)
@@ -375,7 +360,7 @@ func TestRoleFor(t *testing.T) {
 	if _, role, _, _ := sessionFor(filepath.Join("p", "d--work-acme", "s.jsonl")); role != "main" {
 		t.Errorf("lower-case main folder got role %s", role)
 	}
-	// With no roles configured, every checkout is its own project, and its sessions get the hooks.
+	// With no roles configured, every folder is its own project (SPEC G2), and its sessions get the hooks.
 	saved := cfg
 	cfg = config{}
 	defer func() { cfg = saved }()
@@ -513,7 +498,7 @@ func TestRestoreFromRaw(t *testing.T) {
 	}
 	defer db2.Close()
 	restore := func() {
-		if err := runImport(db2, raw, filepath.Join(raw, ".claude", "history.jsonl.gz"), "", "", "", "acme", "restore"); err != nil {
+		if err := runImport(db2, raw, filepath.Join(raw, ".claude", "history.jsonl.gz"), "", "", "acme", "restore"); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -539,5 +524,33 @@ func TestRestoreFromRaw(t *testing.T) {
 	}
 	if n := count(t, db2, "select count(*) from source_file where last_error is not null"); n != 0 {
 		t.Errorf("%d raw copies failed to restore", n)
+	}
+}
+
+// SPEC R1: restore brings back the prompt log with any scope; with the empty one it walks raw/.claude too.
+func TestRestorePromptLogAnyScope(t *testing.T) {
+	dir, db, run := setup(t)
+	run()
+	raw := filepath.Join(dir, "raw")
+	q := "select count(*) from event e join session s on s.id = e.session_id where s.host = 'prompt-log'"
+	want := count(t, db, q)
+	if want == 0 {
+		t.Fatal("the fixture has no prompt-log events to restore")
+	}
+	for _, scope := range []string{"", "acme"} {
+		db2, err := openDB(filepath.Join(t.TempDir(), "restored.db"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		// the copy sits where archive puts <home>/<folder>/history.jsonl: raw/<folder>/ (raw/.claude/ for the real one)
+		if err := runImport(db2, raw, filepath.Join(raw, filepath.Base(dir), "history.jsonl.gz"), "", "", scope, "restore"); err != nil {
+			t.Fatal(err)
+		}
+		// The store was imported with scope acme; the empty scope admits every project's prompts, so it may bring
+		// more, never fewer.
+		if got := count(t, db2, q); got < want || (scope == "acme" && got != want) {
+			t.Errorf("scope %q: restored %d prompt-log events, the store had %d", scope, got, want)
+		}
+		db2.Close()
 	}
 }

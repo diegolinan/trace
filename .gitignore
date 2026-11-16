@@ -1,0 +1,3 @@
+# Built binaries: releases are built by CI (release.yml).
+/trace.exe
+/trace

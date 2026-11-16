@@ -28,134 +28,110 @@ type reinjectCfg struct {
 	Budget int     `json:"budget"` // most characters of the card; 0: 8000, so it fits one hook output with room for checks
 }
 
-func (r *reinjectCfg) factor() float64 {
-	if r == nil || r.Factor <= 0 {
-		return 7
+// limits are the card's factor and budget, with their defaults (7, 8000) for an absent, zero or negative setting.
+func (r *reinjectCfg) limits() (factor float64, budget int) {
+	factor, budget = 7, 8000
+	if r != nil && r.Factor > 0 {
+		factor = r.Factor
 	}
-	return r.Factor
-}
-
-func (r *reinjectCfg) budget() int {
-	if r == nil || r.Budget <= 0 {
-		return 8000
+	if r != nil && r.Budget > 0 {
+		budget = r.Budget
 	}
-	return r.Budget
+	return factor, budget
 }
 
 const rulesOpen, rulesClose = "<!-- trace:rules -->", "<!-- /trace:rules -->"
 
 type source struct{ label, text string }
 
-// gitRoots walks up from dir to the checkout root and the main repository's root (they differ in a linked worktree).
-// No git process: this runs on every tool call.
-func gitRoots(dir string) (root, main string) {
-	for d := dir; ; {
-		if st, err := os.Stat(filepath.Join(d, ".git")); err == nil {
-			if st.IsDir() {
-				return d, d
-			}
-			b, _ := os.ReadFile(filepath.Join(d, ".git"))
-			// "gitdir: <main>/.git/worktrees/<name>"
-			if g := strings.TrimSpace(strings.TrimPrefix(string(b), "gitdir:")); strings.Contains(filepath.ToSlash(g), "/.git/worktrees/") {
-				return d, filepath.FromSlash(strings.SplitN(filepath.ToSlash(g), "/.git/worktrees/", 2)[0])
-			}
-			return d, d
-		}
-		up := filepath.Dir(d)
-		if up == d {
-			return dir, dir
-		}
-		d = up
-	}
+// loadedFile is one file of Claude Code's "instructions" record: what it loaded for the session, and as what
+// (Project, Local, User, AutoMem...).
+type loadedFile struct {
+	Path    string `json:"path"`
+	Type    string `json:"type"`
+	Content string `json:"content"`
 }
 
-// importRe finds Claude Code's "@path" imports: at the start of a line or after a space, outside code.
-var importRe = regexp.MustCompile(`(?m)(?:^|\s)@(~?[\w./\\:-]+)`)
-
-// withImports returns the file and every file it imports, depth first, as Claude Code loads them (at most 5 deep).
-func withImports(path, home string, depth int, seen map[string]bool, out *[]source, label func(string) string) {
-	abs, _ := filepath.Abs(path)
-	if depth > 5 || seen[strings.ToLower(abs)] {
-		return
-	}
-	b, err := os.ReadFile(abs)
-	if err != nil {
-		return
-	}
-	seen[strings.ToLower(abs)] = true
-	text := strings.ReplaceAll(string(bytes.TrimPrefix(b, []byte("\xef\xbb\xbf"))), "\r\n", "\n")
-	*out = append(*out, source{label(abs), text})
-	inCode := false
-	for _, line := range strings.Split(text, "\n") {
-		if strings.HasPrefix(strings.TrimSpace(line), "```") {
-			inCode = !inCode
-			continue
-		}
-		if inCode {
-			continue
-		}
-		for _, m := range importRe.FindAllStringSubmatch(strings.ReplaceAll(line, "`", " ` "), -1) {
-			p := m[1]
-			if strings.HasPrefix(p, "~") {
-				p = filepath.Join(home, p[1:])
-			} else if !filepath.IsAbs(p) {
-				p = filepath.Join(filepath.Dir(abs), p)
-			}
-			if st, err := os.Stat(p); err == nil && !st.IsDir() {
-				withImports(p, home, depth+1, seen, out, label)
-			}
-		}
-	}
-}
-
-// claudeSources are the instruction files Claude Code loads for a session in cwd: the user's CLAUDE.md, the
-// checkout's CLAUDE.md, .claude/CLAUDE.md and CLAUDE.local.md with their imports, and auto memory's MEMORY.md.
-func claudeSources(cwd, home string) []source {
-	root, main := gitRoots(cwd)
-	label := func(p string) string {
-		if r, err := filepath.Rel(root, p); err == nil && !strings.HasPrefix(r, "..") {
-			return filepath.ToSlash(r)
-		}
-		return filepath.ToSlash(p)
+// claudeSources are the instruction files Claude Code says it loaded for the session whose transcript this is: the
+// last "instructions" record in it (CLAUDE.md files, their imports, CLAUDE.local.md, auto memory's MEMORY.md), so
+// they are what the host loaded and not a re-run of its discovery (SPEC G8). Each file is read again from disk, so a
+// change shows; a file that is gone keeps the text recorded. Like codexSources, the store keeps how far the transcript
+// was read and what it held; a transcript shorter than that was replaced and is read again from the start.
+func claudeSources(db *sql.DB, transcript string) []source {
+	var loaded []loadedFile
+	if json.Unmarshal([]byte(lastRecord(db, "claude_instructions", "transcript", "files", transcript, claudeInstructions)), &loaded) != nil {
+		return nil
 	}
 	var out []source
-	seen := map[string]bool{}
-	for _, p := range []string{filepath.Join(home, ".claude", "CLAUDE.md"), filepath.Join(root, "CLAUDE.md"),
-		filepath.Join(root, ".claude", "CLAUDE.md"), filepath.Join(root, "CLAUDE.local.md")} {
-		withImports(p, home, 0, seen, &out, label)
-	}
-	if mem := memoryFile(root, main, home); mem != "" {
-		withImports(mem, home, 5, seen, &out, label) // MEMORY.md is an index: its links are not imports
+	for _, l := range loaded {
+		text := l.Content
+		if b, err := os.ReadFile(l.Path); err == nil {
+			text = string(bytes.TrimPrefix(b, []byte("\xef\xbb\xbf")))
+		}
+		out = append(out, source{filepath.ToSlash(l.Path), strings.ReplaceAll(text, "\r\n", "\n")})
 	}
 	return out
 }
 
-// memoryFile is auto memory's MEMORY.md: autoMemoryDirectory from the checkout's local settings, its shared
-// settings or the user's (in that order), else the folder Claude Code derives from the main repository's path.
-func memoryFile(root, main, home string) string {
-	enabled, dir := true, ""
-	for _, p := range []string{filepath.Join(home, ".claude", "settings.json"), filepath.Join(root, ".claude", "settings.json"),
-		filepath.Join(root, ".claude", "settings.local.json")} {
-		var s struct {
-			Enabled *bool  `json:"autoMemoryEnabled"`
-			Dir     string `json:"autoMemoryDirectory"`
-		}
-		if b, err := os.ReadFile(p); err == nil && json.Unmarshal(b, &s) == nil {
-			if s.Enabled != nil {
-				enabled = *s.Enabled
-			}
-			if s.Dir != "" {
-				dir = s.Dir
-			}
-		}
+// claudeInstructions returns the files of one transcript line, as stored JSON, when it is an instructions record.
+func claudeInstructions(line []byte) (string, bool) {
+	if !bytes.Contains(line, []byte(`"instructions"`)) {
+		return "", false
 	}
-	if !enabled {
+	var rec struct {
+		Attachment struct {
+			Type  string       `json:"type"`
+			Files []loadedFile `json:"files"`
+		} `json:"attachment"`
+	}
+	if json.Unmarshal(line, &rec) != nil || rec.Attachment.Type != "instructions" || len(rec.Attachment.Files) == 0 {
+		return "", false
+	}
+	for i := range rec.Attachment.Files { // stored redacted (SPEC P1); the card reads the file again from disk
+		rec.Attachment.Files[i].Content = redacted(rec.Attachment.Files[i].Content)
+	}
+	b, _ := json.Marshal(rec.Attachment.Files)
+	return string(b), true
+}
+
+// lastRecord is the last line of path that match recognizes, as match returns it. The store keeps, in table, how
+// far path was read and what that line held, so each call reads only what the host appended since; a file shorter
+// than that offset was replaced and is read again from the start. Without a writable store (db nil or read-only) the
+// whole file is read. A last line without its newline is still being written: it is read next time.
+func lastRecord(db *sql.DB, table, key, val, path string, match func(line []byte) (string, bool)) string {
+	f, err := os.Open(path)
+	if err != nil {
 		return ""
 	}
-	if dir == "" {
-		dir = filepath.Join(home, ".claude", "projects", notAlnum.ReplaceAllString(main, "-"), "memory")
+	defer f.Close()
+	st, err := f.Stat()
+	if err != nil {
+		return ""
 	}
-	return filepath.Join(dir, "MEMORY.md")
+	var off int64
+	last := ""
+	if db != nil {
+		db.QueryRow("select offset, "+val+" from "+table+" where "+key+" = ?", path).Scan(&off, &last)
+	}
+	if off > st.Size() {
+		off, last = 0, ""
+	}
+	r := bufio.NewReaderSize(io.NewSectionReader(f, off, st.Size()-off), 1<<20)
+	read := off
+	for {
+		line, err := r.ReadBytes('\n')
+		if err != nil {
+			break
+		}
+		read += int64(len(line))
+		if v, ok := match(line); ok {
+			last = v
+		}
+	}
+	if db != nil && read != off {
+		db.Exec("insert into "+table+"("+key+", offset, "+val+") values (?, ?, ?) on conflict("+key+") do update set offset = excluded.offset, "+val+" = excluded."+val, path, read, last)
+	}
+	return last
 }
 
 // ruleBlocks returns the text between rulesOpen and rulesClose markers, each block in full.
@@ -171,7 +147,9 @@ func ruleBlocks(text string) string {
 		if j < 0 {
 			j = len(rest)
 		}
-		blocks = append(blocks, strings.TrimSpace(rest[:j]))
+		if b := strings.TrimSpace(rest[:j]); b != "" { // an empty block adds nothing, not even blank lines
+			blocks = append(blocks, b)
+		}
 		rest = rest[j:]
 	}
 	return strings.Join(blocks, "\n\n")
@@ -217,7 +195,7 @@ func card(srcs []source, rules string, budget int) (text, note string) {
 		note = strings.TrimPrefix(note+"; the card was cut at the budget", "; ")
 	}
 	return "## Rules in force (re-injected by trace as the session grows; the files and the user's words are the source)\n\n" + body +
-		fmt.Sprintf("\nEverything said before: `%s <words>`. Search before saying you cannot confirm something; if nothing comes up, search again in the other language and with synonyms.\n", searchCmd()), note
+		fmt.Sprintf("\nEverything said before: %s. Search before saying you cannot confirm something; if nothing comes up, search again in the other language and with synonyms.\n", searchCmd()), note
 }
 
 // codexInstructionsRe is the message a Codex rollout records with the AGENTS.md text it loaded (global and project,
@@ -232,38 +210,10 @@ var codexInstructionsRe = regexp.MustCompile(`(?s)\A# AGENTS\.md instructions fo
 // only what Codex appended since; a rollout shorter than that offset was replaced and is read again from the start.
 // Without a writable store (db nil or read-only) the whole rollout is read.
 func codexSources(db *sql.DB, rollout string) []source {
-	f, err := os.Open(rollout)
-	if err != nil {
-		return nil
-	}
-	defer f.Close()
-	st, err := f.Stat()
-	if err != nil {
-		return nil
-	}
-	var off int64
-	text := ""
-	if db != nil {
-		db.QueryRow("select offset, text from codex_instructions where rollout = ?", rollout).Scan(&off, &text)
-	}
-	if off > st.Size() {
-		off, text = 0, ""
-	}
-	r := bufio.NewReaderSize(io.NewSectionReader(f, off, st.Size()-off), 1<<20)
-	read := off
-	for {
-		line, err := r.ReadBytes('\n')
-		if err != nil { // a last line without its newline is still being written: read it next time
-			break
-		}
-		read += int64(len(line))
-		if t, ok := codexInstructions(line); ok {
-			text = t
-		}
-	}
-	if db != nil && read != off {
-		db.Exec("insert into codex_instructions(rollout, offset, text) values (?, ?, ?) on conflict(rollout) do update set offset = excluded.offset, text = excluded.text", rollout, read, text)
-	}
+	text := lastRecord(db, "codex_instructions", "rollout", "text", rollout, func(line []byte) (string, bool) {
+		t, ok := codexInstructions(line)
+		return redacted(t), ok // stored and shown redacted (SPEC P1)
+	})
 	if strings.TrimSpace(text) == "" {
 		return nil
 	}
@@ -371,6 +321,8 @@ func reinjection(db *sql.DB, sid string, ctx int, text string, factor float64, n
 	if text == "" || ctx == 0 || sid == "" {
 		return "", "", nil
 	}
+	// Redacted before anything: the card is stored, and the stored and the new text must compare alike (SPEC P1).
+	text = redacted(text)
 	// Parallel tool calls fire their hooks at once: the read and the record are one write transaction, so only one
 	// of them injects. openDB keeps a single connection, so these statements all run on it.
 	if _, err := db.Exec("begin immediate"); err != nil {
@@ -383,33 +335,46 @@ func reinjection(db *sql.DB, sid string, ctx int, text string, factor float64, n
 			db.Exec("rollback")
 		}
 	}()
+	if out, reason, err = injectionDue(db, sid, ctx, text, factor); err != nil || reason == "" {
+		return "", "", err
+	}
+	return out, reason, recordInjection(db, sid, ctx, text, out, reason, now)
+}
+
+// injectionDue decides against the session's last record: "start" (none yet: the host loaded the files itself, this
+// is the baseline), "reset" (a smaller context), "change" (the card changed: only its new lines), "threshold" (enough
+// new context: the whole card), or "" for nothing.
+func injectionDue(db *sql.DB, sid string, ctx int, text string, factor float64) (out, reason string, err error) {
 	var lastCtx int
 	var lastSha string
 	switch err := db.QueryRow("select ctx_tokens, card_sha from injection where session_id = ? order by id desc limit 1", sid).Scan(&lastCtx, &lastSha); {
 	case err == sql.ErrNoRows:
-		reason = "start" // the host loaded the files itself; this is the baseline
+		return "", "start", nil
 	case err != nil:
 		return "", "", err
 	case ctx < lastCtx:
-		reason = "reset"
+		return "", "reset", nil
 	case lastSha != sha(text):
 		var old string
 		db.QueryRow("select text from card where sha = ?", lastSha).Scan(&old)
 		if out = newLines(old, text); out != "" {
 			out = "## Rules changed since the last time trace showed them (new or changed lines only)\n" + out
 		}
-		reason = "change"
+		return out, "change", nil
 	case float64(ctx-lastCtx) >= factor*float64(len(text))/4: // about 4 characters per token
-		out, reason = text, "threshold"
-	default:
-		return "", "", nil
+		return text, "threshold", nil
 	}
+	return "", "", nil
+}
+
+// recordInjection keeps the card's text by its hash and the decision, so the next call compares against it.
+func recordInjection(db *sql.DB, sid string, ctx int, text, out, reason string, now time.Time) error {
 	if _, err := db.Exec("insert or ignore into card(sha, first_seen, text) values (?, ?, ?)", sha(text), now.UTC().Format(time.RFC3339), text); err != nil {
-		return "", "", err
+		return err
 	}
-	_, err = db.Exec("insert into injection(session_id, ts, ctx_tokens, reason, card_sha, chars) values (?, ?, ?, ?, ?, ?)",
+	_, err := db.Exec("insert into injection(session_id, ts, ctx_tokens, reason, card_sha, chars) values (?, ?, ?, ?, ?, ?)",
 		sid, now.UTC().Format(time.RFC3339), ctx, reason, sha(text), len(out))
-	return out, reason, err
+	return err
 }
 
 func newLines(old, cur string) string {
@@ -431,11 +396,13 @@ func newLines(old, cur string) string {
 func sessionCard(db *sql.DB, cwd, transcript, role, host string) (string, string) {
 	var rules strings.Builder
 	if db != nil {
-		refusals(db, &rules, userName(), host, role)
+		refusals(db, &rules, userName(), host, role, cwd)
 	}
 	if host == "codex" {
-		return card(codexSources(db, transcript), rules.String(), cfg.Reinject.budget())
+		return card(codexSources(db, transcript), rules.String(), reinjectBudget())
 	}
-	home, _ := os.UserHomeDir()
-	return card(claudeSources(cwd, home), rules.String(), cfg.Reinject.budget())
+	return card(claudeSources(db, transcript), rules.String(), reinjectBudget())
 }
+
+func reinjectFactor() float64 { f, _ := cfg.Reinject.limits(); return f }
+func reinjectBudget() int     { _, b := cfg.Reinject.limits(); return b }

@@ -73,7 +73,7 @@ func hookHome(h any) (home string, named, ok bool) {
 	}
 	fs := flag.NewFlagSet("hook", flag.ContinueOnError)
 	fs.SetOutput(io.Discard)
-	for _, n := range []string{"home", "db", "projects", "history", "codex", "host", "not", "archive", "repo", "scope", "trigger", "who", "since", "mode"} {
+	for _, n := range []string{"home", "db", "projects", "history", "codex", "host", "not", "archive", "scope", "trigger", "who", "since", "mode"} {
 		fs.String(n, "", "")
 	}
 	fs.Int("n", 0, "")
@@ -147,39 +147,10 @@ func setHooks(settings map[string]any, exe, home string, opt map[string]string, 
 	var changed []string
 	for _, ev := range hookEvents {
 		before, _ := hooks[ev.name].([]any)
-		var after []any
-		for _, g := range before {
-			group, ok := g.(map[string]any)
-			if !ok {
-				after = append(after, g)
-				continue
-			}
-			inner, _ := group["hooks"].([]any)
-			var kept []any
-			for _, h := range inner {
-				if !mine(h) {
-					kept = append(kept, h)
-				}
-			}
-			if len(kept) == len(inner) {
-				after = append(after, g)
-			} else if len(kept) > 0 {
-				copyGroup := map[string]any{}
-				for k, v := range group {
-					copyGroup[k] = v
-				}
-				copyGroup["hooks"] = kept
-				after = append(after, copyGroup)
-			}
-		}
+		after := withoutMine(before, mine)
 		matcher, asked := opt[ev.name]
 		if exe != "" && (asked || !optional[ev.name]) {
-			group := map[string]any{"hooks": []any{map[string]any{
-				"type": "command", "command": exe, "args": []any{"hook", "-home", home}, "timeout": float64(ev.timeout)}}}
-			if matcher != "" {
-				group["matcher"] = matcher
-			}
-			after = append(after, group)
+			after = append(after, traceGroup(exe, home, matcher, ev.timeout))
 		}
 		if !reflect.DeepEqual(normalize(before), normalize(after)) {
 			changed = append(changed, ev.name)
@@ -198,6 +169,48 @@ func setHooks(settings map[string]any, exe, home string, opt map[string]string, 
 	return changed
 }
 
+// withoutMine is an event's hook groups with the hooks mine claims taken out: a group left empty goes, a group that
+// lost some is copied with the rest, and anything else is kept as it was.
+func withoutMine(groups []any, mine func(any) bool) []any {
+	var after []any
+	for _, g := range groups {
+		group, ok := g.(map[string]any)
+		if !ok {
+			after = append(after, g)
+			continue
+		}
+		inner, _ := group["hooks"].([]any)
+		var kept []any
+		for _, h := range inner {
+			if !mine(h) {
+				kept = append(kept, h)
+			}
+		}
+		switch {
+		case len(kept) == len(inner):
+			after = append(after, g)
+		case len(kept) > 0:
+			copyGroup := map[string]any{}
+			for k, v := range group {
+				copyGroup[k] = v
+			}
+			copyGroup["hooks"] = kept
+			after = append(after, copyGroup)
+		}
+	}
+	return after
+}
+
+// traceGroup is the hook group that runs exe for this home on one event, with the event's matcher if it has one.
+func traceGroup(exe, home, matcher string, timeout int) map[string]any {
+	group := map[string]any{"hooks": []any{map[string]any{
+		"type": "command", "command": exe, "args": []any{"hook", "-home", home}, "timeout": float64(timeout)}}}
+	if matcher != "" {
+		group["matcher"] = matcher
+	}
+	return group
+}
+
 // normalize round-trips a value through JSON so freshly built maps compare equal to parsed ones.
 func normalize(v any) any {
 	b, _ := json.Marshal(v)
@@ -211,42 +224,23 @@ func normalize(v any) any {
 // (without migrate) is left untouched. An existing file is copied to settings.json.trace-backup first, and nothing is
 // written if the file changed while trace was working on it.
 func install(path, exe, home string, opt map[string]string, migrate bool, w io.Writer) error {
-	settings := map[string]any{}
-	b, err := os.ReadFile(path)
-	switch {
-	case err == nil:
-		if err := json.Unmarshal(b, &settings); err != nil {
-			return fmt.Errorf("%s is not valid JSON, left untouched: %v", path, err)
-		}
-	case os.IsNotExist(err):
-		if exe == "" {
-			fmt.Fprintln(w, "no Claude Code settings file; nothing to remove")
-			return nil
-		}
-	default:
+	settings, b, err := readSettings(path)
+	if err != nil {
 		return err
 	}
-	own, legacy, foreign := traceHooks(settings, home)
-	if exe != "" && len(foreign) > 0 {
-		return fmt.Errorf("%s already runs TRACE with another home (%s); one TRACE per settings file: uninstall that one with -home first; nothing done", path, foreign[0])
-	}
-	if legacy > 0 && !migrate {
-		return fmt.Errorf("%s holds %d TRACE hook(s) that name no home (installed before -home existed); run again with -migrate to bind them to %s (the file is backed up first); nothing done", path, legacy, home)
-	}
-	if exe == "" && own+legacy == 0 && len(foreign) > 0 {
-		fmt.Fprintf(w, "no TRACE hooks for %s in %s; those of %s are left as they are\n", home, path, foreign[0])
+	if b == nil && exe == "" {
+		fmt.Fprintln(w, "no Claude Code settings file; nothing to remove")
 		return nil
+	}
+	if done, err := settingsFit(settings, path, exe, home, migrate, w); done || err != nil {
+		return err
 	}
 	changed := setHooks(settings, exe, home, opt, migrate)
 	if len(changed) == 0 {
 		fmt.Fprintf(w, "hooks already up to date in %s\n", path)
 		return nil
 	}
-	out, _ := json.MarshalIndent(settings, "", "  ")
-	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
-		return err
-	}
-	if err := writeChecked(path, string(b), b != nil, string(append(out, '\n')), path+".trace-backup"); err != nil {
+	if err := writeSettings(path, b, settings); err != nil {
 		return err
 	}
 	verb := "added"
@@ -259,6 +253,49 @@ func install(path, exe, home string, opt map[string]string, migrate bool, w io.W
 	}
 	fmt.Fprintln(w, "restart open Claude Code sessions: they read hooks when they start")
 	return nil
+}
+
+// readSettings is Claude Code's settings and their bytes; a missing file is empty settings and nil bytes, a file
+// that does not parse is an error and is left untouched.
+func readSettings(path string) (map[string]any, []byte, error) {
+	settings := map[string]any{}
+	b, err := os.ReadFile(path)
+	if os.IsNotExist(err) {
+		return settings, nil, nil
+	}
+	if err != nil {
+		return nil, nil, err
+	}
+	if err := json.Unmarshal(b, &settings); err != nil {
+		return nil, nil, fmt.Errorf("%s is not valid JSON, left untouched: %v", path, err)
+	}
+	return settings, b, nil
+}
+
+// settingsFit refuses another home's hooks on install and hooks that name no home without migrate; done is true when
+// an uninstall finds nothing of this home's to remove.
+func settingsFit(settings map[string]any, path, exe, home string, migrate bool, w io.Writer) (done bool, err error) {
+	own, legacy, foreign := traceHooks(settings, home)
+	if exe != "" && len(foreign) > 0 {
+		return true, fmt.Errorf("%s already runs TRACE with another home (%s); one TRACE per settings file: uninstall that one with -home first; nothing done", path, foreign[0])
+	}
+	if legacy > 0 && !migrate {
+		return true, fmt.Errorf("%s holds %d TRACE hook(s) that name no home (installed before -home existed); run again with -migrate to bind them to %s (the file is backed up first); nothing done", path, legacy, home)
+	}
+	if exe == "" && own+legacy == 0 && len(foreign) > 0 {
+		fmt.Fprintf(w, "no TRACE hooks for %s in %s; those of %s are left as they are\n", home, path, foreign[0])
+		return true, nil
+	}
+	return false, nil
+}
+
+// writeSettings writes the new settings over old, keeping the previous file as settings.json.trace-backup.
+func writeSettings(path string, old []byte, settings map[string]any) error {
+	out, _ := json.MarshalIndent(settings, "", "  ")
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		return err
+	}
+	return writeChecked(path, string(old), old != nil, string(append(out, '\n')), path+".trace-backup")
 }
 
 // selfPath is this binary's absolute path, with forward slashes on Windows as Claude Code's settings use them.

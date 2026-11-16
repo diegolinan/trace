@@ -12,7 +12,7 @@ import (
 )
 
 // hooks.json gets SessionStart and Stop for this home and keeps everything else; installing again changes nothing;
-// another home's TRACE hooks stop install and survive uninstall.
+// another home's TRACE hooks are kept by install and by uninstall (installCodex checks that the scopes do not overlap).
 func TestCodexHooksPlan(t *testing.T) {
 	old := []byte(`{"description":"mine","hooks":{"Stop":[{"hooks":[{"type":"command","command":"notify"}]}]}}`)
 	b, err := codexHooksPlan(old, "/bin/trace", "/m")
@@ -25,8 +25,8 @@ func TestCodexHooksPlan(t *testing.T) {
 	if again, _ := codexHooksPlan(b, "/bin/trace", "/m"); string(again) != string(b) {
 		t.Fatalf("second install changed hooks.json:\n%s", again)
 	}
-	if _, err := codexHooksPlan(b, "/bin/trace", "/other"); err == nil || !strings.Contains(err.Error(), "/m") {
-		t.Fatalf("another home's hooks: %v", err)
+	if both, err := codexHooksPlan(b, "/bin/trace", "/other"); err != nil || !hooksHave(both, "/m") || !hooksHave(both, "/other") {
+		t.Fatalf("a second memory: %v\n%s", err, both)
 	}
 	kept, _ := codexHooksPlan(b, "", "/other")
 	if !hooksHave(kept, "/m") {
@@ -185,5 +185,50 @@ func TestCodexHooksReview(t *testing.T) {
 	// No default mode.
 	if err := installCodex(t.TempDir(), t.TempDir(), t.TempDir(), "", "", false, io.Discard); err == nil || !strings.Contains(err.Error(), "-mode") {
 		t.Fatalf("empty mode: %v", err)
+	}
+}
+
+// Two memories in one Codex home, each with its own folders (a project, and a site with a nested project inside
+// it): the second install is accepted. A memory whose scope overlaps the other's, or keeps every folder, is refused,
+// since one conversation would be stored in both.
+func TestCodexTwoMemories(t *testing.T) {
+	base, codex := t.TempDir(), t.TempDir()
+	projA := filepath.Join(base, "project-a")
+	site := filepath.Join(base, "site")
+	nested := filepath.Join(site, "nested")
+	os.MkdirAll(projA, 0o755)
+	os.MkdirAll(nested, 0o755)
+	homeA, homeS := filepath.Join(base, "home-a"), filepath.Join(base, "home-site")
+	if err := installCodex(homeA, projA, codex, "hooks", "/bin/trace", false, io.Discard); err != nil {
+		t.Fatal(err)
+	}
+	if err := installCodex(homeS, site, codex, "hooks", "/bin/trace", false, io.Discard); err != nil {
+		t.Fatalf("a second memory with its own folder: %v", err)
+	}
+	b, _ := os.ReadFile(filepath.Join(codex, "hooks.json"))
+	if !hooksHave(b, homeA) || !hooksHave(b, homeS) {
+		t.Fatalf("hooks.json: %s", b)
+	}
+	if !inScope(nested, site) || inScope(nested, projA) {
+		t.Error("the nested folder should belong to the site's memory only")
+	}
+	// The nested folder as a third memory would overlap the site's.
+	if err := installCodex(filepath.Join(base, "home-nested"), nested, codex, "hooks", "/bin/trace", false, io.Discard); err == nil || !strings.Contains(err.Error(), "overlaps") {
+		t.Errorf("overlapping scope: %v", err)
+	}
+	// A memory that keeps every folder overlaps any other.
+	all := filepath.Join(base, "home-all")
+	os.MkdirAll(all, 0o755)
+	os.WriteFile(filepath.Join(all, "config.json"), []byte(`{"claude": false, "scope": ""}`), 0o644)
+	if err := installCodex(all, filepath.Join(base, "elsewhere"), codex, "hooks", "/bin/trace", false, io.Discard); err == nil {
+		t.Error("a memory with an empty scope was accepted beside others")
+	}
+	// Uninstalling one memory leaves the other's hooks.
+	if err := uninstallCodex(homeA, projA, codex, false, io.Discard); err != nil {
+		t.Fatal(err)
+	}
+	b, _ = os.ReadFile(filepath.Join(codex, "hooks.json"))
+	if hooksHave(b, homeA) || !hooksHave(b, homeS) {
+		t.Fatalf("after uninstalling one: %s", b)
 	}
 }
