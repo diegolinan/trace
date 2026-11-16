@@ -22,8 +22,8 @@ type importer struct {
 	archiveDir string // raw copies, one .gz per transcript, appended as new gzip members
 	scope      string // only history.jsonl prompts whose project folder contains this
 	added      int
-	touched    map[string]bool // sessions that got events this run
-	unmapped   map[string]int  // row kinds no rule stores, counted so a new format shows up
+	touched    map[string]struct{} // sessions that got events this run
+	unmapped   map[string]int      // row kinds no rule stores, counted so a new format shows up
 }
 
 // transcriptFiles lists every session and subagent transcript in scope: project folders whose name
@@ -185,49 +185,53 @@ func (im *importer) importFile(path, host string) error {
 	if err != nil {
 		return err
 	}
-	read, err := im.readNew(tx, host, path, st, row)
-	if err != nil || !read {
+	if err := im.readNew(tx, host, path, st, row); err != nil {
 		return err
 	}
 	return tx.Commit()
 }
 
 // readNew reads what the file holds past the stored offset (all of it when it was rewritten), then copies those bytes
-// to the raw folder and stores the new offset; false when the file holds nothing new.
-func (im *importer) readNew(tx *sql.Tx, host, path string, st os.FileInfo, row transcriptRow) (bool, error) {
+// to the raw folder and stores the new offset.
+func (im *importer) readNew(tx *sql.Tx, host, path string, st os.FileInfo, row transcriptRow) error {
 	f, err := os.Open(path)
 	if err != nil {
-		return false, err
+		return err
 	}
 	defer f.Close()
 	gz := strings.HasSuffix(path, ".gz")
 	s, changed := row.start(f, st.Size(), gz)
 	if !changed {
-		return false, nil
+		return nil
 	}
 	r, err := readerAt(f, path, s.from, gz)
 	if err != nil {
-		return false, err
+		return err
 	}
 	bad, end, err := im.readFile(tx, host, r, path, s.from, row.id)
 	if err != nil {
-		return false, fmt.Errorf("%s: %w", path, err)
+		return fmt.Errorf("%s: %w", path, err)
 	}
 	s.end = end
 	if gz {
 		s.end = st.Size()
 	}
-	return true, im.record(tx, f, st, row, s, bad)
+	return im.record(tx, f, st, row, s, bad)
 }
 
 // record copies the span just read to the raw folder and stores how far the file has been read.
 func (im *importer) record(tx *sql.Tx, f *os.File, st os.FileInfo, row transcriptRow, s span, bad int) error {
 	archived, archBytes := "", row.archBytes
-	if s.end > s.from && im.archiveDir != "" {
-		var err error
-		if archived, archBytes, err = im.archive(f.Name(), s.from, s.end, s.restart, archBytes); err != nil {
+	if (s.end > s.from || s.restart) && im.archiveDir != "" { // a rewrite sets the old copy aside before a whole new line (SPEC I7)
+		archived = archivePath(im.archiveDir, f.Name())
+		if err := archive(archived, f.Name(), s, archBytes); err != nil {
 			return err
 		}
+		a, err := os.Stat(archived)
+		if err != nil {
+			return err
+		}
+		archBytes = a.Size()
 	}
 	_, err := tx.Exec("update source_file set size = ?, mtime = ?, read_to_byte = ?, tail_sha = ?, bad_lines = bad_lines + ?, archived_as = coalesce(nullif(?, ''), archived_as), archive_bytes = ?, last_error = null where id = ?",
 		st.Size(), st.ModTime().UTC().Format(time.RFC3339), s.end, tailHash(f, s.end), bad, archived, archBytes, row.id)
@@ -358,7 +362,7 @@ func records(line []byte) (out []row, bad int) {
 // lines yields complete lines from r starting at offset; a last line without a newline is still being
 // written and is left for the next run.
 func lines(r io.Reader, offset int64, fn func(line []byte, at int64) error) (int64, error) {
-	br := bufio.NewReaderSize(r, 1<<20)
+	br := bufio.NewReader(r)
 	pos := offset
 	for {
 		b, err := br.ReadBytes('\n')
@@ -618,7 +622,7 @@ func (im *importer) insertEvent(tx *sql.Tx, uuid, sid string, seq int, ts, branc
 		return nil
 	}
 	id, _ := res.LastInsertId()
-	im.touched[sid] = true
+	im.touched[sid] = struct{}{}
 	for _, a := range anchors(text, e.kind, e.toolName) {
 		if _, err := tx.Exec("insert into anchor(event_id, type, value) values (?, ?, ?)", id, a.typ, a.value); err != nil {
 			return err
@@ -628,34 +632,29 @@ func (im *importer) insertEvent(tx *sql.Tx, uuid, sid string, seq int, ts, branc
 	return nil
 }
 
-// archive appends the bytes just read to <archiveDir>/<project>/<file>.gz as a new gzip member (gunzip
-// reads concatenated members as one stream) and returns the copy's new size. It first cuts the copy back
-// to size, the length recorded with the last committed import, so a member left half-written by a killed
-// run is dropped instead of breaking every later read.
-func (im *importer) archive(path string, from, end int64, restart bool, size int64) (string, int64, error) {
-	dst, err := archivePath(im.archiveDir, path)
-	if err != nil {
-		return "", 0, err
-	}
+// archive appends the span of path just read to its raw copy dst as a new gzip member (gunzip reads
+// concatenated members as one stream). It first cuts the copy back to size, the length recorded with the
+// last committed import, so a member left half-written by a killed run is dropped instead of breaking every
+// later read.
+func archive(dst, path string, s span, size int64) error {
 	if err := os.MkdirAll(filepath.Dir(dst), 0o755); err != nil {
-		return "", 0, err
+		return err
 	}
-	if restart {
+	if s.restart {
 		if err := keepReplaced(dst); err != nil {
-			return "", 0, err
+			return err
 		}
 	}
-	if restart || from == 0 {
+	if s.from == 0 { // a read from the start, as every rewrite is, starts the copy over
 		size = 0
 	}
-	n, err := appendMember(dst, path, from, end, size)
-	return dst, n, err
+	return appendMember(dst, path, s.from, s.end, size)
 }
 
 // archivePath is where path's raw copy goes: the same place under archiveDir as under the projects folder, a
 // subagent's (<project>/<sid>/subagents/[workflows/<wf>/]agent-x.jsonl) beside its parent's, and ~/.claude/history.jsonl
 // at .claude/history.jsonl.gz.
-func archivePath(archiveDir, path string) (string, error) {
+func archivePath(archiveDir, path string) string {
 	projectsDir := filepath.Dir(filepath.Dir(path)) // <projects>/<project>/<sid>.jsonl
 	for d := filepath.Dir(path); filepath.Dir(d) != d; d = filepath.Dir(d) {
 		if filepath.Base(d) == "subagents" {
@@ -663,11 +662,8 @@ func archivePath(archiveDir, path string) (string, error) {
 			break
 		}
 	}
-	rel, err := filepath.Rel(projectsDir, path)
-	if err != nil {
-		return "", err
-	}
-	return filepath.Join(archiveDir, rel+".gz"), nil
+	rel, _ := filepath.Rel(projectsDir, path) // projectsDir is a folder above path: Rel cannot fail
+	return filepath.Join(archiveDir, rel+".gz")
 }
 
 // keepReplaced moves the copy of a transcript that was rewritten (possibly losing history, #104123) beside the new
@@ -679,34 +675,30 @@ func keepReplaced(dst string) error {
 	return os.Rename(dst, strings.TrimSuffix(dst, ".gz")+".replaced-"+time.Now().UTC().Format("20060102T150405")+".gz")
 }
 
-// appendMember cuts dst back to size, then appends path's bytes from from to end as one gzip member; it returns
-// dst's new size.
-func appendMember(dst, path string, from, end, size int64) (int64, error) {
+// appendMember cuts dst back to size, then appends path's bytes from from to end as one gzip member.
+func appendMember(dst, path string, from, end, size int64) error {
 	out, err := os.OpenFile(dst, os.O_CREATE|os.O_WRONLY, 0o644)
 	if err != nil {
-		return 0, err
+		return err
 	}
 	defer out.Close()
 	if err := out.Truncate(size); err != nil {
-		return 0, err
+		return err
 	}
 	if _, err := out.Seek(size, io.SeekStart); err != nil {
-		return 0, err
+		return err
 	}
 	src, err := os.Open(path)
 	if err != nil {
-		return 0, err
+		return err
 	}
 	defer src.Close()
 	src.Seek(from, io.SeekStart)
 	zw := gzip.NewWriter(out)
 	if _, err := io.CopyN(zw, src, end-from); err != nil {
-		return 0, err
+		return err
 	}
-	if err := zw.Close(); err != nil {
-		return 0, err
-	}
-	return out.Seek(0, io.SeekCurrent)
+	return zw.Close()
 }
 
 var pastedRe = regexp.MustCompile(`\[Pasted text #(\d+)[^\]]*\]`)
@@ -753,7 +745,7 @@ func (im *importer) readHistory(tx *sql.Tx, f io.Reader, from, fileID int64) (in
 }
 
 // activeTime recomputes wall time minus gaps over 5 minutes (chronos) for the sessions touched.
-func activeTime(db *sql.DB, touched map[string]bool) error {
+func activeTime(db *sql.DB, touched map[string]struct{}) error {
 	for sid := range touched {
 		if _, err := db.Exec(`update session set active_secs = (
 			select coalesce(cast(sum(case when d <= 300 then d else 0 end) as integer), 0) from (

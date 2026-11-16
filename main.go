@@ -469,7 +469,7 @@ func runImport(db *sql.DB, projects, history, codex, archive, scope, trigger str
 		return err
 	}
 	runID, _ := res.LastInsertId()
-	im := &importer{db: db, archiveDir: archive, scope: scope, touched: map[string]bool{}, unmapped: map[string]int{}}
+	im := &importer{db: db, archiveDir: archive, scope: scope, touched: map[string]struct{}{}, unmapped: map[string]int{}}
 	files, errs := im.importClaude(projects, history, archive, scope)
 	if codex != "" {
 		cf, cerrs := im.importAllCodex(codex)

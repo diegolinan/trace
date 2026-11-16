@@ -80,6 +80,12 @@ folder. TRACE behaves the same with it or without it.
   `TestLaterResultNamedFromItsOwnSession`.
 - **I6.** When a Codex thread uses one call id for several calls, a result takes the name of the latest of them before
   it, whether it is read in the same import as that call or in a later one. Test: `TestCodexReusedCallIDNamedByLatestCall`.
+- **I7.** A Claude Code transcript rewritten in place keeps its old raw copy, set aside as `.replaced-<time>.gz`,
+  also when the import that sees the rewrite finds no whole line in it yet. Test:
+  `TestRewriteCaughtMidLineKeepsOldRawCopy`.
+- **I8.** When the import cannot write a transcript's raw copy, its session names or the rule-file texts it
+  loaded, that file's import fails and keeps nothing of it, so the next run reads it again. Tests:
+  `TestRawCopyFailureKeepsNothing`, `TestNameStoreFailureKeepsNothing`, `TestRuleTextStoreFailureKeepsNothing`.
 
 ## E. Wrong input says so
 

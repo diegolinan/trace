@@ -16,9 +16,8 @@ func TestArchivePath(t *testing.T) {
 		filepath.Join(projects, "C--work", "s1", "subagents", "workflows", "wf1", "agent-y.jsonl"): filepath.Join(raw, "C--work", "s1", "subagents", "workflows", "wf1", "agent-y.jsonl.gz"),
 		filepath.Join("U", ".claude", "history.jsonl"):                                             filepath.Join(raw, ".claude", "history.jsonl.gz"),
 	} {
-		got, err := archivePath(raw, in)
-		if err != nil || got != want {
-			t.Errorf("archivePath(%s) = %s, %v; want %s", in, got, err, want)
+		if got := archivePath(raw, in); got != want {
+			t.Errorf("archivePath(%s) = %s; want %s", in, got, want)
 		}
 	}
 }

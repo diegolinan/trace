@@ -25,7 +25,7 @@ func TestRedactedNamesEveryKind(t *testing.T) {
 	aws := "AKIA" + strings.Repeat("Z", 16)      // aws-key
 	db.Exec(`insert into session(id, host, role) values ('s', 'claude-code', 'r')`)
 	db.Exec(`insert into source_file(id, host, path) values (1, 'claude-code', 't.jsonl')`)
-	im := &importer{db: db, touched: map[string]bool{}}
+	im := &importer{db: db, touched: map[string]struct{}{}}
 	tx, _ := db.Begin()
 	for i, e := range []ev{
 		{speaker: "assistant", kind: "tool_call", text: "Bash " + gh, toolInput: `{"command":"` + gh + ` ` + aws + `"}`},
