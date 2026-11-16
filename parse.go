@@ -22,6 +22,7 @@ type row struct {
 	GitBranch        string          `json:"gitBranch"`
 	Version          string          `json:"version"`
 	Entrypoint       string          `json:"entrypoint"`
+	PromptSource     string          `json:"promptSource"`
 	IsMeta           bool            `json:"isMeta"`
 	IsCompactSummary bool            `json:"isCompactSummary"`
 	ToolDenialKind   string          `json:"toolDenialKind"`
@@ -131,6 +132,7 @@ func boolp(b bool) *bool { return &b }
 // user-side prompt was written by the parent agent, not by the user.
 func parseRow(r *row, sub bool) parsed {
 	rp := sides(sub, r.Entrypoint)
+	rp.suggested = r.PromptSource == "suggestion_accepted" // SPEC I12
 	switch r.Type {
 	case "ai-title":
 		rp.p.title = r.AiTitle
@@ -172,10 +174,14 @@ func programEntry(entrypoint string) bool {
 type rowParser struct {
 	p               parsed
 	asker, answerer string
+	suggested       bool // the user sent a suggestion the model worded: its prompt is a suggestion
 }
 
 // add keeps an event that has words.
 func (rp *rowParser) add(e ev) {
+	if rp.suggested && e.kind == "prompt" {
+		e.kind = "suggestion"
+	}
 	if strings.TrimSpace(e.text) != "" {
 		rp.p.events = append(rp.p.events, e)
 	}

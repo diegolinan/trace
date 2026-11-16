@@ -414,7 +414,7 @@ type codexRead struct {
 	tx            *sql.Tx
 	sid, path     string
 	meta          codexMeta
-	sub           bool
+	sub, program  bool
 	fileID        int64
 	seq, comp     int
 	bad           int
@@ -424,6 +424,7 @@ type codexRead struct {
 func (im *importer) readCodex(tx *sql.Tx, r io.Reader, path string, meta codexMeta, from, fileID int64) (int64, int, error) {
 	c := &codexRead{im: im, tx: tx, sid: meta.ID, fileID: fileID, path: path, meta: meta}
 	c.sub = meta.ParentThreadID != "" || bytes.Contains(meta.Source, []byte(`"subagent"`))
+	c.program = string(meta.Source) == `"exec"` || string(meta.Source) == `"mcp"`
 	role, parent := "subagent", meta.ParentThreadID
 	if !c.sub {
 		role, parent = roleFor(meta.Cwd, projectRole(meta.Cwd)), ""
@@ -468,6 +469,7 @@ func (c *codexRead) line(line []byte, at int64) error {
 	sig, item := codexSig(l, p)
 	c.note(sig, p)
 	events, known := codexEvents(sig, p, item)
+	events = c.speakers(events)
 	if !known && !codexSkip[sig] {
 		c.im.unmapped["codex "+sig]++
 	}
@@ -478,6 +480,19 @@ func (c *codexRead) line(line []byte, at int64) error {
 		}
 	}
 	return nil
+}
+
+// speakers gives a thread a program started its own prompts: the user did not type them (SPEC I11).
+func (c *codexRead) speakers(events []ev) []ev {
+	if !c.program {
+		return events
+	}
+	for i := range events {
+		if events[i].speaker == "user" {
+			events[i].speaker = "program"
+		}
+	}
+	return events
 }
 
 // parentHistory says a subagent's line is the parent's history, copied into the subagent's file.

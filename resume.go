@@ -40,7 +40,7 @@ func resumeBlock(db *sql.DB, sid, source, role, host, cwd string, w io.Writer) e
 	b := blockWriter{db: db, w: w}
 	// The first prompts of the last compaction window usually state the task (callimachus, ai-memory hook.rs:1346);
 	// the window, not the session, because one session can run for weeks. Only those older than the last 8.
-	const userSaid = `speaker = 'user' and kind in ('prompt','steering','answer','refusal')`
+	const userSaid = `speaker = 'user' and kind in ('prompt','steering','answer','refusal','suggestion')`
 	b.section(user+"'s first words in that stretch, after its last compaction (verbatim)",
 		`select ts, kind, text from (select seq, ts, kind, text from event where session_id = ?1 and `+userSaid+`
 			and compaction_no = (select max(compaction_no) from event where session_id = ?1)

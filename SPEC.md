@@ -94,6 +94,11 @@ folder. TRACE behaves the same with it or without it.
   or something other than the user typed in the user's terminal. A prompt of a main session inside one, from a
   transcript or from the prompt log, is stored with speaker `program`; every import applies the list again. Test:
   `TestNotTypedByUserPeriod`.
+- **I11.** A Codex thread a program started (`source` `exec` or `mcp` in its session_meta) stores its user messages
+  with speaker `program`, as I9 does for Claude Code. Test: `TestCodexProgramThreadsAreNotTheUsers`.
+- **I12.** A Claude Code prompt the user sent by accepting a suggestion the model wrote (`promptSource`
+  `suggestion_accepted`) is stored with kind `suggestion`. The start block shows it as one, and it never counts as a
+  refusal or rule the user stated. Test: `TestAcceptedSuggestionIsNotTheUsersWords`.
 
 ## E. Wrong input says so
 

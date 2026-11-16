@@ -176,7 +176,7 @@ TRACE's home is `-home`, else `$TRACE_HOME`, else `~/.trace`. Settings are read 
 | `reinject` | turns on the rule card: `{}`, or `{"factor": 7, "budget": 8000}` (new context, in card sizes, before it comes again; most characters of the card) | off |
 | `not_typed_by_user` | periods when someone or something else typed in your terminal, so those prompts are not shown as yours: `[{"from": "2026-09-29", "to": "2026-10-08", "note": "a script drove the console"}]` (UTC dates, both included) | none |
 
-Prompts in a Claude Code session that a program started (`claude -p`, the SDKs, an MCP client) are always stored as the program's, never as yours.
+Prompts in a session that a program started (Claude Code's `claude -p`, the SDKs or an MCP client; Codex's `codex exec` or MCP) are always stored as the program's, never as yours. A Claude Code prompt you sent by accepting a suggestion the model wrote is kept as a suggestion: shown as one, never read as a rule you stated.
 
 A role names a folder by a file in it, so it survives moves and renames. The file is looked for in the session's folder, then in each folder above it, nearest first:
 
