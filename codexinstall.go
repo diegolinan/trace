@@ -1,13 +1,16 @@
 package main
 
 import (
+	"cmp"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
+	"maps"
 	"os"
 	"path/filepath"
 	"regexp"
-	"sort"
+	"slices"
 	"strings"
 )
 
@@ -30,16 +33,40 @@ func agentsBlock(home string) string {
 // text when there is nothing to do, an error when the file holds another home's block, or a trace resume request
 // that is not a block (legacy lines are taken over only with migrate).
 func agentsPlan(old, home string, add, migrate bool) (string, error) {
-	text := old
-	mine := false
-	for _, m := range agentsBlockRe.FindAllStringSubmatch(old, -1) {
+	if other := otherAgentsHome(old, home); add && other != "" {
+		return "", fmt.Errorf("AGENTS.md already asks for another TRACE home (%s); one per project: uninstall that one with -home first", other)
+	}
+	text, mine := ownAgentsBlocks(old, home, add)
+	if legacyAgentsLine.MatchString(text) {
+		if !migrate {
+			return "", fmt.Errorf("AGENTS.md holds a trace resume line from an older install; run again with -migrate to replace it with a block for %s", home)
+		}
+		text = legacyAgentsLine.ReplaceAllString(text, "")
+	}
+	if !add {
+		return text, nil
+	}
+	return addAgentsBlock(text, home, mine)
+}
+
+// otherAgentsHome is the home of the first block in text that belongs to another home, "" when none does.
+func otherAgentsHome(text, home string) string {
+	for _, m := range agentsBlockRe.FindAllStringSubmatch(text, -1) {
 		if !sameHome(m[1], home) {
-			if add {
-				return "", fmt.Errorf("AGENTS.md already asks for another TRACE home (%s); one per project: uninstall that one with -home first", m[1])
-			}
+			return m[1]
+		}
+	}
+	return ""
+}
+
+// ownAgentsBlocks is text with this home's blocks handled, and whether there was one: install keeps one block,
+// rewritten to the current text where it stands; uninstall removes every one.
+func ownAgentsBlocks(text, home string, add bool) (string, bool) {
+	mine := false
+	for _, m := range agentsBlockRe.FindAllStringSubmatch(text, -1) {
+		if !sameHome(m[1], home) {
 			continue
 		}
-		// install keeps one block, rewritten to the current text where it stands; uninstall removes every one.
 		repl := ""
 		if add && !mine {
 			repl = agentsBlock(home)
@@ -47,23 +74,22 @@ func agentsPlan(old, home string, add, migrate bool) (string, error) {
 		mine = true
 		text = strings.Replace(text, m[0], repl, 1)
 	}
-	if legacyAgentsLine.MatchString(text) {
-		if !migrate {
-			return "", fmt.Errorf("AGENTS.md holds a trace resume line from an older install; run again with -migrate to replace it with a block for %s", home)
-		}
-		text = legacyAgentsLine.ReplaceAllString(text, "")
-	}
+	return text, mine
+}
+
+// addAgentsBlock appends this home's block to text unless it holds one already (mine).
+func addAgentsBlock(text, home string, mine bool) (string, error) {
 	// Two requests for trace resume would contradict each other, so any outside the block stops install.
-	if add && strings.Contains(agentsBlockRe.ReplaceAllString(text, ""), "trace resume") {
+	if strings.Contains(agentsBlockRe.ReplaceAllString(text, ""), "trace resume") {
 		return "", fmt.Errorf("AGENTS.md mentions trace resume outside a TRACE block; edit it by hand first")
 	}
-	if add && !mine {
-		if text != "" && !strings.HasSuffix(text, "\n") {
-			text += "\n"
-		}
-		text += agentsBlock(home)
+	if mine {
+		return text, nil
 	}
-	return text, nil
+	if text != "" && !strings.HasSuffix(text, "\n") {
+		text += "\n"
+	}
+	return text + agentsBlock(home), nil
 }
 
 // writeChecked replaces path with text through a temporary file of its own, unless the file changed since the caller
@@ -72,34 +98,52 @@ func agentsPlan(old, home string, add, migrate bool) (string, error) {
 // shortcut: the check and the rename are two steps, not a compare-and-swap; a writer landing between them is lost.
 // Settings and AGENTS.md are edited by people, rarely at the same second; a lock would be the upgrade.
 func writeChecked(path, old string, existed bool, text, backup string) error {
-	tmp, err := os.CreateTemp(filepath.Dir(path), filepath.Base(path)+".trace-*.tmp")
+	tmp, err := writeTemp(path, text)
 	if err != nil {
 		return err
 	}
+	if err := replaceUnchanged(tmp, path, old, existed, backup); err != nil {
+		os.Remove(tmp)
+		return err
+	}
+	return nil
+}
+
+// writeTemp writes text to a new temporary file beside path and returns its name.
+func writeTemp(path, text string) (string, error) {
+	tmp, err := os.CreateTemp(filepath.Dir(path), filepath.Base(path)+".trace-*.tmp")
+	if err != nil {
+		return "", err
+	}
 	_, werr := tmp.WriteString(text)
-	if cerr := tmp.Close(); werr == nil {
-		werr = cerr
-	}
-	if werr != nil {
+	if err := errors.Join(werr, tmp.Close()); err != nil {
 		os.Remove(tmp.Name())
-		return werr
+		return "", err
 	}
-	now, err := os.ReadFile(path)
-	if existed && (err != nil || string(now) != old) || !existed && err == nil {
-		os.Remove(tmp.Name())
+	return tmp.Name(), nil
+}
+
+// replaceUnchanged moves tmp onto path while path still holds old (existed false: while there is no path), saving
+// old to backup first when one is given.
+func replaceUnchanged(tmp, path, old string, existed bool, backup string) error {
+	if changedSince(path, old, existed) {
 		return fmt.Errorf("%s changed while trace was installing; not written, run again", path)
 	}
 	if backup != "" && existed {
 		if err := os.WriteFile(backup, []byte(old), 0o600); err != nil {
-			os.Remove(tmp.Name())
 			return err
 		}
 	}
-	if err := os.Rename(tmp.Name(), path); err != nil {
-		os.Remove(tmp.Name())
-		return err
+	return os.Rename(tmp, path)
+}
+
+// changedSince says path no longer holds old, or, when it did not exist (existed false), that it exists now.
+func changedSince(path, old string, existed bool) bool {
+	now, err := os.ReadFile(path)
+	if existed {
+		return err != nil || string(now) != old
 	}
-	return nil
+	return err == nil
 }
 
 // installCodex sets up a Codex memory for the project in dir. Mode "agents" asks Codex, through dir/AGENTS.md, to run
@@ -113,86 +157,112 @@ func installCodex(home, dir, codexDir, mode, exe string, migrate bool, w io.Writ
 		// No default: the two modes give different guarantees (hooks run on their own once trusted; AGENTS.md only asks).
 		return fmt.Errorf("install -host codex needs -mode hooks (Codex hooks, run once you trust them) or -mode agents (a request in AGENTS.md), not %q; nothing done", mode)
 	}
-	cfgPath := filepath.Join(home, "config.json")
-	newCfg, err := codexConfigFits(home, dir)
+	in := &codexInstall{home: home, dir: dir, codexDir: codexDir, mode: mode, exe: exe, w: w,
+		cfgPath: filepath.Join(home, "config.json"), agents: filepath.Join(dir, "AGENTS.md"), hooksPath: filepath.Join(codexDir, "hooks.json")}
+	text, err := in.check(migrate)
 	if err != nil {
 		return err
 	}
-	agents := filepath.Join(dir, "AGENTS.md")
-	b, existed, err := readIfThere(agents)
-	if err != nil {
-		return err
+	reportRollouts(w, codexDir, dir, in.cfgPath)
+	return in.write(text)
+}
+
+// codexInstall is one Codex install: its paths, and the files as it read them before writing any.
+type codexInstall struct {
+	home, dir, codexDir, mode, exe string
+	cfgPath, agents, hooksPath     string
+	b, hb                          []byte // AGENTS.md and hooks.json as read
+	existed, newCfg                bool   // AGENTS.md exists; config.json does not, so this run writes one
+	w                              io.Writer
+}
+
+// check reads the files install touches and checks them all; in agents mode, text is AGENTS.md with this home's block.
+func (in *codexInstall) check(migrate bool) (text string, err error) {
+	if in.newCfg, err = codexConfigFits(in.home, in.dir); err != nil {
+		return "", err
 	}
-	hooksPath := filepath.Join(codexDir, "hooks.json")
-	hb, _, err := readIfThere(hooksPath)
-	if err != nil {
-		return err
+	if in.b, in.existed, err = readIfThere(in.agents); err != nil {
+		return "", err
 	}
-	text := string(b)
-	if mode == "agents" {
-		if text, err = agentsModeFits(b, hb, agents, hooksPath, home, migrate); err != nil {
-			return err
-		}
-	} else {
-		mine := dir
-		if !newCfg {
-			c, _ := loadConfig(home)
-			mine = string(c.Scope)
-		}
-		if err := hooksModeFits(b, hb, agents, hooksPath, codexDir, exe, home, mine); err != nil {
-			return err
-		}
+	if in.hb, _, err = readIfThere(in.hooksPath); err != nil {
+		return "", err
 	}
-	reportRollouts(w, codexDir, dir, cfgPath)
+	if in.mode == "agents" {
+		return agentsModeFits(in.b, in.hb, in.agents, in.hooksPath, in.home, migrate)
+	}
+	return "", hooksModeFits(in.b, in.hb, in.agents, in.hooksPath, in.codexDir, in.exe, in.home, in.scope())
+}
+
+// scope is the scope this memory keeps: this folder when this run writes the config, else the config's.
+func (in *codexInstall) scope() string {
+	if in.newCfg {
+		return in.dir
+	}
+	c, _ := loadConfig(in.home)
+	return string(c.Scope)
+}
+
+// write writes the config when this run makes one, then hooks.json or AGENTS.md; when that fails, the config this
+// run wrote is removed again.
+func (in *codexInstall) write(text string) error {
 	cfgText := ""
-	if newCfg {
-		if cfgText, err = writeCodexConfig(home, cfgPath, dir, w); err != nil {
+	if in.newCfg {
+		var err error
+		if cfgText, err = writeCodexConfig(in.home, in.cfgPath, in.dir, in.w); err != nil {
 			return err
 		}
 	} else {
-		fmt.Fprintln(w, "kept", cfgPath)
+		fmt.Fprintln(in.w, "kept", in.cfgPath)
 	}
-	undo := func(err error) error {
-		if newCfg {
-			undoCodexConfig(cfgPath, cfgText, w)
+	if err := in.writeMode(text); err != nil {
+		if in.newCfg {
+			undoCodexConfig(in.cfgPath, cfgText, in.w)
 		}
 		return err
 	}
-	if mode == "hooks" {
-		if err := writeCodexHooks(codexDir, exe, home, hooksPath, w); err != nil {
-			return undo(err)
-		}
+	return nil
+}
+
+// writeMode registers this home's hooks, or writes AGENTS.md with its block (text) when it does not hold it yet.
+func (in *codexInstall) writeMode(text string) error {
+	if in.mode == "hooks" {
+		return writeCodexHooks(in.codexDir, in.exe, in.home, in.hooksPath, in.w)
+	}
+	if text == string(in.b) {
+		fmt.Fprintln(in.w, in.agents, "already asks for trace resume with this home")
 		return nil
 	}
-	if text == string(b) {
-		fmt.Fprintln(w, agents, "already asks for trace resume with this home")
-		return nil
+	if err := writeChecked(in.agents, string(in.b), in.existed, text, ""); err != nil {
+		return err
 	}
-	if err := writeChecked(agents, string(b), existed, text, ""); err != nil {
-		return undo(err)
-	}
-	fmt.Fprintln(w, "wrote the trace resume block in", agents)
-	fmt.Fprintln(w, "Codex runs it only because AGENTS.md asks: nothing checks that a session did")
+	fmt.Fprintln(in.w, "wrote the trace resume block in", in.agents)
+	fmt.Fprintln(in.w, "Codex runs it only because AGENTS.md asks: nothing checks that a session did")
 	return nil
 }
 
 // codexConfigFits says whether home has no config.json yet (true: this run writes one), or one that is a Codex
 // memory for dir; any other config is an error.
 func codexConfigFits(home, dir string) (bool, error) {
-	cfgPath := filepath.Join(home, "config.json")
-	if _, err := os.Stat(cfgPath); os.IsNotExist(err) {
+	_, err := os.Stat(filepath.Join(home, "config.json"))
+	if os.IsNotExist(err) {
 		return true, nil
-	} else if err != nil {
-		return false, err
 	}
+	if err == nil {
+		err = codexMemoryFor(home, dir)
+	}
+	return false, err
+}
+
+// codexMemoryFor says why home's config.json is not a Codex memory for dir, nil when it is one.
+func codexMemoryFor(home, dir string) error {
 	c, err := loadConfig(home)
 	if err != nil {
-		return false, err
+		return err
 	}
 	if c.Claude == nil || *c.Claude || !inScope(dir, string(c.Scope)) {
-		return false, fmt.Errorf("%s exists and is not a Codex memory for this folder (it needs \"claude\": false and this folder in scope); for a separate Codex memory pass -home with a new folder", cfgPath)
+		return fmt.Errorf("%s exists and is not a Codex memory for this folder (it needs \"claude\": false and this folder in scope); for a separate Codex memory pass -home with a new folder", filepath.Join(home, "config.json"))
 	}
-	return false, nil
+	return nil
 }
 
 // readIfThere is a file's bytes and whether it exists; a missing file is not an error.
@@ -260,15 +330,7 @@ func noOverlap(hb []byte, hooksPath, home, mine string) error {
 
 // reportRollouts says how many Codex rollouts ran in dir, and when none did, the folders they ran in.
 func reportRollouts(w io.Writer, codexDir, dir, cfgPath string) {
-	cwds := map[string]int{}
-	for _, f := range codexFiles(codexDir) {
-		if r, err := openRollout(f); err == nil {
-			if m, ok := codexFirst(r); ok && m.Cwd != "" {
-				cwds[m.Cwd]++
-			}
-			r.Close()
-		}
-	}
+	cwds := rolloutFolders(codexDir)
 	in := 0
 	for c, n := range cwds {
 		if inScope(c, dir) {
@@ -282,6 +344,17 @@ func reportRollouts(w io.Writer, codexDir, dir, cfgPath string) {
 			fmt.Fprintf(w, "  %5d  %s\n", cwds[c], c)
 		}
 	}
+}
+
+// rolloutFolders counts the rollouts in codexDir by the folder they ran in.
+func rolloutFolders(codexDir string) map[string]int {
+	cwds := map[string]int{}
+	for _, f := range codexFiles(codexDir) {
+		if m, ok, _ := rolloutMeta(f); ok && m.Cwd != "" {
+			cwds[m.Cwd]++
+		}
+	}
+	return cwds
 }
 
 // writeCodexConfig writes a config.json that never reads Claude Code and keeps the threads that ran in dir.
@@ -402,13 +475,7 @@ func sumCounts(m map[string]int) (n int) {
 }
 
 func topCounts(m map[string]int, k int) []string {
-	keys := make([]string, 0, len(m))
-	for c := range m {
-		keys = append(keys, c)
-	}
-	sort.Slice(keys, func(i, j int) bool { return m[keys[i]] > m[keys[j]] || m[keys[i]] == m[keys[j]] && keys[i] < keys[j] })
-	if len(keys) > k {
-		keys = keys[:k]
-	}
-	return keys
+	keys := slices.Collect(maps.Keys(m))
+	slices.SortFunc(keys, func(a, b string) int { return cmp.Or(cmp.Compare(m[b], m[a]), strings.Compare(a, b)) }) // most first
+	return keys[:min(k, len(keys))]
 }

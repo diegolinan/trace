@@ -9,7 +9,6 @@ import (
 	"sort"
 	"strconv"
 	"strings"
-	"unicode/utf8"
 )
 
 // row is one line of a Claude Code transcript; only the fields trace reads.
@@ -89,18 +88,20 @@ type parsed struct {
 	compacted bool
 }
 
-// asText returns a content field's text: a plain string, or the text blocks of an array joined.
+// asText returns a content field's text: a plain string (true), or the text blocks of an array joined.
 func asText(raw json.RawMessage) (string, bool) {
-	if len(raw) == 0 {
-		return "", false
-	}
 	var s string
 	if json.Unmarshal(raw, &s) == nil {
 		return s, true
 	}
+	return blockText(raw), false
+}
+
+// blockText joins the text blocks of a content array; anything that is not one has no text.
+func blockText(raw json.RawMessage) string {
 	var bs []block
 	if json.Unmarshal(raw, &bs) != nil {
-		return "", false
+		return ""
 	}
 	var parts []string
 	for _, b := range bs {
@@ -108,7 +109,7 @@ func asText(raw json.RawMessage) (string, bool) {
 			parts = append(parts, b.Text)
 		}
 	}
-	return strings.Join(parts, "\n"), false
+	return strings.Join(parts, "\n")
 }
 
 // headTail keeps tool output searchable without storing megabytes; the raw copy keeps the rest (ReMe's head/tail).
@@ -117,16 +118,8 @@ func headTail(s string) string {
 	if len(s) <= 2*keep+200 {
 		return s
 	}
-	h, t := s[:keep], s[len(s)-keep:]
-	for len(h) > 0 { // a character cut at the end decodes as one bad byte
-		if r, size := utf8.DecodeLastRuneInString(h); r != utf8.RuneError || size != 1 {
-			break
-		}
-		h = h[:len(h)-1]
-	}
-	for len(t) > 0 && !utf8.RuneStart(t[0]) { // a character cut at the start
-		t = t[1:]
-	}
+	// A character cut at either end is left out; callers pass text decoded from JSON, which is valid UTF-8.
+	h, t := strings.ToValidUTF8(s[:keep], ""), strings.ToValidUTF8(s[len(s)-keep:], "")
 	return h + fmt.Sprintf("\n[… %d chars cut, full text in the raw copy …]\n", len(s)-len(h)-len(t)) + t
 }
 
@@ -342,26 +335,8 @@ func toolResult(r *row, b block) []ev {
 	if r.ToolDenialKind == "user-rejected" {
 		return []ev{{speaker: "user", kind: "refusal", text: s, toolUse: b.ToolUseID, isError: boolp(true)}}
 	}
-	var q struct {
-		Answers     map[string]string `json:"answers"`
-		Annotations map[string]struct {
-			Notes string `json:"notes"`
-		} `json:"annotations"`
-	}
-	if len(r.ToolUseResult) > 0 && r.ToolUseResult[0] == '{' && json.Unmarshal(r.ToolUseResult, &q) == nil && len(q.Answers) > 0 {
-		keys := make([]string, 0, len(q.Answers))
-		for k := range q.Answers {
-			keys = append(keys, k)
-		}
-		sort.Strings(keys)
-		var t strings.Builder
-		for _, k := range keys {
-			fmt.Fprintf(&t, "Q: %s\nA: %s\n", k, q.Answers[k])
-			if n := q.Annotations[k].Notes; n != "" {
-				fmt.Fprintf(&t, "Note: %s\n", n)
-			}
-		}
-		return []ev{{speaker: "user", kind: "answer", text: t.String(), toolUse: b.ToolUseID}}
+	if t, ok := answers(r.ToolUseResult); ok {
+		return []ev{{speaker: "user", kind: "answer", text: t, toolUse: b.ToolUseID}}
 	}
 	e := ev{speaker: "tool", kind: "tool_result", text: headTail(s), toolUse: b.ToolUseID, isError: boolp(b.IsError)}
 	if m := exitRe.FindStringSubmatch(s); m != nil {
@@ -372,6 +347,33 @@ func toolResult(r *row, b block) []ev {
 		return nil
 	}
 	return []ev{e}
+}
+
+// answers is what the user answered the agent's questions, from a tool result: each question with its answer and the
+// note the user wrote, in question order. ok is false when the result holds no answers.
+func answers(toolUseResult json.RawMessage) (text string, ok bool) {
+	var q struct {
+		Answers     map[string]string `json:"answers"`
+		Annotations map[string]struct {
+			Notes string `json:"notes"`
+		} `json:"annotations"`
+	}
+	if json.Unmarshal(toolUseResult, &q) != nil || len(q.Answers) == 0 {
+		return "", false
+	}
+	keys := make([]string, 0, len(q.Answers))
+	for k := range q.Answers {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	var t strings.Builder
+	for _, k := range keys {
+		fmt.Fprintf(&t, "Q: %s\nA: %s\n", k, q.Answers[k])
+		if n := q.Annotations[k].Notes; n != "" {
+			fmt.Fprintf(&t, "Note: %s\n", n)
+		}
+	}
+	return t.String(), true
 }
 
 func clip(s string, n int) string {

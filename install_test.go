@@ -151,6 +151,7 @@ func TestHookHomeParsing(t *testing.T) {
 		{"unknown flag", entry("hook", "-bogus", "-home", "/m"), "", false, false},
 		{"empty home", entry("hook", "-home="), "", true, false},
 		{"no args", map[string]any{"command": "/x/trace"}, "", false, false},
+		{"non-string arg", entry("hook", 5.0), "", false, false},
 	} {
 		home, named, ok := hookHome(c.h)
 		if home != c.home || named != c.named || ok != c.ok {

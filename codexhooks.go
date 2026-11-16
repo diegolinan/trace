@@ -113,31 +113,30 @@ func parseCodexHooks(b []byte) (map[string]any, error) {
 	if !ok {
 		return nil, fmt.Errorf("is not a JSON object, left untouched")
 	}
-	bad := fmt.Errorf("does not have the shape Codex hooks have, left untouched")
-	if h, present := file["hooks"]; present {
-		hooks, ok := h.(map[string]any)
-		if !ok {
-			return nil, bad
-		}
-		for _, groups := range hooks {
-			gs, ok := groups.([]any)
-			if !ok {
-				return nil, bad
-			}
-			for _, g := range gs {
-				group, ok := g.(map[string]any)
-				if !ok {
-					return nil, bad
-				}
-				if inner, present := group["hooks"]; present {
-					if _, ok := inner.([]any); !ok {
-						return nil, bad
-					}
-				}
-			}
-		}
+	if h, present := file["hooks"]; present && !codexHooksShaped(h) {
+		return nil, fmt.Errorf("does not have the shape Codex hooks have, left untouched")
 	}
 	return file, nil
+}
+
+// codexHooksShaped says h maps each event to a list of groups as Codex has them.
+func codexHooksShaped(h any) bool {
+	hooks, ok := h.(map[string]any)
+	for _, groups := range hooks {
+		gs, isList := groups.([]any)
+		if !isList || slices.ContainsFunc(gs, notCodexGroup) {
+			return false
+		}
+	}
+	return ok
+}
+
+// notCodexGroup says g is not an object whose "hooks", when present, is a list.
+func notCodexGroup(g any) bool {
+	group, ok := g.(map[string]any)
+	inner, present := group["hooks"]
+	_, isList := inner.([]any)
+	return !ok || present && !isList
 }
 
 // codexHooksPlan returns hooks.json's new content with this home's entries replaced by exe's (removed when exe is
@@ -152,24 +151,7 @@ func codexHooksPlan(old []byte, exe, home string) ([]byte, error) {
 	if hooks == nil {
 		hooks = map[string]any{}
 	}
-	removed := false
-	mine := func(h any) bool { // another memory's are kept: installCodex checked that the scopes do not overlap
-		owner := codexHookOwner(h)
-		if owner != "" && sameHome(owner, home) {
-			removed = true
-			return true
-		}
-		return false
-	}
-	for ev, groups := range hooks {
-		gs, _ := groups.([]any)
-		if kept := withoutMine(gs, mine); len(kept) == 0 {
-			delete(hooks, ev)
-		} else {
-			hooks[ev] = kept
-		}
-	}
-	if exe == "" && !removed {
+	if !removeHomeHooks(hooks, home) && exe == "" {
 		return old, nil // nothing of this home's: the file is not rewritten
 	}
 	if exe != "" {
@@ -182,6 +164,26 @@ func codexHooksPlan(old []byte, exe, home string) ([]byte, error) {
 	}
 	b, _ := json.MarshalIndent(file, "", "  ")
 	return append(b, '\n'), nil
+}
+
+// removeHomeHooks drops this home's entries from every event, and the events left with none; true when it dropped
+// any. Another memory's are kept: installCodex checked that the scopes do not overlap.
+func removeHomeHooks(hooks map[string]any, home string) (removed bool) {
+	mine := func(h any) bool {
+		owner := codexHookOwner(h)
+		isMine := owner != "" && sameHome(owner, home)
+		removed = removed || isMine
+		return isMine
+	}
+	for ev, groups := range hooks {
+		gs, _ := groups.([]any)
+		if kept := withoutMine(gs, mine); len(kept) == 0 {
+			delete(hooks, ev)
+		} else {
+			hooks[ev] = kept
+		}
+	}
+	return removed
 }
 
 // addCodexHooks appends this home's group to every event TRACE hooks in Codex, with the event's matcher if any.
@@ -237,24 +239,8 @@ func scopesOverlap(a, b string) bool {
 
 // codexHooksHave says whether hooks.json holds this home's entries; a file it cannot read is an error, never "no".
 func codexHooksHave(b []byte, home string) (bool, error) {
-	file, err := parseCodexHooks(b)
-	if err != nil {
-		return false, err
-	}
-	hooks, _ := file["hooks"].(map[string]any)
-	for _, groups := range hooks {
-		gs, _ := groups.([]any)
-		for _, g := range gs {
-			group, _ := g.(map[string]any)
-			inner, _ := group["hooks"].([]any)
-			for _, h := range inner {
-				if o := codexHookOwner(h); o != "" && sameHome(o, home) {
-					return true, nil
-				}
-			}
-		}
-	}
-	return false, nil
+	_, err := parseCodexHooks(b)
+	return err == nil && slices.ContainsFunc(codexHookHomes(b), func(o string) bool { return sameHome(o, home) }), err
 }
 
 // filePlan is one file's planned change, worked out before anything is written so a run can check every file first.

@@ -373,6 +373,7 @@ func TestMarksNoAndFirstClause(t *testing.T) {
 		"no, dale":          {correction: true},
 		"no entiendo, dale": {},
 		"dale":              {approval: true},
+		"mira el log, dale": {},
 	}
 	for text, want := range cases {
 		if got := markText(text); got != want {

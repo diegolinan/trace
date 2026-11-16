@@ -24,15 +24,15 @@ type check struct {
 }
 
 // applies says whether the check follows this tool call: On matches the tool's name (empty: every tool) and Match
-// the file it wrote or the command it ran. A pattern that does not compile is the error.
-func (c check) applies(tool, target string) (bool, error) {
+// the file it wrote or the command it ran. A pattern that does not compile is the error; callers then ignore ok.
+func (c check) applies(tool, target string) (ok bool, err error) {
 	on, err := regexp.Compile(`^(?:` + c.On + `)$`)
 	if err != nil {
-		return false, err
+		return
 	}
 	match, err := regexp.Compile(c.Match)
 	if err != nil {
-		return false, err
+		return
 	}
 	return (c.On == "" || on.MatchString(tool)) && match.MatchString(target), nil
 }

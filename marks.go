@@ -53,6 +53,25 @@ func lasting(text string) bool {
 }
 
 func markText(text string) marks {
+	cs := markClauses(text)
+	var m marks
+	for i, c := range cs {
+		switch {
+		case bareNo.MatchString(c): // A lone "no" refuses; "no, <the right version>" corrects.
+			if i == len(cs)-1 {
+				m.rejection = true
+			} else {
+				m.correction = true
+			}
+		case !explain.MatchString(c):
+			m.add(c, i == 0)
+		}
+	}
+	return m
+}
+
+// markClauses are a typed message's clauses, folded, with pasted text and filler left out.
+func markClauses(text string) []string {
 	t := strings.ToLower(pasted.ReplaceAllString(text, " "))
 	t = fold.Replace(tagNo.ReplaceAllString(accentSi.ReplaceAllString(t, "${1}yes${2}"), "?"))
 	var cs []string
@@ -61,36 +80,21 @@ func markText(text string) marks {
 			cs = append(cs, c)
 		}
 	}
-	var m marks
-	first := true
-	for i, c := range cs {
-		// A lone "no" refuses; "no, <the right version>" corrects.
-		if bareNo.MatchString(c) {
-			if i == len(cs)-1 {
-				m.rejection = true
-			} else {
-				m.correction = true
-			}
-			first = false
-			continue
-		}
-		if explain.MatchString(c) {
-			first = false
-			continue
-		}
-		if first && (approveRe.MatchString(c) || siOnly.MatchString(c)) {
-			m.approval = true
-		}
-		first = false
-		if stopRe.MatchString(c) || rejectRe.MatchString(c) {
-			m.rejection = true
-		}
-		if fixRe.MatchString(c) {
-			m.correction = true
-		}
-		if ruleRe.MatchString(c) {
-			m.rule = true
-		}
+	return cs
+}
+
+// add marks one clause; an approval counts only as the message's first clause, the answer to what was asked.
+func (m *marks) add(c string, first bool) {
+	if first && (approveRe.MatchString(c) || siOnly.MatchString(c)) {
+		m.approval = true
 	}
-	return m
+	if stopRe.MatchString(c) || rejectRe.MatchString(c) {
+		m.rejection = true
+	}
+	if fixRe.MatchString(c) {
+		m.correction = true
+	}
+	if ruleRe.MatchString(c) {
+		m.rule = true
+	}
 }

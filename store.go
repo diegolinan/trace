@@ -227,30 +227,38 @@ func mendRedaction(db *sql.DB) error {
 	defer tx.Rollback()
 	for _, tc := range [][2]string{{"check_run", "target"}, {"check_run", "output"}, {"loaded_text", "text"},
 		{"claude_instructions", "files"}, {"codex_instructions", "text"}, {"card", "text"}} {
-		rows, err := tx.Query("select rowid, " + tc[1] + " from " + tc[0] + " where " + tc[1] + " is not null")
-		if err != nil {
+		if err := redactColumn(tx, tc[0], tc[1]); err != nil {
 			return err
-		}
-		fixed := map[int64]string{}
-		for rows.Next() {
-			var id int64
-			var s string
-			rows.Scan(&id, &s)
-			if r := redacted(s); r != s {
-				fixed[id] = r
-			}
-		}
-		rows.Close()
-		for id, s := range fixed {
-			if _, err := tx.Exec("update "+tc[0]+" set "+tc[1]+" = ? where rowid = ?", s, id); err != nil {
-				return err
-			}
 		}
 	}
 	if _, err := tx.Exec("pragma user_version = 2"); err != nil {
 		return err
 	}
 	return tx.Commit()
+}
+
+// redactColumn redacts every text in one column of one table: all of it read first, then the changed ones written.
+func redactColumn(tx *sql.Tx, table, column string) error {
+	rows, err := tx.Query("select rowid, " + column + " from " + table + " where " + column + " is not null")
+	if err != nil {
+		return err
+	}
+	fixed := map[int64]string{}
+	for rows.Next() {
+		var id int64
+		var s string
+		rows.Scan(&id, &s)
+		if r := redacted(s); r != s {
+			fixed[id] = r
+		}
+	}
+	rows.Close()
+	for id, s := range fixed {
+		if _, err := tx.Exec("update "+table+" set "+column+" = ? where rowid = ?", s, id); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 // mendZstKeys runs once per store (user_version 0 to 1). Codex rows without an ordinal used to be keyed by the

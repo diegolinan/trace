@@ -72,9 +72,19 @@ func anchors(text, kind, toolName string) []anchorHit {
 	if toolName != "" {
 		put("tool", toolName)
 	}
-	if kind == "thinking" || kind == "injected" || kind == "summary" {
+	switch kind {
+	case "thinking", "injected", "summary":
 		return out // anchors come from what was said or done, not from reasoning or re-sent text
 	}
+	textAnchors(text, put)
+	if (kind == "prompt" || kind == "steering") && pinRe.MatchString(text) {
+		put("pin", "user")
+	}
+	return out
+}
+
+// textAnchors puts the paths, the configured extra anchors and the urls a text names.
+func textAnchors(text string, put func(typ, value string)) {
 	slashed := strings.ReplaceAll(text, `\`, "/")
 	for _, m := range pathRe.FindAllString(slashed, 200) {
 		put("path", m)
@@ -87,8 +97,4 @@ func anchors(text, kind, toolName string) []anchorHit {
 	for _, m := range urlRe.FindAllString(text, 50) {
 		put("url", strings.TrimRight(m, ".,;:"))
 	}
-	if (kind == "prompt" || kind == "steering") && pinRe.MatchString(text) {
-		put("pin", "user")
-	}
-	return out
 }

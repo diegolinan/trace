@@ -19,6 +19,7 @@ package main
 
 import (
 	"database/sql"
+	"errors"
 	"flag"
 	"fmt"
 	"os"
@@ -33,13 +34,13 @@ func main() {
 		os.Exit(2)
 	}
 	cmd := os.Args[1]
-	o, code, err := parseArgs(cmd, os.Args[2:])
+	o, err := parseArgs(cmd, os.Args[2:])
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "trace:", err)
 		if cmd == "hook" {
 			return // fail open: a hook must never block the host's turn; Claude Code reads exit 2 as "block"
 		}
-		os.Exit(code)
+		os.Exit(exitCode(err))
 	}
 	if cmd == "hook" {
 		runHook(o)
@@ -63,18 +64,53 @@ type opts struct {
 	args                                                                                                   []string
 }
 
-// parseArgs reads the flags, then config.json from the home they name, then fills the defaults. On an error it says
-// which exit code the command should end with (2 for usage, 1 otherwise); a hook ends with 0 whatever it is.
-func parseArgs(cmd string, args []string) (opts, int, error) {
+// usageError is a command line trace cannot run: it ends with exit 2, every other error with 1 (exitCode); a hook
+// ends with 0 whatever it is.
+type usageError struct{ error }
+
+func exitCode(err error) int {
+	if errors.As(err, new(usageError)) {
+		return 2
+	}
+	return 1
+}
+
+// parseArgs reads the flags, then config.json from the home they name, then fills the defaults.
+func parseArgs(cmd string, args []string) (opts, error) {
 	o := opts{cmd: cmd}
 	// A hook must never exit 2 on a bad flag: Claude Code reads exit 2 as "block".
 	onErr := flag.ExitOnError
 	if cmd == "hook" {
 		onErr = flag.ContinueOnError
 	}
-	fs := flag.NewFlagSet(cmd, onErr)
-	// Flags are parsed before config.json is read, because -home says which config to read; the defaults that
-	// come from the config are filled in afterwards for the flags not given.
+	fs := o.flagSet(onErr)
+	if err := fs.Parse(args); err != nil {
+		return o, usageError{err} // only a hook gets here (ContinueOnError)
+	}
+	o.args = fs.Args()
+	o.given = map[string]bool{}
+	fs.Visit(func(f *flag.Flag) { o.given[f.Name] = true })
+	if err := o.resolveHome(); err != nil {
+		return o, usageError{err}
+	}
+	var err error
+	if cfg, err = loadConfig(o.home); err != nil {
+		return o, fmt.Errorf("config.json is not valid JSON, nothing done: %w", err)
+	}
+	o.defaults()
+	if err := o.checkHost(); err != nil {
+		return o, err
+	}
+	cfg.Scope = scopeList(o.scope) // the hook's scope gate and the import read the same scope
+	compileConfig()
+	return o, nil
+}
+
+// flagSet is every flag trace takes, bound to o. Install reads a hook entry's -home with it too (hookHome), so the
+// two never disagree on what a hook command means. Flags are parsed before config.json is read, because -home says
+// which config to read; the defaults that come from the config are filled in afterwards for the flags not given.
+func (o *opts) flagSet(onErr flag.ErrorHandling) *flag.FlagSet {
+	fs := flag.NewFlagSet(o.cmd, onErr)
 	fs.StringVar(&o.home, "home", "", "TRACE home: config.json and, unless config moves it, the data (default $TRACE_HOME, else ~/.trace)")
 	fs.StringVar(&o.dbPath, "db", "", "database file (default <data>/trace.db)")
 	fs.StringVar(&o.projects, "projects", "", "Claude Code transcripts folder (empty: none; default ~/.claude/projects unless config says claude: false)")
@@ -92,26 +128,7 @@ func parseArgs(cmd string, args []string) (opts, int, error) {
 	fs.StringVar(&o.mode, "mode", "", "install -host codex (required): agents (a block in AGENTS.md) or hooks (Codex hooks in CODEX_HOME/hooks.json)")
 	fs.BoolVar(&o.migrate, "migrate", false, "install, uninstall: take over TRACE hooks that name no home (installed before -home existed)")
 	fs.String("repo", "", "ignored: kept so hooks written for an older TRACE still run (SPEC G5)")
-	if err := fs.Parse(args); err != nil {
-		return o, 2, err // only a hook gets here (ContinueOnError)
-	}
-	o.args = fs.Args()
-	o.given = map[string]bool{}
-	fs.Visit(func(f *flag.Flag) { o.given[f.Name] = true })
-	if err := o.resolveHome(); err != nil {
-		return o, 2, err
-	}
-	var err error
-	if cfg, err = loadConfig(o.home); err != nil {
-		return o, 1, fmt.Errorf("config.json is not valid JSON, nothing done: %w", err)
-	}
-	o.defaults()
-	if err := o.checkHost(); err != nil {
-		return o, 1, err
-	}
-	cfg.Scope = scopeList(o.scope) // the hook's scope gate and the import read the same scope
-	compileConfig()
-	return o, 0, nil
+	return fs
 }
 
 // resolveHome is the -home flag, else the default home, always absolute: the home is written into hooks and
@@ -138,7 +155,7 @@ func (o *opts) defaults() {
 		}
 	}
 	def("db", &o.dbPath, filepath.Join(data, "trace.db"))
-	if cfg.Claude == nil || *cfg.Claude {
+	if claudeOn(cfg) {
 		def("projects", &o.projects, filepath.Join(userHome, ".claude", "projects"))
 		def("history", &o.history, filepath.Join(userHome, ".claude", "history.jsonl"))
 	}
@@ -150,6 +167,11 @@ func (o *opts) defaults() {
 	case "resume":
 		def("host", &o.host, "codex")
 	}
+}
+
+// claudeOn says whether a config imports Claude Code's sessions: unless it says claude: false.
+func claudeOn(c config) bool {
+	return c.Claude == nil || *c.Claude
 }
 
 func (o *opts) checkHost() error {
@@ -178,19 +200,25 @@ var commands = map[string]func(opts) error{
 	"rules":     cmdRules,
 }
 
-// runHook answers a host hook. Fail open: a hook error must never block or fail the host's turn. A panic exits 2,
-// which both hosts read as "block" on UserPromptSubmit, PostToolUse and Stop, so it is caught and the hook exits 0.
+// runHook answers a host hook. Fail open: a hook error must never block or fail the host's turn.
 func runHook(o opts) {
+	failOpen(func() {
+		run := func(db *sql.DB, trigger string) error { return o.importFn(trigger)(db) }
+		if err := hook(readHookInput(os.Stdin), os.Args[2:], o.dbPath, o.host, o.projects, run, os.Stdout); err != nil {
+			fmt.Fprintln(os.Stderr, "trace hook:", err)
+		}
+	})
+}
+
+// failOpen runs f and turns a panic into a line on stderr. A panic exits 2, which both hosts read as "block" on
+// UserPromptSubmit, PostToolUse and Stop; recovered, the hook returns to main and exits 0.
+func failOpen(f func()) {
 	defer func() {
 		if r := recover(); r != nil {
 			fmt.Fprintln(os.Stderr, "trace hook: internal error:", r)
-			os.Exit(0)
 		}
 	}()
-	run := func(db *sql.DB, trigger string) error { return o.importFn(trigger)(db) }
-	if err := hook(readHookInput(os.Stdin), os.Args[2:], o.dbPath, o.host, o.projects, run, os.Stdout); err != nil {
-		fmt.Fprintln(os.Stderr, "trace hook:", err)
-	}
+	f()
 }
 
 // cmdInstall installs or uninstalls the integration for -host, then imports once. Nothing is written until the host
@@ -202,14 +230,23 @@ func cmdInstall(o opts) error {
 	if o.host == "codex" {
 		return o.installCodex()
 	}
-	exe := ""
-	if o.cmd == "install" {
-		var err error
-		if exe, err = selfPath(); err != nil {
-			return err
-		}
+	return o.installClaude()
+}
+
+// exeFor is this binary's path when the integration runs it (need), else "".
+func exeFor(need bool) (string, error) {
+	if !need {
+		return "", nil
 	}
-	if o.cmd == "install" && cfg.Claude != nil && !*cfg.Claude {
+	return selfPath()
+}
+
+func (o opts) installClaude() error {
+	exe, err := exeFor(o.cmd == "install")
+	if err != nil {
+		return err
+	}
+	if o.cmd == "install" && !claudeOn(cfg) {
 		fmt.Println("note: this home's config.json says claude: false, so Claude Code will see this memory but its own sessions are not imported")
 	}
 	if err := install(claudeSettings(), exe, o.home, optionalHooks(cfg), o.migrate, os.Stdout); err != nil || o.cmd != "install" {
@@ -223,12 +260,9 @@ func (o opts) installCodex() error {
 	if o.cmd == "uninstall" {
 		return uninstallCodex(o.home, cwd, o.codexDir, o.migrate, os.Stdout)
 	}
-	exe := ""
-	if o.mode == "hooks" {
-		var err error
-		if exe, err = selfPath(); err != nil {
-			return err
-		}
+	exe, err := exeFor(o.mode == "hooks")
+	if err != nil {
+		return err
 	}
 	if err := installCodex(o.home, cwd, o.codexDir, o.mode, exe, o.migrate, os.Stdout); err != nil {
 		return err
@@ -301,7 +335,7 @@ func cmdRestore(o opts) error {
 
 // cmdSearch reads what is new first, so the live session is searchable without a per-turn hook (cass).
 func cmdSearch(o opts) error {
-	if err := importOnce(o.dbPath, 0, o.importFn("search")); err != nil {
+	if err := importNow(o.dbPath, o.importFn("search")); err != nil {
 		fmt.Fprintln(os.Stderr, "trace: import before search failed, searching what is stored:", err)
 	}
 	db, err := openReadOnly(o.dbPath)
@@ -375,24 +409,40 @@ func folderTranscript(db *sql.DB, cwd string) string {
 // importOnce runs one import at a time per database (deja-vu and memsearch #788 for the lock kind). While
 // another holds the lock it retries for up to wait, then exits quietly; the next import reads everything new.
 func importOnce(dbPath string, wait time.Duration, run func(*sql.DB) error) error {
+	return importLocked(dbPath, func(path string) (*os.File, error) { return waitLock(path, wait) }, run)
+}
+
+// importNow is importOnce for search, which does not wait: one try at the lock, and the stored rows when it is held.
+func importNow(dbPath string, run func(*sql.DB) error) error {
+	return importLocked(dbPath, tryLock, run)
+}
+
+// waitLock tries the lock every half second until wait has passed; nil when another still holds it.
+func waitLock(path string, wait time.Duration) (*os.File, error) {
+	deadline := time.Now().Add(wait)
+	for {
+		lock, err := tryLock(path)
+		if err != nil || lock != nil {
+			return lock, err
+		}
+		if time.Now().After(deadline) {
+			return nil, nil
+		}
+		time.Sleep(500 * time.Millisecond)
+	}
+}
+
+func importLocked(dbPath string, lockFn func(string) (*os.File, error), run func(*sql.DB) error) error {
 	if err := os.MkdirAll(filepath.Dir(dbPath), 0o755); err != nil {
 		return err
 	}
-	deadline := time.Now().Add(wait)
-	var lock *os.File
-	for {
-		var err error
-		if lock, err = tryLock(dbPath + ".lock"); err != nil {
-			return err
-		}
-		if lock != nil {
-			break
-		}
-		if time.Now().After(deadline) {
-			fmt.Fprintln(os.Stderr, "another import is running; skipped")
-			return nil
-		}
-		time.Sleep(500 * time.Millisecond)
+	lock, err := lockFn(dbPath + ".lock")
+	if err != nil {
+		return err
+	}
+	if lock == nil {
+		fmt.Fprintln(os.Stderr, "another import is running; skipped")
+		return nil
 	}
 	defer lock.Close()
 	db, err := openDB(dbPath)
@@ -455,6 +505,13 @@ func (im *importer) importClaude(projects, history, archive, scope string) ([]st
 	if err := keepResults(projects, archive, results); err != nil {
 		errs = append(errs, err.Error())
 	}
+	errs = append(errs, im.importTranscripts(files, history)...)
+	return files, append(errs, im.importHistory(history)...)
+}
+
+// importTranscripts reads each Claude Code transcript but the prompt log, and returns one error per failed file.
+func (im *importer) importTranscripts(files []string, history string) []string {
+	var errs []string
 	for _, f := range files {
 		if filepath.Clean(f) == filepath.Clean(history) { // restore walks raw/, where the prompt log's copy sits (SPEC R1)
 			continue
@@ -464,14 +521,22 @@ func (im *importer) importClaude(projects, history, archive, scope string) ([]st
 			im.db.Exec("update source_file set last_error = ? where path = ?", err.Error(), f)
 		}
 	}
-	if st, err := os.Stat(history); err == nil && st.IsDir() { // a wrong -history says so (SPEC E1)
-		errs = append(errs, history+" is a folder, not Claude Code's prompt log")
-	} else if err == nil {
-		if err := im.importFile(history, "prompt-log"); err != nil {
-			errs = append(errs, err.Error())
-		}
+	return errs
+}
+
+// importHistory reads Claude Code's prompt log, if there is one, and returns its error.
+func (im *importer) importHistory(history string) []string {
+	st, err := os.Stat(history)
+	if err != nil {
+		return nil
 	}
-	return files, errs
+	if st.IsDir() { // a wrong -history says so (SPEC E1)
+		return []string{history + " is a folder, not Claude Code's prompt log"}
+	}
+	if err := im.importFile(history, "prompt-log"); err != nil {
+		return []string{err.Error()}
+	}
+	return nil
 }
 
 // importAllCodex reads every Codex rollout, then copies the thread names. It returns the rollouts seen and the errors.
@@ -556,15 +621,14 @@ func searchTries(q string) []searchTryKind {
 
 // searchTry runs one search and prints its hits, saying first when it is not the every-word one; it returns how
 // many it printed.
-func searchTry(db *sql.DB, t searchTryKind, i int, filter string, args []any) (int, error) {
+func searchTry(db *sql.DB, t searchTryKind, i int, filter string, args []any) (hits int, err error) {
 	rows, err := db.Query(`select e.ts, s.role, e.speaker, e.kind, e.session_id, e.seq, snippet(`+t.table+`, 0, '»', '«', '…', 40)
 		from `+t.table+` f join event e on e.id = f.rowid join session s on s.id = e.session_id
 		where `+t.table+` match ?`+filter+` order by bm25(`+t.table+`) limit ?`, args...)
 	if err != nil {
-		return 0, err
+		return hits, err // none: search reads the error, not the count
 	}
 	defer rows.Close()
-	hits := 0
 	for rows.Next() {
 		var ts, role, speaker, kind, sid, snip string
 		var seq int
@@ -583,10 +647,7 @@ func searchTry(db *sql.DB, t searchTryKind, i int, filter string, args []any) (i
 }
 
 func short(s string) string {
-	if len(s) > 8 {
-		return s[:8]
-	}
-	return s
+	return s[:min(len(s), 8)]
 }
 
 func stats(db *sql.DB) error {

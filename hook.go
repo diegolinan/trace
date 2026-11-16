@@ -45,19 +45,26 @@ func admitted(in hookInput, host, projects string) (ok, cwdIn bool) {
 	if inScope(in.Cwd, string(cfg.Scope)) {
 		return true, true
 	}
-	if host != "claude-code" || projects == "" || in.Transcript == "" || in.SessionID == "" {
-		return false, false
+	return host == "claude-code" && ownTranscriptInScope(in, projects), false
+}
+
+// ownTranscriptInScope says whether a Claude Code call's transcript is its session's own and lies in the transcripts
+// folder (projects) under a project folder in scope.
+func ownTranscriptInScope(in hookInput, projects string) bool {
+	if projects == "" || in.Transcript == "" || in.SessionID == "" {
+		return false
 	}
 	// The transcript must be this session's own (or, inside a subagent, its parent's), not a path borrowed from another.
 	if id, _, parent, _ := sessionFor(in.Transcript); id != in.SessionID && parent != in.SessionID {
-		return false, false
+		return false
 	}
-	rel, err := filepath.Rel(filepath.Clean(projects), filepath.Clean(in.Transcript))
-	if err != nil || strings.HasPrefix(rel, ".."+string(filepath.Separator)) { // "." and ".." fail nested below
-		return false, false
+	// On an error rel is "", which fails nested below like "." and "..".
+	rel, _ := filepath.Rel(filepath.Clean(projects), filepath.Clean(in.Transcript))
+	if strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+		return false
 	}
 	project, _, nested := strings.Cut(filepath.ToSlash(rel), "/")
-	return nested && inScope(project, string(cfg.Scope)), false
+	return nested && inScope(project, string(cfg.Scope))
 }
 
 // hook handles one host hook call. Calls admitted refuses get nothing: no import, no store, no output. SessionStart
@@ -70,37 +77,34 @@ func hook(in hookInput, flags []string, dbPath, host, projects string, run func(
 	if !ok {
 		return nil
 	}
-	trigger := hookTrigger(in)
 	role, mine := hookRole(in, host)
 	// One dispatch for both hosts. What differs is only how output is written: Codex rejects plain stdout on Stop and
 	// ignores it on PreCompact (schema.rs, stop.rs, compact.rs, rust-v0.169.0), so it gets context only as JSON, and
 	// only on the events that carry it (contextOut).
 	switch {
-	case in.Event == "PostToolUse" || in.Event == "UserPromptSubmit": // no import: one runs at every Stop
+	case in.Event == "PostToolUse" || in.Event == "UserPromptSubmit" || in.Event == "SubagentStart":
 		if !mine {
 			return nil
 		}
-		return ruleHook(in, role, host, dbPath, cwdIn, w)
-	case in.Event == "SubagentStart": // no import: the parent's Stop covers it
-		if !mine {
-			return nil
-		}
-		return contextOut(w, "SubagentStart", fmt.Sprintf(helperLine, roleLabel(role, "your parent agent"), userName()))
-	case in.Event == "PreCompact":
-		err := spawnImport(flags, trigger)
-		if mine && host != "codex" { // Codex drops PreCompact stdout, and its hooks.json gets no PreCompact
-			fmt.Fprintf(w, compactSteer, userName())
-		}
-		return err
-	case in.Event == "SessionStart" && in.Source == "compact":
-		err := spawnImport(flags, trigger)
-		if mine && cfg.Reinject != nil {
-			return errors.Join(err, compactCard(in, dbPath, role, host, w))
-		}
-		return err
-	case in.Event != "SessionStart": // Stop, SessionEnd, Interrupt (Codex only): import, print nothing
-		return spawnImport(flags, trigger)
+		return contextHook(in, role, host, dbPath, cwdIn, w)
+	case in.Event == "SessionStart" && in.Source != "compact":
+		return sessionStart(in, dbPath, role, host, mine, run, w)
 	}
+	return detachedHook(in, flags, dbPath, role, host, mine, w)
+}
+
+// contextHook answers the events that import nothing: a tool call or a prompt (an import runs at every Stop) and a
+// subagent's start (the parent's Stop covers it).
+func contextHook(in hookInput, role, host, dbPath string, cwdIn bool, w io.Writer) error {
+	if in.Event == "SubagentStart" {
+		return contextOut(w, "SubagentStart", fmt.Sprintf(helperLine, roleLabel(role, "your parent agent"), userName()))
+	}
+	return ruleHook(in, role, host, dbPath, cwdIn, w)
+}
+
+// sessionStart imports in the foreground, so the session that just ended is stored, then prints where it stopped.
+func sessionStart(in hookInput, dbPath, role, host string, mine bool, run func(*sql.DB, string) error, w io.Writer) error {
+	trigger := hookTrigger(in)
 	if err := importOnce(dbPath, 5*time.Second, func(db *sql.DB) error { return run(db, trigger) }); err != nil {
 		fmt.Fprintln(os.Stderr, "trace: import failed, showing what is stored:", err)
 	}
@@ -108,6 +112,22 @@ func hook(in hookInput, flags []string, dbPath, host, projects string, run func(
 		return nil
 	}
 	return startBlock(in, dbPath, role, host, w)
+}
+
+// detachedHook starts a detached import for Stop, SessionEnd, Interrupt (Codex only), PreCompact and the
+// SessionStart after a compaction, and prints only what those last two carry: the summary steer and the rule card.
+func detachedHook(in hookInput, flags []string, dbPath, role, host string, mine bool, w io.Writer) error {
+	err := spawnImport(flags, hookTrigger(in))
+	if !mine {
+		return err
+	}
+	switch {
+	case in.Event == "PreCompact" && host != "codex": // Codex drops PreCompact stdout, and its hooks.json gets no PreCompact
+		fmt.Fprintf(w, compactSteer, userName())
+	case in.Event == "SessionStart" && cfg.Reinject != nil:
+		return errors.Join(err, compactCard(in, dbPath, role, host, w))
+	}
+	return err
 }
 
 // hookTrigger names an import by the hook that started it, and which session fired it, so a hook that misfires can
@@ -210,9 +230,6 @@ func startImport(flags []string, trigger string) error {
 	if err != nil {
 		return err
 	}
-	cmd := exec.Command(exe, append(append([]string{"import"}, flags...), "-trigger", trigger)...)
-	if err := startDetached(cmd); err != nil {
-		return err
-	}
-	return cmd.Process.Release()
+	// Not released or waited for: the hook exits right after, and the system frees the handle then.
+	return startDetached(exec.Command(exe, append(append([]string{"import"}, flags...), "-trigger", trigger)...))
 }

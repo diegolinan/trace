@@ -34,14 +34,29 @@ func shellPath(p string) string {
 	if !strings.Contains(p, " ") {
 		return p
 	}
-	long, err := windows.UTF16PtrFromString(p)
-	if err == nil {
-		buf := make([]uint16, windows.MAX_PATH)
-		if n, err := windows.GetShortPathName(long, &buf[0], uint32(len(buf))); err == nil && n > 0 && int(n) < len(buf) {
-			if s := windows.UTF16ToString(buf[:n]); !strings.Contains(s, " ") {
-				return s
-			}
-		}
+	if s := shortPath(p); s != "" && !strings.Contains(s, " ") {
+		return s
 	}
 	return `"` + p + `"`
+}
+
+// getShortPathName is the system call, a variable so a test can stand in for a volume with short names.
+var getShortPathName = windows.GetShortPathName
+
+// shortPath is p's 8.3 form, or "" when there is none. The first call asks for the size the form needs, with its
+// closing zero, so any length fits.
+func shortPath(p string) string {
+	long, err := windows.UTF16PtrFromString(p)
+	if err != nil {
+		return ""
+	}
+	n, err := getShortPathName(long, nil, 0) // no buffer, so a size of 0
+	if err != nil {
+		return ""
+	}
+	buf := make([]uint16, n)
+	if _, err := getShortPathName(long, &buf[0], n); err != nil {
+		return ""
+	}
+	return windows.UTF16ToString(buf)
 }

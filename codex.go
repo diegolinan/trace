@@ -142,11 +142,7 @@ var heavy = [][]byte{[]byte(`"type":"Extension"`), []byte(`"type":"ImageView"`),
 
 // codexFirst reads the session_meta of a rollout: the thread it belongs to and the folder it ran in.
 func codexFirst(r io.Reader) (codexMeta, bool) {
-	br := bufio.NewReaderSize(r, 1<<20)
-	line, err := br.ReadBytes('\n')
-	if err != nil && len(line) == 0 {
-		return codexMeta{}, false
-	}
+	line, _ := bufio.NewReader(r).ReadBytes('\n') // nothing read does not parse below, so an empty or failed read is no rollout
 	var l codexLine
 	var m codexMeta
 	if json.Unmarshal(line, &l) != nil || l.Type != "session_meta" || json.Unmarshal(l.Payload, &m) != nil || m.ID == "" {
@@ -182,44 +178,47 @@ func (im *importer) importCodex(path string) error {
 	if err != nil {
 		return err
 	}
-	mtime := st.ModTime().UTC().Format(time.RFC3339Nano)
 	tx, err := im.db.Begin()
 	if err != nil {
 		return err
 	}
-	defer tx.Rollback()
+	defer tx.Rollback() // a run that neither marks nor reads the rollout changes nothing, a cleared mark included
+	return im.codexRollout(tx, path, st.Size(), st.ModTime().UTC().Format(time.RFC3339Nano))
+}
+
+// codexRollout reads what a rollout of this size and time holds that the store has not read yet, inside tx, and
+// commits tx once it marked or read it.
+func (im *importer) codexRollout(tx *sql.Tx, path string, size int64, mtime string) error {
 	f, err := loadRolloutRow(tx, path)
-	if err != nil {
+	if err != nil || f.skipped.String == "scope:"+im.scope { // the mark holds only for the scope that set it (SPEC I1)
 		return err
-	}
-	if f.skipped.String == "scope:"+im.scope { // the mark holds only for the scope that set it (SPEC I1)
-		return nil
 	}
 	cleared, err := f.clearMark(tx)
 	if err != nil {
 		return err
 	}
 	zst := strings.HasSuffix(path, ".zst")
-	if f.unchanged(zst, cleared, st.Size(), mtime) {
-		return nil
-	}
-	meta, ok, err := rolloutMeta(path)
-	if err != nil {
-		return err
-	}
-	if !ok {
-		return nil // still being created, or not a rollout: the next run tries again
-	}
-	if !inScope(meta.Cwd, im.scope) {
-		if err := f.mark(tx, im.scope, st.Size(), mtime); err != nil {
-			return err
-		}
-		return tx.Commit()
-	}
-	if zst || st.Size() < f.from {
+	if zst || size < f.from { // a compressed copy is read whole, a plain file rewritten shorter again from its start
 		f.from = 0
 	}
-	if err := im.readRollout(tx, path, meta, zst, f, st.Size(), mtime); err != nil {
+	if f.unchanged(zst, cleared, size, mtime) {
+		return nil
+	}
+	return im.newRollout(tx, path, zst, f, size, mtime)
+}
+
+// newRollout reads a rollout that changed, or marks it when its thread is outside scope.
+func (im *importer) newRollout(tx *sql.Tx, path string, zst bool, f rolloutRow, size int64, mtime string) error {
+	meta, ok, err := rolloutMeta(path)
+	if err != nil || !ok { // not ok: still being created, or not a rollout; the next run tries again
+		return err
+	}
+	if !inScope(meta.Cwd, im.scope) {
+		err = f.mark(tx, im.scope, size, mtime)
+	} else {
+		err = im.readRollout(tx, path, meta, zst, f, size, mtime)
+	}
+	if err != nil {
 		return err
 	}
 	return tx.Commit()
@@ -268,14 +267,13 @@ func (f rolloutRow) unchanged(zst, cleared bool, size int64, mtime string) bool 
 }
 
 // rolloutMeta is a rollout's first record, its session_meta; false while it is not there.
-func rolloutMeta(path string) (codexMeta, bool, error) {
+func rolloutMeta(path string) (m codexMeta, ok bool, err error) {
 	rc, err := openRollout(path)
-	if err != nil {
-		return codexMeta{}, false, err
+	if err == nil {
+		defer rc.Close()
+		m, ok = codexFirst(rc)
 	}
-	defer rc.Close()
-	m, ok := codexFirst(rc)
-	return m, ok, nil
+	return m, ok, err
 }
 
 // readRollout reads a rollout from f.from (a compressed one from its start) and records how far it was read.
@@ -347,31 +345,55 @@ func codexSig(l codexLine, p codexPayload) (string, codexItem) {
 // codexEvents are the events one rollout record of kind sig yields, in order; known is false for a kind trace does
 // not map. A compaction yields its boundary and then its summary. A pure mapping: storing is readCodex's job.
 func codexEvents(sig string, p codexPayload, item codexItem) (events []ev, known bool) {
-	switch sig {
-	case "event_msg/item_completed/UserMessage":
-		return []ev{{speaker: "user", kind: "prompt", text: joinTexts(item.Content)}}, true
-	case "event_msg/user_message": // before item_completed existed
-		return []ev{{speaker: "user", kind: "prompt", text: p.Message}}, true
-	case "event_msg/item_completed/AgentMessage":
-		return []ev{{speaker: "assistant", kind: "reply", text: joinTexts(item.Content)}}, true
-	case "event_msg/item_completed/Reasoning":
-		return []ev{{speaker: "assistant", kind: "thinking", text: strings.Join(item.SummaryText, "\n")}}, true
-	case "response_item/custom_tool_call", "response_item/function_call":
-		return []ev{codexCall(p)}, true
-	case "response_item/custom_tool_call_output", "response_item/function_call_output":
-		return []ev{{speaker: "tool", kind: "tool_result", text: headTail(outputText(p.Output)), toolUse: p.CallID}}, true
-	case "response_item/agent_message":
-		return []ev{{speaker: "relay", kind: "relay", text: p.Author + " -> " + p.Recipient + ": " + joinTexts(p.Content)}}, true
-	case "response_item/message/user", "response_item/message/developer":
-		return []ev{{speaker: "harness", kind: "injected", text: joinTexts(p.Content)}}, true
-	case "compacted":
-		return []ev{{speaker: "harness", kind: "boundary", text: "compacted"}, {speaker: "model-summary", kind: "summary", text: p.Message}}, true
-	case "event_msg/turn_aborted":
-		return []ev{{speaker: "harness", kind: "boundary", text: "turn aborted: " + p.Reason}}, true
-	case "turn_context":
-		return nil, true
+	if f, known := codexMaps[sig]; known {
+		return f(p, item), true
 	}
 	return nil, false
+}
+
+// codexMap turns one rollout record into its events.
+type codexMap func(p codexPayload, item codexItem) []ev
+
+var (
+	codexToolCall = func(p codexPayload, _ codexItem) []ev { return []ev{codexCall(p)} }
+	codexResult   = func(p codexPayload, _ codexItem) []ev {
+		return []ev{{speaker: "tool", kind: "tool_result", text: headTail(outputText(p.Output)), toolUse: p.CallID}}
+	}
+	codexInjected = func(p codexPayload, _ codexItem) []ev {
+		return []ev{{speaker: "harness", kind: "injected", text: joinTexts(p.Content)}}
+	}
+)
+
+// codexMaps maps each record kind trace stores to its events; a turn_context is known and yields none.
+var codexMaps = map[string]codexMap{
+	"event_msg/item_completed/UserMessage": func(_ codexPayload, item codexItem) []ev {
+		return []ev{{speaker: "user", kind: "prompt", text: joinTexts(item.Content)}}
+	},
+	"event_msg/user_message": func(p codexPayload, _ codexItem) []ev { // before item_completed existed
+		return []ev{{speaker: "user", kind: "prompt", text: p.Message}}
+	},
+	"event_msg/item_completed/AgentMessage": func(_ codexPayload, item codexItem) []ev {
+		return []ev{{speaker: "assistant", kind: "reply", text: joinTexts(item.Content)}}
+	},
+	"event_msg/item_completed/Reasoning": func(_ codexPayload, item codexItem) []ev {
+		return []ev{{speaker: "assistant", kind: "thinking", text: strings.Join(item.SummaryText, "\n")}}
+	},
+	"response_item/custom_tool_call":        codexToolCall,
+	"response_item/function_call":           codexToolCall,
+	"response_item/custom_tool_call_output": codexResult,
+	"response_item/function_call_output":    codexResult,
+	"response_item/agent_message": func(p codexPayload, _ codexItem) []ev {
+		return []ev{{speaker: "relay", kind: "relay", text: p.Author + " -> " + p.Recipient + ": " + joinTexts(p.Content)}}
+	},
+	"response_item/message/user":      codexInjected,
+	"response_item/message/developer": codexInjected,
+	"compacted": func(p codexPayload, _ codexItem) []ev {
+		return []ev{{speaker: "harness", kind: "boundary", text: "compacted"}, {speaker: "model-summary", kind: "summary", text: p.Message}}
+	},
+	"event_msg/turn_aborted": func(p codexPayload, _ codexItem) []ev {
+		return []ev{{speaker: "harness", kind: "boundary", text: "turn aborted: " + p.Reason}}
+	},
+	"turn_context": func(codexPayload, codexItem) []ev { return nil },
 }
 
 // codexCall is a tool call: a namespaced tool is named namespace.name; a function call's input is its arguments.
@@ -397,11 +419,10 @@ type codexRead struct {
 	seq, comp     int
 	bad           int
 	lastTs, model string
-	toolNames     map[string]string
 }
 
 func (im *importer) readCodex(tx *sql.Tx, r io.Reader, path string, meta codexMeta, from, fileID int64) (int64, int, error) {
-	c := &codexRead{im: im, tx: tx, sid: meta.ID, fileID: fileID, path: path, meta: meta, toolNames: map[string]string{}}
+	c := &codexRead{im: im, tx: tx, sid: meta.ID, fileID: fileID, path: path, meta: meta}
 	c.sub = meta.ParentThreadID != "" || bytes.Contains(meta.Source, []byte(`"subagent"`))
 	role, parent := "subagent", meta.ParentThreadID
 	if !c.sub {
@@ -410,10 +431,10 @@ func (im *importer) readCodex(tx *sql.Tx, r io.Reader, path string, meta codexMe
 	if _, err := tx.Exec(`insert or ignore into session(id, host, role, parent_id, cwd, branch_first, branch_last, version_first, started_at, ended_at, excluded)
 		values (?, 'codex', ?, nullif(?, ''), ?, ?, ?, ?, ?, ?, nullif(?, ''))`,
 		c.sid, role, parent, meta.Cwd, meta.Git.Branch, meta.Git.Branch, meta.CliVersion, meta.Timestamp, meta.Timestamp, excludedFor(folderName(meta.Cwd))); err != nil {
-		return from, 0, err
+		return from, c.bad, err // nothing read yet
 	}
 	tx.QueryRow("select coalesce(max(seq), 0) from event where session_id = ?", c.sid).Scan(&c.seq)
-	if from > 0 {
+	if from != 0 { // continuing a read: from is never negative
 		tx.QueryRow("select compactions from session where id = ?", c.sid).Scan(&c.comp)
 	}
 	end, err := lines(r, from, c.line)
@@ -500,14 +521,9 @@ func (c *codexRead) put(key string, at int64, ts string, e ev) error {
 	if e.text == "" && e.toolInput == "" {
 		return nil
 	}
-	if e.kind == "tool_call" && e.toolUse != "" {
-		c.toolNames[e.toolUse] = e.toolName
-	}
 	if e.kind == "tool_result" && e.toolUse != "" {
-		e.toolName = c.toolNames[e.toolUse]
-		if e.toolName == "" {
-			c.tx.QueryRow("select tool_name from event where session_id = ? and tool_use_id = ? and kind = 'tool_call'", c.sid, e.toolUse).Scan(&e.toolName) // its own session's call (SPEC I5)
-		}
+		// its own session's latest call with that id, stored by this run or an earlier one (SPEC I5, I6)
+		c.tx.QueryRow("select tool_name from event where session_id = ? and tool_use_id = ? and kind = 'tool_call' order by seq desc limit 1", c.sid, e.toolUse).Scan(&e.toolName)
 		if relayTool(e.toolName) {
 			e.speaker, e.kind = "relay", "relay"
 		}

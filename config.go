@@ -4,10 +4,11 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
+	"maps"
 	"os"
 	"path/filepath"
 	"regexp"
-	"sort"
+	"slices"
 	"strings"
 )
 
@@ -48,15 +49,14 @@ var (
 // must not fail a turn.
 func compileConfig() {
 	extraAnchors = nil
-	for name, p := range cfg.Anchors {
-		re, err := regexp.Compile(p)
+	for _, name := range slices.Sorted(maps.Keys(cfg.Anchors)) {
+		re, err := regexp.Compile(cfg.Anchors[name])
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "trace: config anchor %q skipped: %v\n", name, err)
 			continue
 		}
 		extraAnchors = append(extraAnchors, namedRe{name, re})
 	}
-	sort.Slice(extraAnchors, func(i, j int) bool { return extraAnchors[i].name < extraAnchors[j].name })
 	phrases := cfg.PinPhrases
 	if len(phrases) == 0 {
 		phrases = []string{"remember this"}

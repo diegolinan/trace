@@ -1,6 +1,7 @@
 package main
 
 import (
+	"math"
 	"os"
 
 	"golang.org/x/sys/windows"
@@ -13,8 +14,9 @@ func tryLock(path string) (*os.File, error) {
 	if err != nil {
 		return nil, err
 	}
+	// The whole range, as Go's own cmd/go lockedfile does: no length word a mutation could change unseen.
 	ol := new(windows.Overlapped)
-	if err := windows.LockFileEx(windows.Handle(f.Fd()), windows.LOCKFILE_EXCLUSIVE_LOCK|windows.LOCKFILE_FAIL_IMMEDIATELY, 0, 1, 0, ol); err != nil {
+	if err := windows.LockFileEx(windows.Handle(f.Fd()), windows.LOCKFILE_EXCLUSIVE_LOCK|windows.LOCKFILE_FAIL_IMMEDIATELY, 0, math.MaxUint32, math.MaxUint32, ol); err != nil {
 		f.Close()
 		if err == windows.ERROR_LOCK_VIOLATION {
 			return nil, nil

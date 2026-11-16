@@ -31,12 +31,12 @@ func inFolder(path, folder string) bool {
 }
 
 func resumeBlock(db *sql.DB, sid, source, role, host, cwd string, w io.Writer) error {
-	s, found, err := lastSession(db, sid, source, role, host, cwd)
-	if err != nil || !found {
+	s, err := lastSession(db, sid, source, role, host, cwd)
+	if err != nil || s == nil {
 		return err
 	}
 	user := userName()
-	writeHeader(db, w, s, user, role, host)
+	writeHeader(db, w, *s, user, role, host)
 	b := blockWriter{db: db, w: w}
 	// The first prompts of the last compaction window usually state the task (callimachus, ai-memory hook.rs:1346);
 	// the window, not the session, because one session can run for weeks. Only those older than the last 8.
@@ -76,36 +76,39 @@ type shownSession struct {
 
 // lastSession is the session the start block shows: on resume the session itself; with no roles, the newest other
 // one that ran in this folder or inside it, never a sibling or a parent; with roles, the newest other one of the role
-// (SPEC G4).
-func lastSession(db *sql.DB, sid, source, role, host, cwd string) (shownSession, bool, error) {
-	cols := `select id, coalesce(branch_last, ''), coalesce(started_at, ''), coalesce(ended_at, ''), coalesce(active_secs, 0), compactions, coalesce(cwd, '')
-		from session where host = ? and excluded is null and ended_at is not null`
+// (SPEC G4). Nil when there is none.
+func lastSession(db *sql.DB, sid, source, role, host, cwd string) (*shownSession, error) {
 	byFolder := source != "resume" && len(cfg.Roles) == 0 && cwd != ""
-	var rows *sql.Rows
-	var err error
-	switch {
-	case source == "resume":
-		rows, err = db.Query(cols+" and id = ?", host, sid)
-	case byFolder:
-		rows, err = db.Query(cols+" and id != ? order by ended_at desc", host, sid)
-	default:
-		rows, err = db.Query(cols+" and role = ? and id != ? order by ended_at desc limit 1", host, role, sid)
-	}
+	rows, err := shownCandidates(db, sid, source, role, host, byFolder)
 	if err != nil {
-		return shownSession{}, false, err
+		return nil, err
 	}
 	defer rows.Close()
 	for rows.Next() {
 		var s shownSession
 		var c string
 		if err := rows.Scan(&s.id, &s.branch, &s.start, &s.end, &s.active, &s.comps, &c); err != nil {
-			return shownSession{}, false, err
+			return nil, err
 		}
 		if !byFolder || inFolder(c, cwd) {
-			return s, true, nil
+			return &s, nil
 		}
 	}
-	return shownSession{}, false, nil
+	return nil, nil
+}
+
+// shownCandidates are the ended sessions of host the start block may show, newest first: on resume the session
+// itself; by folder every other one, for the caller to keep the first in the folder; else the newest other of the role.
+func shownCandidates(db *sql.DB, sid, source, role, host string, byFolder bool) (*sql.Rows, error) {
+	cols := `select id, coalesce(branch_last, ''), coalesce(started_at, ''), coalesce(ended_at, ''), coalesce(active_secs, 0), compactions, coalesce(cwd, '')
+		from session where host = ? and excluded is null and ended_at is not null`
+	switch {
+	case source == "resume":
+		return db.Query(cols+" and id = ?", host, sid)
+	case byFolder:
+		return db.Query(cols+" and id != ? order by ended_at desc", host, sid)
+	}
+	return db.Query(cols+" and role = ? and id != ? order by ended_at desc limit 1", host, role, sid)
 }
 
 // writeHeader names whose session this was and when it ran. Role labels name Claude instances; another agent in the
@@ -210,17 +213,8 @@ type lastingHit struct {
 // lastingWords are the user's last 8 typed messages of the last 14 days that refuse something or set a rule, newest
 // first: in this folder or inside it with no roles, in this role with roles.
 func lastingWords(db *sql.DB, host, role, cwd string) ([]lastingHit, error) {
-	since := clockNow().UTC().Add(-14 * 24 * time.Hour).Format(time.RFC3339)
 	byFolder := len(cfg.Roles) == 0 && cwd != ""
-	q := `select e.session_id, e.seq, e.ts, e.text, coalesce(s.cwd, '') from event e join session s on s.id = e.session_id
-		where s.host = ? and s.excluded is null and e.speaker = 'user' and e.kind in ('prompt', 'steering')
-		and e.ts >= ?`
-	args := []any{host, since}
-	if !byFolder {
-		q += " and s.role = ?"
-		args = append(args, role)
-	}
-	rows, err := db.Query(q+" order by e.ts desc limit 5000", args...)
+	rows, err := typedLately(db, host, role, byFolder)
 	if err != nil {
 		return nil, err
 	}
@@ -240,6 +234,21 @@ func lastingWords(db *sql.DB, host, role, cwd string) ([]lastingHit, error) {
 		hits = append(hits, h)
 	}
 	return hits, nil
+}
+
+// typedLately are the user's typed messages of the last 14 days in sessions of host, newest first, with the folder
+// each session ran in: of any role by folder, for the caller to keep the folder's, else of this role.
+func typedLately(db *sql.DB, host, role string, byFolder bool) (*sql.Rows, error) {
+	since := clockNow().UTC().Add(-14 * 24 * time.Hour).Format(time.RFC3339)
+	q := `select e.session_id, e.seq, e.ts, e.text, coalesce(s.cwd, '') from event e join session s on s.id = e.session_id
+		where s.host = ? and s.excluded is null and e.speaker = 'user' and e.kind in ('prompt', 'steering')
+		and e.ts >= ?`
+	args := []any{host, since}
+	if !byFolder {
+		q += " and s.role = ?"
+		args = append(args, role)
+	}
+	return db.Query(q+" order by e.ts desc limit 5000", args...)
 }
 
 // refusalLine is one hit as the block shows it: when, which, the words clipped, and the end of the reply they answered.

@@ -116,22 +116,30 @@ func lastRecord(db *sql.DB, table, key, val, path string, match func(line []byte
 	if off > st.Size() {
 		off, last = 0, ""
 	}
-	r := bufio.NewReaderSize(io.NewSectionReader(f, off, st.Size()-off), 1<<20)
-	read := off
-	for {
-		line, err := r.ReadBytes('\n')
-		if err != nil {
-			break
-		}
-		read += int64(len(line))
-		if v, ok := match(line); ok {
-			last = v
-		}
+	if _, err := f.Seek(off, io.SeekStart); err != nil {
+		return ""
 	}
+	read, last := matchLines(f, off, last, match)
 	if db != nil && read != off {
 		db.Exec("insert into "+table+"("+key+", offset, "+val+") values (?, ?, ?) on conflict("+key+") do update set offset = excluded.offset, "+val+" = excluded."+val, path, read, last)
 	}
 	return last
+}
+
+// matchLines reads the whole lines of r, which starts at offset off of its file, to the end: it returns the offset
+// after the last whole line and the last value match recognized (last when none did).
+func matchLines(r io.Reader, off int64, last string, match func(line []byte) (string, bool)) (int64, string) {
+	br := bufio.NewReader(r)
+	for {
+		line, err := br.ReadBytes('\n')
+		if err != nil {
+			return off, last
+		}
+		off += int64(len(line))
+		if v, ok := match(line); ok {
+			last = v
+		}
+	}
 }
 
 // ruleBlocks returns the text between rulesOpen and rulesClose markers, each block in full.
@@ -160,12 +168,28 @@ func ruleBlocks(text string) string {
 // (refusals), and one line on TRACE itself. Code only: nothing is reworded (rewording rule pages lost 34
 // qualifiers on 2026-10-30).
 func card(srcs []source, rules string, budget int) (text, note string) {
-	var b strings.Builder
+	files, note := cardFiles(srcs, budget)
+	body := files + rules
+	if body == "" {
+		return "", note
+	}
+	if len(body) > budget {
+		body = clip(body, budget)
+		note = strings.TrimPrefix(note+"; the card was cut at the budget", "; ")
+	}
+	return "## Rules in force (re-injected by trace as the session grows; the files and the user's words are the source)\n\n" + body +
+		fmt.Sprintf("\nEverything said before: %s. Search before saying you cannot confirm something; if nothing comes up, search again in the other language and with synonyms.\n", searchCmd()), note
+}
+
+// cardFiles is the card's part from the instruction files: each file whole when all of them fit the budget, else only
+// its marked blocks, with a note that says so and names the files that have none.
+func cardFiles(srcs []source, budget int) (text, note string) {
 	total := 0
 	for _, s := range srcs {
 		total += len(s.text)
 	}
 	whole := total <= budget
+	var b strings.Builder
 	var unmarked []string
 	for _, s := range srcs {
 		t := strings.TrimSpace(s.text)
@@ -179,23 +203,14 @@ func card(srcs []source, rules string, budget int) (text, note string) {
 			fmt.Fprintf(&b, "### From %s\n%s\n\n", s.label, t)
 		}
 	}
-	if !whole {
-		note = fmt.Sprintf("the instruction files hold %d characters, over the card's %d, so only text between %s and %s goes in", total, budget, rulesOpen, rulesClose)
-		if len(unmarked) > 0 {
-			note += "; no marked rules in: " + strings.Join(unmarked, ", ")
-		}
+	if whole {
+		return b.String(), ""
 	}
-	b.WriteString(rules)
-	if b.Len() == 0 {
-		return "", note
+	note = fmt.Sprintf("the instruction files hold %d characters, over the card's %d, so only text between %s and %s goes in", total, budget, rulesOpen, rulesClose)
+	if len(unmarked) > 0 {
+		note += "; no marked rules in: " + strings.Join(unmarked, ", ")
 	}
-	body := b.String()
-	if len(body) > budget {
-		body = clip(body, budget)
-		note = strings.TrimPrefix(note+"; the card was cut at the budget", "; ")
-	}
-	return "## Rules in force (re-injected by trace as the session grows; the files and the user's words are the source)\n\n" + body +
-		fmt.Sprintf("\nEverything said before: %s. Search before saying you cannot confirm something; if nothing comes up, search again in the other language and with synonyms.\n", searchCmd()), note
+	return b.String(), note
 }
 
 // codexInstructionsRe is the message a Codex rollout records with the AGENTS.md text it loaded (global and project,
@@ -251,11 +266,8 @@ func fileTail(path string) [][]byte {
 	}
 	defer f.Close()
 	st, _ := f.Stat()
-	off := st.Size() - 512<<10
-	if off < 0 {
-		off = 0
-	}
-	b, _ := io.ReadAll(io.NewSectionReader(f, off, st.Size()-off))
+	f.Seek(max(st.Size()-512<<10, 0), io.SeekStart) // a failed seek reads the whole file, which holds the same last lines
+	b, _ := io.ReadAll(f)
 	return bytes.Split(b, []byte("\n"))
 }
 
@@ -268,27 +280,37 @@ func fileTail(path string) [][]byte {
 func contextTokens(transcript, host string) int {
 	lines := fileTail(transcript)
 	if host == "codex" {
-		for i := len(lines) - 1; i >= 0; i-- {
-			if !bytes.Contains(lines[i], []byte(`"token_count"`)) {
-				continue
-			}
-			var e struct {
-				Type    string `json:"type"`
-				Payload struct {
-					Type string `json:"type"`
-					Info *struct {
-						Last struct {
-							Total int `json:"total_tokens"`
-						} `json:"last_token_usage"`
-					} `json:"info"`
-				} `json:"payload"`
-			}
-			if json.Unmarshal(lines[i], &e) == nil && e.Type == "event_msg" && e.Payload.Type == "token_count" && e.Payload.Info != nil && e.Payload.Info.Last.Total > 0 {
-				return e.Payload.Info.Last.Total
-			}
-		}
-		return 0
+		return codexContextTokens(lines)
 	}
+	return claudeContextTokens(lines)
+}
+
+// codexContextTokens is last_token_usage.total_tokens of the last token_count event with one, 0 with none.
+func codexContextTokens(lines [][]byte) int {
+	for i := len(lines) - 1; i >= 0; i-- {
+		if !bytes.Contains(lines[i], []byte(`"token_count"`)) {
+			continue
+		}
+		var e struct {
+			Type    string `json:"type"`
+			Payload struct {
+				Type string `json:"type"`
+				Info *struct {
+					Last struct {
+						Total int `json:"total_tokens"`
+					} `json:"last_token_usage"`
+				} `json:"info"`
+			} `json:"payload"`
+		}
+		if json.Unmarshal(lines[i], &e) == nil && e.Type == "event_msg" && e.Payload.Type == "token_count" && e.Payload.Info != nil && e.Payload.Info.Last.Total > 0 {
+			return e.Payload.Info.Last.Total
+		}
+	}
+	return 0
+}
+
+// claudeContextTokens is the input of the last assistant call with a usage, cached or not, 0 with none.
+func claudeContextTokens(lines [][]byte) int {
 	for i := len(lines) - 1; i >= 0; i-- {
 		if !bytes.Contains(lines[i], []byte(`"usage"`)) {
 			continue

@@ -21,7 +21,9 @@ folder. TRACE behaves the same with it or without it.
 - **G5.** TRACE does not detect or verify commit ids. A hexadecimal string is text, found by search like any word.
   No `commit` anchor is stored. A `repo` key in config.json and the `-repo` flag are accepted and ignored, so a
   hook written for an older TRACE keeps working. A path anchor is the path as written, with `\` read as `/`, never
-  made relative to a repository (rows stored before keep theirs). Test: `TestNoCommitAnchors`.
+  made relative to a repository (rows stored before keep theirs). Test: `TestNoCommitAnchors`. Install reads a hook
+  entry's flags as main does, `-repo` included, so an older hook with `-repo` is this home's or another's by its
+  `-home`, never an unreadable entry that stops install. Test: `TestHookHomeAcceptsRepo`.
 - **G6.** A check runs in the folder where the session ran, not in a repository root. Test:
   `TestChecksRunInSessionFolder`.
 - **G7.** What a host itself records about a session, such as the branch name in a Claude Code transcript, is
@@ -76,6 +78,8 @@ folder. TRACE behaves the same with it or without it.
 - **I5.** A tool result read in a later import than its call takes the tool name of the call in its own session,
   never another session's that used the same call id, for Claude Code and Codex alike. Test:
   `TestLaterResultNamedFromItsOwnSession`.
+- **I6.** When a Codex thread uses one call id for several calls, a result takes the name of the latest of them before
+  it, whether it is read in the same import as that call or in a later one. Test: `TestCodexReusedCallIDNamedByLatestCall`.
 
 ## E. Wrong input says so
 

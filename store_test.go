@@ -57,3 +57,25 @@ func TestImportOnceWaitsThenSkips(t *testing.T) {
 		t.Fatalf("with the lock free: err %v, ran %v", err, ran)
 	}
 }
+
+// Search does not wait for another import: one try at the lock, then it searches what is stored.
+func TestImportNowDoesNotWait(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "m.db")
+	held, err := tryLock(path + ".lock")
+	if err != nil || held == nil {
+		t.Fatalf("lock: %v", err)
+	}
+	ran := false
+	run := func(*sql.DB) error { ran = true; return nil }
+	start := time.Now()
+	if err := importNow(path, run); err != nil || ran {
+		t.Fatalf("with the lock held: err %v, ran %v", err, ran)
+	}
+	if d := time.Since(start); d > 400*time.Millisecond {
+		t.Errorf("waited %v with the lock held", d)
+	}
+	held.Close()
+	if err := importNow(path, run); err != nil || !ran {
+		t.Fatalf("with the lock free: err %v, ran %v", err, ran)
+	}
+}

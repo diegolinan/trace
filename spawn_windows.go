@@ -12,13 +12,15 @@ import (
 // DETACHED_PROCESS: a detached process has no console, so the git it starts (commit checks) got a new console
 // window of its own, which flashed on the screen at every Stop; a hidden console is inherited instead.
 func startDetached(cmd *exec.Cmd) error {
-	flags := uint32(windows.CREATE_NO_WINDOW | windows.CREATE_NEW_PROCESS_GROUP)
-	cmd.SysProcAttr = &syscall.SysProcAttr{CreationFlags: flags | windows.CREATE_BREAKAWAY_FROM_JOB, HideWindow: true}
+	attr := syscall.SysProcAttr{CreationFlags: windows.CREATE_NO_WINDOW | windows.CREATE_NEW_PROCESS_GROUP, HideWindow: true}
+	breakaway := attr
+	breakaway.CreationFlags |= windows.CREATE_BREAKAWAY_FROM_JOB
+	cmd.SysProcAttr = &breakaway
 	if err := cmd.Start(); err == nil {
 		return nil
 	}
 	retry := exec.Command(cmd.Path, cmd.Args[1:]...)
-	retry.SysProcAttr = &syscall.SysProcAttr{CreationFlags: flags, HideWindow: true}
+	retry.SysProcAttr = &attr
 	if err := retry.Start(); err != nil {
 		return err
 	}

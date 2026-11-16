@@ -53,41 +53,41 @@ func isTraceCmd(h any) bool {
 	return base == "trace" || base == "trace.exe"
 }
 
-// hookHome is the -home a trace hook entry runs with, read by the same flag parser main uses (the last -home wins,
-// -home=x works, parsing stops at -- or the first word). named is false for a hook installed before -home existed;
-// ok is false for an entry that is not a plain `trace hook` call trace can read, which install treats as another
-// memory's and never touches.
-// shortcut: the flag names are listed here as well as in main; a flag added to main must be added here too.
+// hookHome is the -home a trace hook entry runs with, read by the flag set main uses (the last -home wins, -home=x
+// works, parsing stops at -- or the first word). named is false for a hook installed before -home existed; ok is
+// false for an entry that is not a plain `trace hook` call trace can read, which install treats as another memory's
+// and never touches.
 func hookHome(h any) (home string, named, ok bool) {
-	raw, _ := h.(map[string]any)["args"].([]any)
-	var args []string
-	for _, a := range raw {
-		s, isStr := a.(string)
-		if !isStr {
-			return "", false, false
-		}
-		args = append(args, s)
-	}
-	if len(args) == 0 || args[0] != "hook" {
-		return "", false, false
-	}
-	fs := flag.NewFlagSet("hook", flag.ContinueOnError)
+	args, isHook := hookArgs(h)
+	o := opts{cmd: "hook"}
+	fs := o.flagSet(flag.ContinueOnError)
 	fs.SetOutput(io.Discard)
-	for _, n := range []string{"home", "db", "projects", "history", "codex", "host", "not", "archive", "scope", "trigger", "who", "since", "mode"} {
-		fs.String(n, "", "")
-	}
-	fs.Int("n", 0, "")
-	fs.Bool("all", false, "")
-	fs.Bool("migrate", false, "")
-	if fs.Parse(args[1:]) != nil || fs.NArg() > 0 {
+	if !isHook || fs.Parse(args) != nil || fs.NArg() > 0 {
 		return "", false, false
 	}
 	fs.Visit(func(f *flag.Flag) {
 		if f.Name == "home" {
-			home, named = f.Value.String(), true
+			named = true
 		}
 	})
-	return home, named, !named || home != ""
+	return o.home, named, !named || o.home != ""
+}
+
+// hookArgs are the flags of a hook entry that runs `trace hook`; isHook is false for any other entry, or one whose
+// arguments are not all strings.
+func hookArgs(h any) (args []string, isHook bool) {
+	raw, _ := h.(map[string]any)["args"].([]any)
+	for _, a := range raw {
+		s, isStr := a.(string)
+		if !isStr {
+			return nil, false
+		}
+		args = append(args, s)
+	}
+	if len(args) == 0 || args[0] != "hook" {
+		return nil, false
+	}
+	return args[1:], true
 }
 
 // sameHome compares two homes as paths; on Windows without case.
@@ -133,13 +133,7 @@ func traceHooks(settings map[string]any, home string) (own, legacy int, foreign 
 // before it gets here when there are any. An optional event gets one only when opt names it (optionalHooks), so tool
 // calls start nothing unless asked. Other hooks and settings are left as they are. It returns the events changed.
 func setHooks(settings map[string]any, exe, home string, opt map[string]string, migrate bool) []string {
-	mine := func(h any) bool {
-		if !isTraceCmd(h) {
-			return false
-		}
-		hh, named, ok := hookHome(h)
-		return ok && (!named && migrate || named && sameHome(hh, home))
-	}
+	mine := func(h any) bool { return claims(h, home, migrate) }
 	hooks, _ := settings["hooks"].(map[string]any)
 	if hooks == nil {
 		hooks = map[string]any{}
@@ -155,18 +149,29 @@ func setHooks(settings map[string]any, exe, home string, opt map[string]string, 
 		if !reflect.DeepEqual(normalize(before), normalize(after)) {
 			changed = append(changed, ev.name)
 		}
-		if len(after) == 0 {
-			delete(hooks, ev.name)
-		} else {
-			hooks[ev.name] = after
-		}
+		setOrDelete(hooks, ev.name, after, len(after) == 0)
 	}
-	if len(hooks) == 0 {
-		delete(settings, "hooks")
-	} else {
-		settings["hooks"] = hooks
-	}
+	setOrDelete(settings, "hooks", hooks, len(hooks) == 0)
 	return changed
+}
+
+// claims says whether a hook entry is one setHooks replaces: a trace hook that runs this home, or, with migrate,
+// one that names no home.
+func claims(h any, home string, migrate bool) bool {
+	if !isTraceCmd(h) {
+		return false
+	}
+	hh, named, ok := hookHome(h)
+	return ok && (!named && migrate || named && sameHome(hh, home))
+}
+
+// setOrDelete sets m[key] to v, or removes the key when v is empty, so no empty list or object is left behind.
+func setOrDelete(m map[string]any, key string, v any, empty bool) {
+	if empty {
+		delete(m, key)
+	} else {
+		m[key] = v
+	}
 }
 
 // withoutMine is an event's hook groups with the hooks mine claims taken out: a group left empty goes, a group that
@@ -228,11 +233,8 @@ func install(path, exe, home string, opt map[string]string, migrate bool, w io.W
 	if err != nil {
 		return err
 	}
-	if b == nil && exe == "" {
-		fmt.Fprintln(w, "no Claude Code settings file; nothing to remove")
-		return nil
-	}
-	if done, err := settingsFit(settings, path, exe, home, migrate, w); done || err != nil {
+	if note, err := settingsFit(settings, b != nil, path, exe, home, migrate); note != "" || err != nil {
+		fmt.Fprint(w, note)
 		return err
 	}
 	changed := setHooks(settings, exe, home, opt, migrate)
@@ -243,16 +245,22 @@ func install(path, exe, home string, opt map[string]string, migrate bool, w io.W
 	if err := writeSettings(path, b, settings); err != nil {
 		return err
 	}
+	installReport(w, path, exe, changed, b != nil)
+	return nil
+}
+
+// installReport says what install did: the events whose hooks it added or removed, and the backup when there was a
+// file to keep.
+func installReport(w io.Writer, path, exe string, changed []string, backedUp bool) {
 	verb := "added"
 	if exe == "" {
 		verb = "removed"
 	}
 	fmt.Fprintf(w, "hooks %s in %s: %s\n", verb, path, strings.Join(changed, ", "))
-	if b != nil {
+	if backedUp {
 		fmt.Fprintf(w, "previous file kept as %s.trace-backup\n", path)
 	}
 	fmt.Fprintln(w, "restart open Claude Code sessions: they read hooks when they start")
-	return nil
 }
 
 // readSettings is Claude Code's settings and their bytes; a missing file is empty settings and nil bytes, a file
@@ -272,21 +280,32 @@ func readSettings(path string) (map[string]any, []byte, error) {
 	return settings, b, nil
 }
 
-// settingsFit refuses another home's hooks on install and hooks that name no home without migrate; done is true when
-// an uninstall finds nothing of this home's to remove.
-func settingsFit(settings map[string]any, path, exe, home string, migrate bool, w io.Writer) (done bool, err error) {
-	own, legacy, foreign := traceHooks(settings, home)
-	if exe != "" && len(foreign) > 0 {
-		return true, fmt.Errorf("%s already runs TRACE with another home (%s); one TRACE per settings file: uninstall that one with -home first; nothing done", path, foreign[0])
+// settingsFit refuses another home's hooks on install and hooks that name no home without migrate; a note ends an
+// uninstall that has nothing of this home's to remove (no settings file, or only another home's hooks).
+func settingsFit(settings map[string]any, exists bool, path, exe, home string, migrate bool) (note string, err error) {
+	if !exists && exe == "" {
+		return "no Claude Code settings file; nothing to remove\n", nil
 	}
-	if legacy > 0 && !migrate {
-		return true, fmt.Errorf("%s holds %d TRACE hook(s) that name no home (installed before -home existed); run again with -migrate to bind them to %s (the file is backed up first); nothing done", path, legacy, home)
+	own, legacy, foreign := traceHooks(settings, home)
+	if err := refusal(path, exe, home, legacy, foreign, migrate); err != nil {
+		return "", err
 	}
 	if exe == "" && own+legacy == 0 && len(foreign) > 0 {
-		fmt.Fprintf(w, "no TRACE hooks for %s in %s; those of %s are left as they are\n", home, path, foreign[0])
-		return true, nil
+		return fmt.Sprintf("no TRACE hooks for %s in %s; those of %s are left as they are\n", home, path, foreign[0]), nil
 	}
-	return false, nil
+	return "", nil
+}
+
+// refusal is why install leaves the file untouched: another home's hooks (on install), or hooks that name no home
+// without migrate.
+func refusal(path, exe, home string, legacy int, foreign []string, migrate bool) error {
+	if exe != "" && len(foreign) > 0 {
+		return fmt.Errorf("%s already runs TRACE with another home (%s); one TRACE per settings file: uninstall that one with -home first; nothing done", path, foreign[0])
+	}
+	if legacy > 0 && !migrate {
+		return fmt.Errorf("%s holds %d TRACE hook(s) that name no home (installed before -home existed); run again with -migrate to bind them to %s (the file is backed up first); nothing done", path, legacy, home)
+	}
+	return nil
 }
 
 // writeSettings writes the new settings over old, keeping the previous file as settings.json.trace-backup.
@@ -307,8 +326,5 @@ func selfPath() (string, error) {
 	if real, err := filepath.EvalSymlinks(exe); err == nil {
 		exe = real
 	}
-	if runtime.GOOS == "windows" {
-		exe = filepath.ToSlash(exe)
-	}
-	return exe, nil
+	return filepath.ToSlash(exe), nil // a no-op on Unix, where the separator is already /
 }

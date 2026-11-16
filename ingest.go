@@ -31,40 +31,68 @@ type importer struct {
 // It also returns the files under <session>/tool-results, relative to projectsDir: the full output the
 // transcript keeps only as a 2 KB preview, which Claude Code's cleanup deletes with the session.
 func transcriptFiles(projectsDir, scope string) (out, results []string, err error) {
-	if st, serr := os.Stat(projectsDir); serr == nil && !st.IsDir() { // a wrong -projects says so (SPEC E1)
-		return nil, nil, fmt.Errorf("%s is a file, not a Claude Code projects folder", projectsDir)
-	}
-	dirs, err := os.ReadDir(projectsDir)
-	if os.IsNotExist(err) {
-		return nil, nil, nil // no Claude Code on this machine (a Codex-only user)
-	}
+	dirs, err := projectDirs(projectsDir)
 	if err != nil {
 		return nil, nil, err
 	}
 	for _, d := range dirs {
-		if !d.IsDir() || !inScope(d.Name(), scope) {
-			continue
+		if d.IsDir() && inScope(d.Name(), scope) {
+			o, r := projectFiles(projectsDir, d.Name())
+			out, results = append(out, o...), append(results, r...)
 		}
-		root := filepath.Join(projectsDir, d.Name())
-		filepath.WalkDir(root, func(p string, e os.DirEntry, err error) error {
-			if err != nil || e.IsDir() {
-				return nil
-			}
-			rel, _ := filepath.Rel(root, p)
-			parts := strings.Split(filepath.ToSlash(rel), "/")
-			switch {
-			case len(parts) >= 3 && parts[1] == "tool-results":
-				results = append(results, filepath.Join(d.Name(), rel))
-			case !strings.HasSuffix(p, ".jsonl") && !rawCopy.MatchString(p):
-			// Workflow subagents sit deeper, in subagents/workflows/<wf>/ (lore claude_code.rs:237-260).
-			case len(parts) == 1 || (len(parts) >= 3 && parts[1] == "subagents"):
-				out = append(out, p)
-			}
-			return nil
-		})
 	}
 	return out, results, nil
 }
+
+// projectDirs lists the projects folder: nothing when it does not exist, an error when it is a file.
+func projectDirs(projectsDir string) ([]os.DirEntry, error) {
+	if st, err := os.Stat(projectsDir); err == nil && !st.IsDir() { // a wrong -projects says so (SPEC E1)
+		return nil, fmt.Errorf("%s is a file, not a Claude Code projects folder", projectsDir)
+	}
+	dirs, err := os.ReadDir(projectsDir)
+	if os.IsNotExist(err) {
+		return nil, nil // no Claude Code on this machine (a Codex-only user)
+	}
+	return dirs, err
+}
+
+// projectFiles walks one project folder: its transcripts, and its tool-results files relative to projectsDir.
+func projectFiles(projectsDir, name string) (out, results []string) {
+	root := filepath.Join(projectsDir, name)
+	filepath.WalkDir(root, func(p string, e os.DirEntry, err error) error {
+		if err != nil || e.IsDir() {
+			return nil
+		}
+		rel, _ := filepath.Rel(root, p)
+		switch fileKind(rel) {
+		case "result":
+			results = append(results, filepath.Join(name, rel))
+		case "transcript":
+			out = append(out, p)
+		}
+		return nil
+	})
+	return out, results
+}
+
+// fileKind is what a file is, by its path relative to its project folder: a "result" under <session>/tool-results,
+// a "transcript" (a session's, or a subagent's under <session>/subagents), or "" for anything else.
+func fileKind(rel string) string {
+	parts := strings.Split(filepath.ToSlash(rel), "/")
+	switch {
+	case inSessionDir(parts, "tool-results"):
+		return "result"
+	case !strings.HasSuffix(rel, ".jsonl") && !rawCopy.MatchString(rel):
+		return ""
+	// Workflow subagents sit deeper, in subagents/workflows/<wf>/ (lore claude_code.rs:237-260).
+	case len(parts) == 1 || inSessionDir(parts, "subagents"):
+		return "transcript"
+	}
+	return ""
+}
+
+// inSessionDir says the path, split at its slashes, lies in the named folder of a session: <session>/<dir>/...
+func inSessionDir(parts []string, dir string) bool { return len(parts) >= 3 && parts[1] == dir }
 
 // keepResults copies tool-results files into the raw folder once; they are written once and never change.
 func keepResults(projectsDir, archive string, results []string) error {
@@ -72,29 +100,38 @@ func keepResults(projectsDir, archive string, results []string) error {
 		return nil
 	}
 	for _, rel := range results {
-		src, dst := filepath.Join(projectsDir, rel), filepath.Join(archive, rel)
-		st, err := os.Stat(src)
-		if err != nil {
-			continue // deleted since the walk
-		}
-		if d, err := os.Stat(dst); err == nil && d.Size() == st.Size() {
-			continue
-		}
-		b, err := os.ReadFile(src)
-		if err != nil {
-			return err
-		}
-		if err := os.MkdirAll(filepath.Dir(dst), 0o755); err != nil {
-			return err
-		}
-		if err := os.WriteFile(dst+".tmp", b, 0o644); err != nil {
-			return err
-		}
-		if err := os.Rename(dst+".tmp", dst); err != nil {
+		if err := keepResult(filepath.Join(projectsDir, rel), filepath.Join(archive, rel)); err != nil {
 			return err
 		}
 	}
 	return nil
+}
+
+// keepResult copies src to dst, unless src is gone or dst already has its size.
+func keepResult(src, dst string) error {
+	st, err := os.Stat(src)
+	if err != nil {
+		return nil // deleted since the walk
+	}
+	if d, err := os.Stat(dst); err == nil && d.Size() == st.Size() {
+		return nil
+	}
+	b, err := os.ReadFile(src)
+	if err != nil {
+		return err
+	}
+	return writeWhole(dst, b)
+}
+
+// writeWhole writes b to path through a temporary file, so path is never left half-written.
+func writeWhole(path string, b []byte) error {
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		return err
+	}
+	if err := os.WriteFile(path+".tmp", b, 0o644); err != nil {
+		return err
+	}
+	return os.Rename(path+".tmp", path)
 }
 
 // sessionFor names the session a transcript file belongs to and its role.
@@ -148,48 +185,73 @@ func (im *importer) importFile(path, host string) error {
 	if err != nil {
 		return err
 	}
-	f, err := os.Open(path)
-	if err != nil {
-		return err
-	}
-	defer f.Close()
-	gz := strings.HasSuffix(path, ".gz")
-	restart := row.rewritten(f, st.Size(), gz)
-	if !restart && st.Size() == row.from {
-		return nil
-	}
-	from := row.from
-	if restart {
-		from = 0 // uuids keep the re-read idempotent
-	}
-	r, err := readerAt(f, path, from, gz)
-	if err != nil {
-		return err
-	}
-	bad, end, err := im.readFile(tx, host, r, path, from, row.id)
-	if err != nil {
-		return fmt.Errorf("%s: %w", path, err)
-	}
-	if gz {
-		end = st.Size()
-	}
-	archived, archBytes := "", row.archBytes
-	if end > from && im.archiveDir != "" {
-		if archived, archBytes, err = im.archive(path, from, end, restart, archBytes); err != nil {
-			return err
-		}
-	}
-	if _, err := tx.Exec("update source_file set size = ?, mtime = ?, read_to_byte = ?, tail_sha = ?, bad_lines = bad_lines + ?, archived_as = coalesce(nullif(?, ''), archived_as), archive_bytes = ?, last_error = null where id = ?",
-		st.Size(), st.ModTime().UTC().Format(time.RFC3339), end, tailHash(f, end), bad, archived, archBytes, row.id); err != nil {
+	read, err := im.readNew(tx, host, path, st, row)
+	if err != nil || !read {
 		return err
 	}
 	return tx.Commit()
+}
+
+// readNew reads what the file holds past the stored offset (all of it when it was rewritten), then copies those bytes
+// to the raw folder and stores the new offset; false when the file holds nothing new.
+func (im *importer) readNew(tx *sql.Tx, host, path string, st os.FileInfo, row transcriptRow) (bool, error) {
+	f, err := os.Open(path)
+	if err != nil {
+		return false, err
+	}
+	defer f.Close()
+	gz := strings.HasSuffix(path, ".gz")
+	s, changed := row.start(f, st.Size(), gz)
+	if !changed {
+		return false, nil
+	}
+	r, err := readerAt(f, path, s.from, gz)
+	if err != nil {
+		return false, err
+	}
+	bad, end, err := im.readFile(tx, host, r, path, s.from, row.id)
+	if err != nil {
+		return false, fmt.Errorf("%s: %w", path, err)
+	}
+	s.end = end
+	if gz {
+		s.end = st.Size()
+	}
+	return true, im.record(tx, f, st, row, s, bad)
+}
+
+// record copies the span just read to the raw folder and stores how far the file has been read.
+func (im *importer) record(tx *sql.Tx, f *os.File, st os.FileInfo, row transcriptRow, s span, bad int) error {
+	archived, archBytes := "", row.archBytes
+	if s.end > s.from && im.archiveDir != "" {
+		var err error
+		if archived, archBytes, err = im.archive(f.Name(), s.from, s.end, s.restart, archBytes); err != nil {
+			return err
+		}
+	}
+	_, err := tx.Exec("update source_file set size = ?, mtime = ?, read_to_byte = ?, tail_sha = ?, bad_lines = bad_lines + ?, archived_as = coalesce(nullif(?, ''), archived_as), archive_bytes = ?, last_error = null where id = ?",
+		st.Size(), st.ModTime().UTC().Format(time.RFC3339), s.end, tailHash(f, s.end), bad, archived, archBytes, row.id)
+	return err
 }
 
 // transcriptRow is what the store remembers of a transcript or prompt-log file.
 type transcriptRow struct {
 	id, from, archBytes int64
 	tailSha             sql.NullString
+}
+
+// span is the part of a file one import reads: from the stored offset, or from 0 when the file was rewritten, to end.
+type span struct {
+	from, end int64
+	restart   bool
+}
+
+// start is the span to read and whether the file holds anything new.
+func (row transcriptRow) start(f *os.File, size int64, gz bool) (span, bool) {
+	if row.rewritten(f, size, gz) {
+		return span{restart: true}, true // uuids keep the re-read idempotent
+	}
+	return span{from: row.from}, size != row.from
 }
 
 func loadTranscriptRow(tx *sql.Tx, host, path string) (transcriptRow, error) {
@@ -206,7 +268,7 @@ func loadTranscriptRow(tx *sql.Tx, host, path string) (transcriptRow, error) {
 // file: the bytes before the offset are checked. A raw copy (.gz, `trace restore`) cannot be read from a byte offset
 // inside its compressed stream: when its size changed it is read whole again; read_to_byte stores its compressed size.
 func (row transcriptRow) rewritten(f *os.File, size int64, gz bool) bool {
-	if size < row.from || (row.from > 0 && row.tailSha.Valid && tailHash(f, row.from) != row.tailSha.String) {
+	if size < row.from || (row.tailSha.Valid && tailHash(f, row.from) != row.tailSha.String) {
 		return true
 	}
 	return gz && size != row.from
@@ -334,30 +396,11 @@ type transcriptRead struct {
 	lastBranch, lastVersion, firstTs, lastTs string
 	title, model                             string
 	customTitle                              bool
+	agentType                                sql.NullString // a new subagent's, from its .meta.json
 }
 
 func (im *importer) readTranscript(tx *sql.Tx, f io.Reader, path string, from, fileID int64) (int, int64, error) {
-	t := &transcriptRead{im: im, tx: tx, from: from, fileID: fileID, toolNames: map[string]string{}, boundaries: map[string]bool{}}
-	t.sid, t.role, t.parent, t.excluded = sessionFor(path)
-	t.sub = t.role == "subagent"
-	t.ss = sessionState{id: t.sid}
-	tx.QueryRow("select coalesce(max(seq), 0) from event where session_id = ?", t.sid).Scan(&t.ss.seq)
-	var comp sql.NullInt64
-	if tx.QueryRow("select compactions from session where id = ?", t.sid).Scan(&comp) == nil {
-		t.ss.known, t.ss.compaction = true, int(comp.Int64)
-	}
-	if t.sub && !t.ss.known {
-		if b, err := os.ReadFile(strings.TrimSuffix(path, ".jsonl") + ".meta.json"); err == nil {
-			var m struct {
-				AgentType string `json:"agentType"`
-			}
-			json.Unmarshal(b, &m)
-			defer tx.Exec("update session set agent_type = ? where id = ?", m.AgentType, t.sid)
-		}
-	}
-	if from == 0 {
-		t.ss.compaction = 0 // a full re-read counts compactions again from the start
-	}
+	t := im.newTranscriptRead(tx, path, from, fileID)
 	bad := 0
 	end, err := lines(f, from, func(line []byte, at int64) error {
 		rs, b := records(line)
@@ -372,10 +415,41 @@ func (im *importer) readTranscript(tx *sql.Tx, f io.Reader, path string, from, f
 	if err != nil {
 		return bad, end, err
 	}
-	if err := t.finish(); err != nil {
-		return bad, end, err
+	return bad, end, t.finish()
+}
+
+// newTranscriptRead starts a pass over the transcript at path, read from the byte offset from, with what the store
+// already holds of its session.
+func (im *importer) newTranscriptRead(tx *sql.Tx, path string, from, fileID int64) *transcriptRead {
+	t := &transcriptRead{im: im, tx: tx, from: from, fileID: fileID, toolNames: map[string]string{}, boundaries: map[string]bool{}}
+	t.sid, t.role, t.parent, t.excluded = sessionFor(path)
+	t.sub = t.role == "subagent"
+	t.ss = sessionState{id: t.sid}
+	tx.QueryRow("select coalesce(max(seq), 0) from event where session_id = ?", t.sid).Scan(&t.ss.seq)
+	var comp sql.NullInt64
+	if tx.QueryRow("select compactions from session where id = ?", t.sid).Scan(&comp) == nil {
+		t.ss.known, t.ss.compaction = true, int(comp.Int64)
 	}
-	return bad, end, nil
+	if t.sub && !t.ss.known {
+		t.agentType = agentTypeOf(path)
+	}
+	if from == 0 {
+		t.ss.compaction = 0 // a full re-read counts compactions again from the start
+	}
+	return t
+}
+
+// agentTypeOf is the agent type a subagent's .meta.json names; not valid when the file cannot be read.
+func agentTypeOf(path string) sql.NullString {
+	b, err := os.ReadFile(strings.TrimSuffix(path, ".jsonl") + ".meta.json")
+	if err != nil {
+		return sql.NullString{}
+	}
+	var m struct {
+		AgentType string `json:"agentType"`
+	}
+	json.Unmarshal(b, &m)
+	return sql.NullString{String: m.AgentType, Valid: true}
 }
 
 // row reads one transcript row into the session and its events.
@@ -388,15 +462,19 @@ func (t *transcriptRead) row(r *row, at int64) error {
 	if err := t.names(r, p); err != nil {
 		return err
 	}
-	// Compaction replays old rows with their uuids (#92089): count each boundary once.
-	if p.compacted && !t.boundaries[r.UUID] && (t.from == 0 || !seen(t.tx, r.UUID+":0")) {
-		t.boundaries[r.UUID] = true
-		t.ss.compaction++
-	}
+	t.countBoundary(r, p)
 	if r.UUID == "" || r.Timestamp == "" || !t.ss.known {
 		return nil
 	}
 	return t.store(r, p.events, at)
+}
+
+// countBoundary counts a compaction boundary. Compaction replays old rows with their uuids (#92089): each counts once.
+func (t *transcriptRead) countBoundary(r *row, p parsed) {
+	if p.compacted && !t.boundaries[r.UUID] && (t.from == 0 || !seen(t.tx, r.UUID+":0")) {
+		t.boundaries[r.UUID] = true
+		t.ss.compaction++
+	}
 }
 
 // store inserts a row's events in order, each keyed by the row's uuid and its place in the row.
@@ -454,14 +532,24 @@ func (t *transcriptRead) ensureSession(r *row) error {
 // names keeps the session's title (a /rename beats the harness's), every name it was given, and the rule files
 // the harness loaded.
 func (t *transcriptRead) names(r *row, p parsed) error {
-	if p.title != "" && (p.custom || !t.customTitle) {
-		t.title, t.customTitle = p.title, t.customTitle || p.custom
-	}
+	t.keepTitle(p)
 	if p.custom && p.title != "" { // name rows carry no timestamp: the last timestamp seen dates them
 		if _, err := t.tx.Exec("insert or ignore into session_name(session_id, name, first_seen) values (?, ?, nullif(?, ''))", t.sid, p.title, t.lastTs); err != nil {
 			return err
 		}
 	}
+	return t.keepLoaded(r, p)
+}
+
+// keepTitle keeps a row's title for the session unless the user already named it (/rename).
+func (t *transcriptRead) keepTitle(p parsed) {
+	if p.title != "" && (p.custom || !t.customTitle) {
+		t.title, t.customTitle = p.title, t.customTitle || p.custom
+	}
+}
+
+// keepLoaded stores each rule file text a row says the harness loaded, once.
+func (t *transcriptRead) keepLoaded(r *row, p parsed) error {
 	for sha, text := range p.loaded {
 		if _, err := t.tx.Exec("insert or ignore into loaded_text(sha, first_seen, text) values (?, ?, ?)", sha, r.Timestamp, redacted(text)); err != nil {
 			return err
@@ -505,8 +593,8 @@ func (t *transcriptRead) finish() error {
 	_, err := t.tx.Exec(`update session set ended_at = max(coalesce(ended_at, ''), ?), branch_last = coalesce(nullif(?, ''), branch_last),
 		version_first = coalesce(version_first, nullif(?, '')), model = coalesce(nullif(?, ''), model), compactions = ?,
 		title = case when ? <> '' then ? else title end,
-		started_at = min(coalesce(started_at, ?), coalesce(nullif(?, ''), started_at)) where id = ?`,
-		t.lastTs, t.lastBranch, t.lastVersion, t.model, t.ss.compaction, t.title, t.title, t.firstTs, t.firstTs, t.sid)
+		started_at = min(coalesce(started_at, ?), coalesce(nullif(?, ''), started_at)), agent_type = coalesce(?, agent_type) where id = ?`,
+		t.lastTs, t.lastBranch, t.lastVersion, t.model, t.ss.compaction, t.title, t.title, t.firstTs, t.firstTs, t.agentType, t.sid)
 	return err
 }
 
