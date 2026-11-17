@@ -103,8 +103,8 @@ func taskAdd(db *sql.DB, t newTask, w io.Writer) error {
 		_, off := t.due.Zone()
 		zone = offsetName(off) // the offset it was said in (SPEC A10)
 	}
-	res, err := db.Exec(`insert into task(text, due, zone, asked_event, created_at, added_session)
-		values (?1, nullif(?2, ''), nullif(?6, ''), case when ?3 then null else `+newestTyped("?5")+` end, ?4, nullif(?5, ''))`,
+	res, err := db.Exec(`insert into task(text, due, zone, self, asked_event, created_at, added_session)
+		values (?1, nullif(?2, ''), nullif(?6, ''), ?3, case when ?3 then null else `+newestTyped("?5")+` end, ?4, nullif(?5, ''))`,
 		redacted(t.text), at, t.self, clockNow().UTC().Format(time.RFC3339), callerSession(db), zone)
 	if err != nil {
 		return err
@@ -163,7 +163,7 @@ func taskList(db *sql.DB, w io.Writer) error {
 // openTasks are the open tasks that also meet the condition and (a SQL "and ..." on task t, or ""), oldest first, at
 // most limit (-1: all), one line each, and how many more there are.
 func openTasks(db *sql.DB, and string, limit int) (lines []string, more int, err error) {
-	rows, err := db.Query(`select t.id, t.created_at, coalesce(t.due, ''), coalesce(t.zone, ''), t.text, coalesce(e.text, ''), count(*) over ()
+	rows, err := db.Query(`select t.id, t.created_at, coalesce(t.due, ''), coalesce(t.zone, ''), t.text, coalesce(e.text, ''), t.self, count(*) over ()
 		from task t left join event e on e.id = t.asked_event where t.closed_at is null`+and+` order by t.id limit ?`, limit)
 	if err != nil {
 		return lines, more, err
@@ -173,9 +173,10 @@ func openTasks(db *sql.DB, and string, limit int) (lines []string, more int, err
 	for rows.Next() {
 		var id int
 		var created, due, zone, text, asked string
-		rows.Scan(&id, &created, &due, &zone, &text, &asked, &total)
+		var self bool
+		rows.Scan(&id, &created, &due, &zone, &text, &asked, &self, &total)
 		c, _ := time.Parse(time.RFC3339, created)
-		lines = append(lines, fmt.Sprintf("- task %d, %s ago%s: %s", id, clockNow().Sub(c).Round(time.Minute), dueText(due, zone, ", due "), taskWords(text, asked)))
+		lines = append(lines, fmt.Sprintf("- task %d, %s ago%s: %s", id, clockNow().Sub(c).Round(time.Minute), dueText(due, zone, ", due "), taskWords(text, asked, self)))
 	}
 	return lines, total - len(lines), rows.Err()
 }
@@ -240,7 +241,7 @@ func nameUntold(d *sql.DB, session string) ([]string, error) {
 		where closed_at is null and announced_at is null and due <= ?1`, clockNow().UTC().Format(time.RFC3339), session); err != nil {
 		return nil, err
 	}
-	rows, err := d.Query(`select t.id, t.due, coalesce(t.zone, ''), t.text, coalesce(e.text, '') from task t left join event e on e.id = t.asked_event
+	rows, err := d.Query(`select t.id, t.due, coalesce(t.zone, ''), t.text, coalesce(e.text, ''), t.self from task t left join event e on e.id = t.asked_event
 		where t.closed_at is null`+untold+` and not exists (select 1 from task_named n where n.task_id = t.id and n.session_id = ?)
 		order by t.id`, session)
 	if err != nil {
@@ -251,8 +252,9 @@ func nameUntold(d *sql.DB, session string) ([]string, error) {
 	for rows.Next() {
 		var id int
 		var due, zone, text, asked string
-		rows.Scan(&id, &due, &zone, &text, &asked)
-		lines = append(lines, fmt.Sprintf("Reminder for %s: task %d%s: %s", userName(), id, dueText(due, zone, ", due "), taskWords(text, asked)))
+		var self bool
+		rows.Scan(&id, &due, &zone, &text, &asked, &self)
+		lines = append(lines, fmt.Sprintf("Reminder for %s: task %d%s: %s", userName(), id, dueText(due, zone, ", due "), taskWords(text, asked, self)))
 		ids = append(ids, id)
 	}
 	rows.Close() // read whole before writing: the store has one connection
@@ -274,11 +276,14 @@ func dueText(due, zone, prefix string) string {
 	return prefix + showAt(t, storedZone(zone))
 }
 
-// taskWords is a task and the words that asked for it, clipped and on one line; a task no message asked for says an
-// agent added it (SPEC T1 -self).
-func taskWords(text, asked string) string {
-	if asked == "" {
+// taskWords is a task and the words that asked for it, clipped and on one line. Tied to no message, a task added with
+// -self says an agent added it; any other says the ask is not known (SPEC T1).
+func taskWords(text, asked string, self bool) string {
+	switch {
+	case self:
 		return text + " (added by an agent on its own, not asked by " + userName() + ")"
+	case asked == "":
+		return text + " (the message that asked for it is not known)"
 	}
 	return text + ` (asked: "` + strings.Join(strings.Fields(clip(asked, 300)), " ") + `")`
 }

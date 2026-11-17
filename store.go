@@ -269,7 +269,8 @@ func addColumns(db *sql.DB) error {
 		{"alter table task add column told_at text", fillToldAt},
 		{"alter table task add column holds integer not null default 0", nil}, // turns the stop hook held for this task (A8)
 		{"alter table task add column marker text", nil},                      // trace-alarm:<id>:<nonce> of the fire's message (A4, A9)
-		{"alter table task add column zone text", nil},                        // the IANA zone the time was said in (A10)
+		{"alter table task add column zone text", nil},                        // the UTC offset the time was said in (A10)
+		{"alter table task add column self integer not null default 0", nil}, // added with -self: no message asked for it (T1)
 	} {
 		_, err := db.Exec(c.alter)
 		if err != nil && !strings.Contains(err.Error(), "duplicate column") {

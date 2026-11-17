@@ -191,7 +191,7 @@ func TestTimesShownWithOffset(t *testing.T) {
 	if list := tkTrace(t, root, "task", "list"); !strings.Contains(list, "due Wednesday 2026-11-18 11:00 (UTC-08:00): call Bob") {
 		t.Errorf("task list: %q", list)
 	}
-	msg := alarmMessage(1, "2026-11-18T19:00:00Z", "UTC-08:00", "call Bob", "avisame", "trace-alarm:1:0123456789abcdef")
+	msg := alarmMessage(dueTask{id: 1, due: "2026-11-18T19:00:00Z", zone: "UTC-08:00", text: "call Bob", asked: "avisame"}, "trace-alarm:1:0123456789abcdef", 0)
 	if !strings.Contains(msg, "due Wednesday 2026-11-18 11:00 (UTC-08:00)") {
 		t.Errorf("the alarm's message: %q", msg)
 	}

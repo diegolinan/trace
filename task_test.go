@@ -89,6 +89,15 @@ func TestTaskAddAskedInItsOwnSession(t *testing.T) {
 	if want := "call the bank | acordate de llamar al banco | <open>; renew the domain | dale | dale; pay the rent | <none> | <open>"; got != want {
 		t.Errorf("task, ask, close:\n got %s\nwant %s", got, want)
 	}
+	// SPEC T1: tied to no message without -self is not passed off as the agent's own.
+	list := tkTrace(t, root, "task", "list")
+	if !strings.Contains(list, "pay the rent (the message that asked for it is not known)") || strings.Contains(list, "on its own") {
+		t.Errorf("a task whose ask is not known:\n%s", list)
+	}
+	msg := alarmMessage(dueTask{id: 3, text: "pay the rent"}, "trace-alarm:3:0123456789abcdef", 0)
+	if !strings.Contains(msg, "TRACE does not know which message of "+userName()+" asked for it.") || strings.Contains(msg, "on its own") {
+		t.Errorf("the alarm's message for a task whose ask is not known:\n%s", msg)
+	}
 }
 
 // SPEC T1: with -self no message asked for the task, so it is tied to none and every listing says an agent added it,

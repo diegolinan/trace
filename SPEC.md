@@ -126,7 +126,9 @@ sees a board, only an agent that remembers and asks.
   the agent can confirm it to the user. `-at` takes `YYYY-MM-DD HH:MM` in the task's zone (A10) or RFC 3339; anything else
   is refused and nothing is stored. With `-self` the agent says it adds the task on its own: no message of the
   user asked for it, so the task is tied to none, and wherever its asking words would show (task list, start
-  block, prompt hook, alarm) it says that an agent added it on its own. Only stored typed messages are ever quoted
+  block, prompt hook, alarm) it says that an agent added it on its own. A task tied to no message without
+  `-self` (its session not known, or no typed message in it) says instead that the message that asked for it is not
+  known, so it is never passed off as the agent's own. Only stored typed messages are ever quoted
   as the user's words: there is no flag that takes them as text, so no agent can write a quote for the user.
   Tests: `TestTaskAddTiesToAskingMessage`, `TestTaskAddAskedInItsOwnSession`, `TestTaskAddSelfTiesToNoMessage`,
   `TestTaskAddEchoesTheTime`, `TestTaskAddRefusesABadTime`.
@@ -148,8 +150,8 @@ sees a board, only an agent that remembers and asks.
 The alarm brings a task back at its time even when nobody is typing: at the time, it writes a message into a live
 agent session, and that message opens a turn and carries the order. One core serves every program; only the
 deliverer, which writes into one program's live session, is per program. Agreed with Diego on 2026-11-16 after two
-live tests per program (`system/research/2026-11-16_trace-tasks/clock-prior-art.md`). Built: A1, A2, A4 to A10, and A3 but its message saying how late a task fires.
-Not yet: that part of A3 (`TestLateTaskFiresOnceSayingHowLate`). Of A5, a Codex thread counts as attached to a client when the daemon holds it loaded (idle or
+live tests per program (`system/research/2026-11-16_trace-tasks/clock-prior-art.md`). Built: A1 to A10.
+Of A5, a Codex thread counts as attached to a client when the daemon holds it loaded (idle or
 running); nothing seen yet tells an attached client apart. Not checked live: how each program stores a stop hook's
 reason (A9 matches the marker in every shape listed there).
 
@@ -178,7 +180,9 @@ reason (A9 matches the marker in every shape listed there).
   exist in the zone it is read in (the hour a daylight-saving change skips) is refused and nothing is stored. A
   local time that happens twice (the hour a change repeats) is the earlier instant, and the echo says the hour
   repeats and that the later one is given in RFC 3339 with its offset. A task whose time passed while no alarm ran
-  (sleep, reboot, no session) fires once when the alarm next runs, and its message says how late it is. Tests:
+  (sleep, reboot, no session) fires once when the alarm next runs, and its message says how late it is, to the
+  minute, after its time ("..., 3h12m late."), when it fires 2 minutes or more after it; the alarm's own round of
+  checks makes an on-time fire up to a minute late, which it does not mention. Tests:
   `TestLateTaskFiresOnceSayingHowLate`, `TestNonexistentLocalTimeRefused`, `TestRepeatedLocalTimeTakesEarlier`.
 - **A4.** The message is an order, not a time, and only its fixed wrapper is the order: if you are in the middle of
   something, finish it, then end the reply by telling the user; then run `trace task told <id>`; close the task
@@ -205,9 +209,10 @@ reason (A9 matches the marker in every shape listed there).
   `TestCodexDelivererNeverStartsDaemon`.
 - **A7.** A task fired and not told, for any reason (no qualifying session, a failed delivery, a crash, or the
   target session closed before telling), is listed as late in every start block until told or closed, and the
-  prompt hook names it once per session; naming it is not a fire. A failed delivery is recorded with its reason,
+  prompt hook names it once per session; naming it is not a fire. The session the alarm delivered it into already
+  has it in the alarm's message, so the prompt hook never names it there. A failed delivery is recorded with its reason,
   and `trace stats` shows each deliverer's last failure, so an update that breaks a deliverer shows up. Tests:
-  `TestFiredUntoldTaskNamedOncePerSession` (the late list and the naming, built),
+  `TestFiredUntoldTaskNamedOncePerSession` (the late list and the naming, built), `TestDeliveredSessionNotNamedAgain`,
   `TestUntoldTaskShowsLateAndFailureIsReported`.
 - **A8.** Told. `trace task told <id>` records that the user was told and when; the session is the one the claim
   targeted. `task done` and `task drop` also count as told. While a task delivered into a session is not told,

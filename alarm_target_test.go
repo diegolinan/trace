@@ -69,7 +69,7 @@ func TestAlarmWakesSessionThatAddedTask(t *testing.T) {
 		t.Fatalf("delivered %v: task 1 to the session that added it, task 2 (its session gone) to the one used last", got)
 	}
 	marker := mutStr(t, db, "select marker from task where id = 1")
-	if want := alarmMessage(1, "2026-11-12T09:00:00Z", "UTC+00:00", "call Bob", "remind me to call Bob", marker); got["s-asker"][0] != want {
+	if want := alarmMessage(dueTask{id: 1, due: "2026-11-12T09:00:00Z", zone: "UTC+00:00", text: "call Bob", asked: "remind me to call Bob"}, marker, 0); got["s-asker"][0] != want {
 		t.Errorf("sent\n%s\nwant\n%s", got["s-asker"][0], want)
 	}
 	if !regexp.MustCompile(`^trace-alarm:1:[0-9a-f]{16}$`).MatchString(marker) || !strings.HasSuffix(got["s-last"][0], mutStr(t, db, "select marker from task where id = 2")) {
