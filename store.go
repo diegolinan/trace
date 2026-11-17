@@ -158,6 +158,18 @@ create table if not exists task_named (
   session_id text not null,
   primary key (task_id, session_id)
 );
+-- A task's conditions of ready (SPEC T5, T6): another task (after_id) or words (needs), numbered per task; met_event is the
+-- typed message the user met it with (task met), none when its task was closed as done.
+create table if not exists task_condition (
+  task_id integer not null,
+  n integer not null,
+  after_id integer,
+  needs text,
+  met_at text,
+  met_session text,
+  met_event integer,
+  primary key (task_id, n)
+);
 create virtual table if not exists event_fts using fts5(text, content='event', content_rowid='id', tokenize='unicode61 remove_diacritics 2');
 create virtual table if not exists event_tri using fts5(text, content='event', content_rowid='id', tokenize='trigram');
 create trigger if not exists event_ai after insert on event begin

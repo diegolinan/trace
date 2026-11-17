@@ -64,6 +64,7 @@ type opts struct {
 	text, at, zone                                                                                         string
 	n                                                                                                      int
 	all, migrate, stop, self                                                                               bool
+	after, needs                                                                                           listFlag
 	given                                                                                                  map[string]bool
 	args                                                                                                   []string
 }
@@ -140,6 +141,8 @@ func (o *opts) flagSet(onErr flag.ErrorHandling) *flag.FlagSet {
 	fs.StringVar(&o.at, "at", "", "task add: when, as YYYY-MM-DD HH:MM in -zone (default the computer's zone) or RFC 3339")
 	fs.StringVar(&o.zone, "zone", "", "task add: the zone -at is in, as an offset (UTC-3) or a zone name (America/Los_Angeles); default the computer's")
 	fs.BoolVar(&o.stop, "stop", false, "alarm: stop the running alarm and wait for it to exit")
+	fs.Var(&o.after, "after", "task add: a task this one waits on (repeatable)")
+	fs.Var(&o.needs, "needs", "task add: something else this one waits on, in words (repeatable)")
 	fs.BoolVar(&o.self, "self", false, "task add: the agent adds it on its own; no message of the user asked for it")
 	fs.BoolVar(&o.migrate, "migrate", false, "install, uninstall: take over TRACE hooks that name no home (installed before -home existed)")
 	fs.String("repo", "", "ignored: kept so hooks written for an older TRACE still run (SPEC G5)")
@@ -481,6 +484,10 @@ func importLocked(dbPath string, lockFn func(string) (*os.File, error), run func
 
 func fail(err error) {
 	fmt.Fprintln(os.Stderr, "trace:", err)
+	var own exitCodeError
+	if errors.As(err, &own) {
+		os.Exit(own.code)
+	}
 	os.Exit(1)
 }
 

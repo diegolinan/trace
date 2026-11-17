@@ -157,6 +157,10 @@ trace stats                       counts, last runs, checks, rule cards, hook ou
 trace task add -text "<what>"     a task the user asked to be reminded of, tied to the message that asked
                                   [-at "YYYY-MM-DD HH:MM" or RFC 3339 [-zone UTC-3 | America/Los_Angeles]] [-self];
                                   prints its id, the time with its UTC offset, the time now and how far away it is
+                                  [-after <id>] [-needs "<what>"]: what it waits on before it can start (both repeat)
+trace task met <id> <n>           condition n of a task is met (a -needs, or an -after whose task was dropped), when
+                                  the user says so; recorded with the user's words
+trace task start <id>             before working on a task: "ready" (exit 0), or what it still waits on (exit 3)
 trace task done|drop <id>         close an open task, with the message that closed it
 trace task told <id>              the user was told of a fired task: its session's Stop hook stops holding the turn
 trace task list                   the open tasks, oldest first (the start block shows the first 5; a due one is

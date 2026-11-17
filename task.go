@@ -7,7 +7,6 @@ import (
 	"fmt"
 	"io"
 	"os"
-	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -22,8 +21,12 @@ func newestTyped(param string) string {
 // cmdTask records, closes and lists the user's tasks (SPEC T1, T2). It reads what is new first, as search does, so the
 // message that asked or closed is in the store.
 func cmdTask(o opts) error {
-	if len(o.args) == 0 || !slices.Contains([]string{"add", "done", "drop", "told", "list"}, o.args[0]) {
-		return usageError{errors.New(`task needs add -text "<what>" [-at "<when>" [-zone UTC-3]] [-self], done <id>, drop <id>, told <id> or list`)}
+	var run taskCommand
+	if len(o.args) > 0 {
+		run = taskCommands[o.args[0]]
+	}
+	if run == nil {
+		return usageError{errors.New(`task needs add -text "<what>" [-at "<when>" [-zone UTC-3]] [-after <id>] [-needs "<what>"] [-self], done <id>, drop <id>, told <id>, met <id> <n>, start <id> or list`)}
 	}
 	t, err := taskFromFlags(o)
 	if err != nil {
@@ -37,27 +40,36 @@ func cmdTask(o opts) error {
 		return err
 	}
 	defer db.Close()
-	switch o.args[0] {
-	case "add":
-		return taskAddWake(db, o.dbPath, t)
-	case "list":
-		return taskList(db, os.Stdout)
-	case "told":
-		return taskTold(db, o.args, os.Stdout)
-	}
-	return taskClose(db, o.args, os.Stdout)
+	return run(db, o, t)
+}
+
+// taskCommand is one task subcommand, given the store, the command's settings and the task its flags describe.
+type taskCommand func(db *sql.DB, o opts, t newTask) error
+
+// taskCommands are the task subcommands by name.
+var taskCommands = map[string]taskCommand{
+	"add":   func(db *sql.DB, o opts, t newTask) error { return taskAddWake(db, o.dbPath, t) },
+	"list":  func(db *sql.DB, o opts, t newTask) error { return taskList(db, os.Stdout) },
+	"told":  func(db *sql.DB, o opts, t newTask) error { return taskTold(db, o.args, os.Stdout) },
+	"met":   func(db *sql.DB, o opts, t newTask) error { return taskMet(db, o.args, os.Stdout) },
+	"start": func(db *sql.DB, o opts, t newTask) error { return taskStart(db, o.args, os.Stdout) },
+	"done":  func(db *sql.DB, o opts, t newTask) error { return taskClose(db, o.args, os.Stdout) },
+	"drop":  func(db *sql.DB, o opts, t newTask) error { return taskClose(db, o.args, os.Stdout) },
 }
 
 // taskFromFlags reads task add's flags: -at in -zone, else in the computer's zone (SPEC A10). -zone without -at is
 // refused. Empty -at is no time.
 func taskFromFlags(o opts) (newTask, error) {
 	t := newTask{text: o.text, self: o.self}
+	var err error
+	if t.conds, err = conditionsFromFlags(o.after, o.needs); err != nil {
+		return t, err
+	}
 	loc, given := time.Local, o.zone != "" || o.given["zone"]
 	if given {
 		if o.at == "" {
 			return t, errors.New("-zone needs -at: it says which zone the time is in; nothing stored")
 		}
-		var err error
 		if loc, err = parseZone(o.zone); err != nil {
 			return t, err
 		}
@@ -65,18 +77,18 @@ func taskFromFlags(o opts) (newTask, error) {
 	if o.at == "" {
 		return t, nil
 	}
-	var err error
 	t.due, t.repeated, err = readDue(o.at, loc, given)
 	return t, err
 }
 
 // newTask is a task to add: what it is, its time (zero for none) and whether that local time happens twice (SPEC A3),
-// and whether the agent adds it on its own, asked for by no message (SPEC T1 -self).
+// whether the agent adds it on its own, asked for by no message (SPEC T1 -self), and what it waits on (SPEC T5).
 type newTask struct {
 	text     string
 	due      time.Time
 	self     bool
 	repeated bool
+	conds    []condition
 }
 
 // taskAddWake adds the task, then starts the alarm when it is not running (SPEC A1). A start that fails is said and the
@@ -97,6 +109,10 @@ func taskAdd(db *sql.DB, t newTask, w io.Writer) error {
 	if strings.TrimSpace(t.text) == "" {
 		return errors.New(`task add needs -text "<what>"; nothing stored`)
 	}
+	done, err := checkAfter(db, t.conds)
+	if err != nil {
+		return err
+	}
 	at, zone := "", ""
 	if !t.due.IsZero() {
 		at = t.due.UTC().Format(time.RFC3339) // UTC, so times compare as text
@@ -110,6 +126,9 @@ func taskAdd(db *sql.DB, t newTask, w io.Writer) error {
 		return err
 	}
 	id, _ := res.LastInsertId()
+	if err := addConditions(db, id, t.conds, done); err != nil {
+		return err
+	}
 	echo := ""
 	if at != "" {
 		echo = ", due " + addEcho(t.due, storedZone(zone), clockNow(), time.Local, t.repeated)
@@ -144,7 +163,19 @@ func taskClose(db *sql.DB, args []string, w io.Writer) error {
 		return fmt.Errorf("task %s is not an open task; nothing changed", args[1])
 	}
 	fmt.Fprintf(w, "task %s closed: %s\n", args[1], args[0])
-	return nil
+	return afterClose(db, args[0], args[1], w)
+}
+
+// afterClose meets the conditions on a task closed as done, or names the tasks that wait on one dropped (SPEC T5, T6).
+func afterClose(db *sql.DB, how, task string, w io.Writer) error {
+	if how == "done" {
+		return metOnDone(db, task)
+	}
+	waiters, err := waitersOf(db, task)
+	for _, line := range waiters {
+		fmt.Fprintln(w, line)
+	}
+	return err
 }
 
 // taskList prints every open task, oldest first.
@@ -170,15 +201,18 @@ func openTasks(db *sql.DB, and string, limit int) (lines []string, more int, err
 	}
 	defer rows.Close()
 	total := 0
+	var ids []int64
 	for rows.Next() {
-		var id int
+		var id int64
 		var created, due, zone, text, asked string
 		var self bool
 		rows.Scan(&id, &created, &due, &zone, &text, &asked, &self, &total)
 		c, _ := time.Parse(time.RFC3339, created)
 		lines = append(lines, fmt.Sprintf("- task %d, %s ago%s: %s", id, clockNow().Sub(c).Round(time.Minute), dueText(due, zone, ", due "), taskWords(text, asked, self)))
+		ids = append(ids, id)
 	}
-	return lines, total - len(lines), rows.Err()
+	rows.Close() // read whole before asking more: the store has one connection
+	return withWaiting(db, lines, ids), total - len(lines), rows.Err()
 }
 
 // taskSection is the start block's list of open tasks, left out when there is none like any empty section, and what
@@ -202,7 +236,9 @@ func taskSection(db *sql.DB, w io.Writer, user string) error {
 	_, off := clockNow().In(time.Local).Zone()
 	fmt.Fprintf(w, "When %s asks to be reminded of something or to note it for later, run %s. Add -self to a task you add on your own, "+
 		"that %s did not ask for. -at is read in this computer's zone, %s now; when %s gives another zone, pass -zone with it "+
-		"(UTC-3, or a zone name), and tell the user the time the add echoes. Close a task only after asking %s: %s or %s.\n\n",
+		"(UTC-3, or a zone name), and tell the user the time the add echoes. When a task waits on another, add -after <id>; "+
+		"on anything else (a decision, a reply, a file), -needs \"<what>\" (both repeat); run task met <id> <n> when the user says one is met, "+
+		"and task start <id> before working on a task, to see what it still waits on. Close a task only after asking %s: %s or %s.\n\n",
 		user, traceCmd("task add", ` -text "<what>" [-at "YYYY-MM-DD HH:MM"]`), user, offsetName(off), user, user,
 		traceCmd("task done", " <id>"), traceCmd("task drop", " <id>"))
 	return nil
@@ -248,9 +284,9 @@ func nameUntold(d *sql.DB, session string) ([]string, error) {
 		return nil, err
 	}
 	var lines []string
-	var ids []int
+	var ids []int64
 	for rows.Next() {
-		var id int
+		var id int64
 		var due, zone, text, asked string
 		var self bool
 		rows.Scan(&id, &due, &zone, &text, &asked, &self)
@@ -258,6 +294,7 @@ func nameUntold(d *sql.DB, session string) ([]string, error) {
 		ids = append(ids, id)
 	}
 	rows.Close() // read whole before writing: the store has one connection
+	lines = withWaiting(d, lines, ids)
 	for _, id := range ids {
 		if _, err := d.Exec(`insert or ignore into task_named(task_id, session_id) values (?, ?)`, id, session); err != nil {
 			return lines, err

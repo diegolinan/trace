@@ -144,6 +144,33 @@ sees a board, only an agent that remembers and asks.
   and the words that asked for it. Each task is fired once (A2); an announced task stays open until closed, and
   until it is told or closed every other session is shown it once (A7). Test:
   `TestDueTaskAnnouncedOnceAtNextPrompt`.
+- **T5.** Conditions of ready, fixed when the task is added. A task can name what it waits on before it can start:
+  `task add -after <id>` (another task) and `task add -needs "<what>"` (anything else, in words: a decision of the
+  user's, a reply from someone, a file or input not there yet). Both repeat. There is no default condition: a task
+  with none is ready. The conditions get one numbering per task, in the order given, fixed and never reused.
+  `-after` an unknown or dropped task is refused and nothing is stored; `-after` a task already done is stored as
+  met. An `-after` condition is met when its task is closed as done; dropped, it is not. `-needs` text is stored and
+  shown like a task's text: redacted (P1), clipped to 300 characters on one line, and quoted inside the alarm's
+  wrapper (A4). Tests: `TestTaskAddConditions`, `TestTaskAddAfterRefusedOrMet`.
+- **T6.** Meeting a condition. `trace task met <id> <n>` meets condition `n` of an open task: a `-needs`, or an
+  `-after` whose task was dropped (the user waives it). The agent runs it only after the user says so, as for
+  closing (T2), and it records when, the session and the user's newest typed message in it (T1's rule). An unknown
+  task or `n`, a closed task, a condition already met, and an `-after` whose task is still open are refused and
+  change nothing. `task drop` names the open tasks that wait on the dropped one. Tests: `TestNeedsMetRecordsTheAsk`,
+  `TestTaskMetRefusals`, `TestDroppedAfterNamedAndWaivable`.
+- **T7.** Showing what a task waits on. `task list`, the start block, the prompt hook's lines and the alarm's
+  message (A4) show after a task with unmet conditions `waiting on:` and each unmet one, at most three with "and N
+  more": `need 2: "<words>"`, `after task 3 (open)`, `after task 3 (open, itself waiting)`, `after task 3
+  (dropped)`. A task with a time still fires when it is waiting (A2), and its message says what it waits on, so the
+  agent tells the user the time came and what is missing. `trace task start <id>` checks a task before work on it
+  starts: it prints `task <id> is ready` and exits 0, or prints what it waits on and exits 3; it records nothing. An
+  unknown or closed task fails with exit 1. The start block tells the agent about `-after`, `-needs`, `task met` and
+  `task start`. Tests: `TestWaitingOnShownEverywhere`, `TestAlarmMessageSaysWaitingOn`, `TestTaskStartChecks`.
+
+Why T5 to T7, and not conditions of done: 25 of 93 real deferrals waited on another task, a third party, a
+decision of Diego's or an input not there yet, over the threshold of 1 in 5 fixed before the run; conditions of
+done (Gherkin at close) were disputed in 9 of 93, under 1 in 10, so they are not built
+(`system/research/2026-11-16_trace-tasks/test4-ready-done.md`).
 
 ## A. Alarm
 
