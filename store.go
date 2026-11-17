@@ -152,6 +152,12 @@ create table if not exists task (
   closed_event integer,
   announced_at text
 );
+-- The sessions the prompt hook named each fired, untold task in, so it names it once per session (SPEC A7).
+create table if not exists task_named (
+  task_id integer not null,
+  session_id text not null,
+  primary key (task_id, session_id)
+);
 create virtual table if not exists event_fts using fts5(text, content='event', content_rowid='id', tokenize='unicode61 remove_diacritics 2');
 create virtual table if not exists event_tri using fts5(text, content='event', content_rowid='id', tokenize='trigram');
 create trigger if not exists event_ai after insert on event begin
@@ -243,25 +249,44 @@ func markNotTypedByUser(db *sql.DB) error {
 }
 
 // addColumns adds the columns added after the first import; "duplicate column" means the store already has them.
+// A column's fill runs once, when the column is added: the rows from before it get their value then.
 func addColumns(db *sql.DB) error {
-	for _, alter := range []string{
-		"alter table source_file add column tail_sha text",                            // hash of the bytes just before read_to_byte
-		"alter table source_file add column bad_lines integer not null default 0",     // lines no JSON parse could recover
-		"alter table source_file add column archive_bytes integer not null default 0", // raw copy length at the last commit
-		"alter table source_file add column skipped text",                             // why a file is never read (a Codex thread outside scope)
+	for _, c := range []struct {
+		alter string
+		fill  func(*sql.DB) error
+	}{
+		{"alter table source_file add column tail_sha text", nil},                        // hash of the bytes just before read_to_byte
+		{"alter table source_file add column bad_lines integer not null default 0", nil}, // lines no JSON parse could recover
+		// Raw copy length at the last commit; for copies made before the column, their current size.
+		{"alter table source_file add column archive_bytes integer not null default 0", backfillArchiveBytes},
+		{"alter table source_file add column skipped text", nil}, // why a file is never read (a Codex thread outside scope)
+		// The alarm's columns (SPEC A), all at once, so the store's shape is settled before the parts that use them.
+		{"alter table task add column added_session text", nil}, // the session that ran task add (A5)
+		{"alter table task add column fire_state text", nil},    // announced_at's claim: delivering, then delivered or failed (A2)
+		{"alter table task add column fire_session text", nil},  // the session the fire targeted (A2, A5)
+		{"alter table task add column fire_reason text", nil},   // why a fire failed (A2, A7)
+		// When the user was told (A8); tasks T4 announced before the alarm existed count as told (A2).
+		{"alter table task add column told_at text", fillToldAt},
+		{"alter table task add column holds integer not null default 0", nil}, // turns the stop hook held for this task (A8)
+		{"alter table task add column marker text", nil},                      // trace-alarm:<id>:<nonce> of the fire's message (A4, A9)
+		{"alter table task add column zone text", nil},                        // the IANA zone the time was said in (A10)
 	} {
-		_, err := db.Exec(alter)
+		_, err := db.Exec(c.alter)
 		if err != nil && !strings.Contains(err.Error(), "duplicate column") {
 			return err
 		}
-		if err == nil && strings.Contains(alter, "archive_bytes") {
-			// Copies made before the column existed: their current size is the committed length.
-			if err := backfillArchiveBytes(db); err != nil {
+		if err == nil && c.fill != nil {
+			if err := c.fill(db); err != nil {
 				return err
 			}
 		}
 	}
 	return nil
+}
+
+func fillToldAt(db *sql.DB) error {
+	_, err := db.Exec("update task set told_at = announced_at where announced_at is not null")
+	return err
 }
 
 // mendRedaction runs once per store (user_version 1 to 2): text stored outside events before it went through redact
@@ -370,4 +395,10 @@ func openReadOnly(path string) (*sql.DB, error) {
 	}
 	return driver.Open("file:"+filepath.ToSlash(path)+"?mode=ro&_pragma=busy_timeout(3000)",
 		func(c *sqlite3.Conn) error { return fts5.Register(c) })
+}
+
+// openBrief opens an existing store for one short write, waiting at most a second for its lock and migrating nothing:
+// the stop hook must never hold up the host's turn (SPEC A8).
+func openBrief(path string) (*sql.DB, error) {
+	return driver.Open("file:" + filepath.ToSlash(path) + "?mode=rw&_pragma=busy_timeout(1000)")
 }

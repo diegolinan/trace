@@ -130,7 +130,8 @@ sees a board, only an agent that remembers and asks.
   words that asked for them, and tells the agent: when the user asks to be reminded of something or to note it
   for later, run `trace task add`; close a task only after asking the user. Test: `TestStartBlockShowsOpenTasks`.
 - **T4.** On the first user prompt after a task's time, the prompt hook adds one line naming the task, its time
-  and the words that asked for it. Each task is announced once; an announced task stays open until closed. Test:
+  and the words that asked for it. Each task is fired once (A2); an announced task stays open until closed, and
+  until it is told or closed every other session is shown it once (A7). Test:
   `TestDueTaskAnnouncedOnceAtNextPrompt`.
 
 ## A. Alarm
@@ -138,25 +139,32 @@ sees a board, only an agent that remembers and asks.
 The alarm brings a task back at its time even when nobody is typing: at the time, it writes a message into a live
 agent session, and that message opens a turn and carries the order. One core serves every program; only the
 deliverer, which writes into one program's live session, is per program. Agreed with Diego on 2026-11-16 after two
-live tests per program (`system/research/2026-11-16_trace-tasks/clock-prior-art.md`). Not built yet: the tests
-named below are still to be written, and must fail first.
+live tests per program (`system/research/2026-11-16_trace-tasks/clock-prior-art.md`). Built: A1, A2, A4 to A9.
+Not yet: A3 and A10. Of A5, a Codex thread counts as attached to a client when the daemon holds it loaded (idle or
+running); nothing seen yet tells an attached client apart. Not checked live: how each program stores a stop hook's
+reason (A9 matches the marker in every shape listed there).
 
-- **A1.** One alarm per store. `trace alarm` holds an OS file lock kept in the store's folder; a second one exits
-  at once and fires nothing. It wakes at least every 30 seconds, compares the wall clock with the due times and
-  rereads the store each time, so laptop sleep, clock changes and tasks added by other processes are seen within 30
-  seconds; it holds no read transaction while it waits. With no open task left that has a time it releases the
-  lock, reads the store again, and takes the lock back if a task appeared meanwhile. The start hook and `trace task
-  add -at` start it when it is not running, only where it can detach for real (outside the caller's job, process
-  tree and sandbox); where it cannot, it is not started and the start hook is the backstop. It exits when its
-  executable file has been replaced, and install stops a running alarm before replacing the binary. Tests:
-  `TestAlarmRunsOnce`, `TestAlarmSeesWallClockJump`, `TestAlarmTakesLockBackForLateTask`,
-  `TestTaskAddStartsAlarm`, `TestAlarmExitsWhenReplaced`.
+- **A1.** One alarm per store. `trace alarm` holds an OS file lock kept in the store's folder (its own, not the
+  import's); a second one exits at once and fires nothing. It wakes at least every 30 seconds, compares the wall
+  clock with the due times and rereads the store each time, so laptop sleep, clock changes and tasks added by other
+  processes are seen within 30 seconds; it holds no read transaction while it waits. With no open task left that has
+  a time still to fire (a fired task never fires again) it releases the lock, reads the store again, and takes the
+  lock back if a task appeared meanwhile. The start hook and `trace task add` start it when a task waits to fire and
+  it is not running, only where it can detach for real (outside the caller's job, process tree and sandbox); where it
+  cannot, it is not started and the start hook is the backstop. It exits when its executable file has changed (size
+  or time) or is gone. `trace alarm -stop` asks the running alarm to exit (a stop file it checks at every wake),
+  waits up to 45 seconds for its lock, and removes the request either way; the installers run it before replacing
+  the binary, which Windows refuses while the alarm runs it. Tests: `TestAlarmRunsOnce`,
+  `TestAlarmSeesWallClockJump`, `TestAlarmTakesLockBackForLateTask`, `TestTaskAddStartsAlarm`,
+  `TestTaskAddSaysWhenAlarmFails`, `TestStartAlarmRunsAlarm`, `TestStartAloneRefusedInsideJob` (Windows), `TestAlarmExitsWhenReplaced`, `TestAlarmStopsAtTickCap`,
+  `TestAlarmStopWaitsForExit`.
 - **A2.** A task fires once. The claim is `announced_at`, the column T4 already sets, so an older binary sees a
   fired task as announced; one store transaction claims the task with its target session and state `delivering`,
   and the result (delivered, or failed with its reason) is recorded after. A claim left `delivering` by a crash is
   recorded as failed (crashed) by the next alarm. Delivery is never retried. T4's line is a fire into the session
-  that prompted. Tasks announced before the alarm existed count as told. Tests: `TestTaskFiresOnce`,
-  `TestCrashedClaimIsRecordedFailed`.
+  that prompted. Tasks announced before the alarm existed count as told. A fire with no qualifying session (A5) is
+  recorded failed with why; a failure a deliverer gave starts with its name (`codex: ...`). Tests:
+  `TestTaskFiresOnce`, `TestCrashedClaimIsRecordedFailed`, `TestOldAnnouncedTasksCountAsTold`, `TestAlarmStoreErrorsAreReturned`.
 - **A3.** Times are stored in UTC with the offset they were given in. A local time that does not exist (the hour
   skipped by a daylight-saving change) is refused; an ambiguous one (the repeated hour) is echoed with its UTC
   offset. The zone is the user's current zone (A10), not the computer's. A task whose time passed while no alarm ran
@@ -186,7 +194,8 @@ named below are still to be written, and must fail first.
 - **A7.** A task fired and not told, for any reason (no qualifying session, a failed delivery, a crash, or the
   target session closed before telling), is listed as late in every start block until told or closed, and the
   prompt hook names it once per session; naming it is not a fire. A failed delivery is recorded with its reason,
-  and `trace stats` shows each deliverer's last failure, so an update that breaks a deliverer shows up. Test:
+  and `trace stats` shows each deliverer's last failure, so an update that breaks a deliverer shows up. Tests:
+  `TestFiredUntoldTaskNamedOncePerSession` (the late list and the naming, built),
   `TestUntoldTaskShowsLateAndFailureIsReported`.
 - **A8.** Told. `trace task told <id>` records that the user was told and when; the session is the one the claim
   targeted. `task done` and `task drop` also count as told. While a task delivered into a session is not told,

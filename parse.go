@@ -233,7 +233,7 @@ func (rp *rowParser) meta(s string) {
 	switch {
 	case strings.Contains(s, "<agent-message"):
 		rp.add(ev{speaker: "subagent", kind: "handback", text: s})
-	case strings.Contains(s, "<cross-session-message"):
+	case strings.Contains(s, "<cross-session-message"), alarmMarker.MatchString(s): // the alarm's: insertEvent files it (SPEC A9)
 		rp.add(ev{speaker: "relay", kind: "relay", text: s})
 	}
 }
@@ -314,6 +314,10 @@ func (rp *rowParser) queued(a attachment) {
 		rp.add(ev{speaker: "user", kind: "steering", text: s})
 	case "peer":
 		rp.add(ev{speaker: "subagent", kind: "handback", text: s})
+	default:
+		if alarmMarker.MatchString(s) { // the alarm's: insertEvent files it (SPEC A9)
+			rp.add(ev{speaker: "relay", kind: "relay", text: s})
+		}
 	}
 }
 
@@ -405,4 +409,20 @@ func clip(s string, n int) string {
 		n--
 	}
 	return s[:n] + "…"
+}
+
+// alarmMarker is on every message the alarm or its stop hook writes (SPEC A4, A9).
+var alarmMarker = regexp.MustCompile(`trace-alarm:[0-9]+:[0-9a-f]{16}`)
+
+// alarmOr is e, or the alarm's message when e is words that reached the session from outside and carry a marker (SPEC
+// A9), in whatever shape the program stored them: typed or queued, a command, a relay, a peer's hand-back, injected
+// text. The marker is the match. What the agent itself said or ran can quote a marker and stays its own.
+func alarmOr(e ev) ev {
+	switch e.kind {
+	case "prompt", "steering", "suggestion", "command", "relay", "handback", "injected":
+		if e.speaker != "assistant" && alarmMarker.MatchString(e.text) {
+			e.speaker, e.kind = "program", "alarm"
+		}
+	}
+	return e
 }

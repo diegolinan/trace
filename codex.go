@@ -33,16 +33,23 @@ func hostName(host string) string {
 }
 
 // resumeCall matches a tool call that runs trace resume (trace or trace.exe, quoted or not; the input is stored as
-// JSON, so a quote may come as \"), not a file named resume.go.
+// JSON, so a quote may come as \"), not a file named resume.go. taskAddCall matches one that runs trace task add.
 var resumeCall = regexp.MustCompile(`(?i)trace(?:\.exe)?\\?["']?\s+resume\b`)
+var taskAddCall = regexp.MustCompile(`(?i)trace(?:\.exe)?\\?["']?\s+task\s+add\b`)
 
 // liveSession is the session asking for `trace resume`, so the block shows the one before it (SPEC S1): among the
 // sessions of this host and role written to in the last two minutes, the one whose last stored event is that call
 // (the host writes the call before running it, and resume imports first); with none, the newest of them.
 func liveSession(db *sql.DB, host, role string) string {
+	return askingSession(db, resumeCall, "s.host = ? and s.role = ?", host, role)
+}
+
+// askingSession is S1's rule for any command: among the sessions that meet where and were written to in the last two
+// minutes, the one whose last stored event is a tool call that call matches; with none, the newest of them.
+func askingSession(db *sql.DB, call *regexp.Regexp, where string, args ...any) string {
 	cut := time.Now().UTC().Add(-2 * time.Minute).Format(time.RFC3339)
 	rows, err := db.Query(`select s.id, coalesce((select e.kind || ' ' || coalesce(e.text, '') from event e where e.session_id = s.id
-		order by e.seq desc limit 1), '') from session s where s.host = ? and s.role = ? and s.ended_at >= ? order by s.ended_at desc`, host, role, cut)
+		order by e.seq desc limit 1), '') from session s where `+where+` and s.ended_at >= ? order by s.ended_at desc`, append(args, cut)...)
 	if err != nil {
 		return ""
 	}
@@ -54,7 +61,7 @@ func liveSession(db *sql.DB, host, role string) string {
 		if newest == "" {
 			newest = id
 		}
-		if strings.HasPrefix(last, "tool_call ") && resumeCall.MatchString(last) {
+		if strings.HasPrefix(last, "tool_call ") && call.MatchString(last) {
 			return id
 		}
 	}

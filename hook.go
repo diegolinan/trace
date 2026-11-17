@@ -20,9 +20,10 @@ type hookInput struct {
 	Source     string          `json:"source"` // SessionStart: startup, resume, clear, compact
 	Transcript string          `json:"transcript_path"`
 	Cwd        string          `json:"cwd"`
-	ToolName   string          `json:"tool_name"`  // PostToolUse
-	ToolInput  json.RawMessage `json:"tool_input"` // PostToolUse
-	AgentID    string          `json:"agent_id"`   // set inside a subagent, whose payload names the parent's transcript
+	ToolName   string          `json:"tool_name"`        // PostToolUse
+	ToolInput  json.RawMessage `json:"tool_input"`       // PostToolUse
+	AgentID    string          `json:"agent_id"`         // set inside a subagent, whose payload names the parent's transcript
+	StopActive bool            `json:"stop_hook_active"` // Stop: a stop hook already kept this turn going
 }
 
 func readHookInput(r io.Reader) hookInput {
@@ -108,6 +109,9 @@ func sessionStart(in hookInput, dbPath, role, host string, mine bool, run func(*
 	if err := importOnce(dbPath, 5*time.Second, func(db *sql.DB) error { return run(db, trigger) }); err != nil {
 		fmt.Fprintln(os.Stderr, "trace: import failed, showing what is stored:", err)
 	}
+	if err := wakeAlarm(dbPath); err != nil {
+		fmt.Fprintln(os.Stderr, "trace: the alarm did not start:", err)
+	}
 	if !mine {
 		return nil
 	}
@@ -116,6 +120,7 @@ func sessionStart(in hookInput, dbPath, role, host string, mine bool, run func(*
 
 // detachedHook starts a detached import for Stop, SessionEnd, Interrupt (Codex only), PreCompact and the
 // SessionStart after a compaction, and prints only what those last two carry: the summary steer and the rule card.
+// A Stop may also hold the turn for a task not told (SPEC A8).
 func detachedHook(in hookInput, flags []string, dbPath, role, host string, mine bool, w io.Writer) error {
 	err := spawnImport(flags, hookTrigger(in))
 	if !mine {
@@ -126,6 +131,8 @@ func detachedHook(in hookInput, flags []string, dbPath, role, host string, mine 
 		fmt.Fprintf(w, compactSteer, userName())
 	case in.Event == "SessionStart" && cfg.Reinject != nil && !withheld(clockNow()):
 		return errors.Join(err, compactCard(in, dbPath, role, host, w))
+	case in.Event == "Stop":
+		return errors.Join(err, holdStop(in, dbPath, host, w))
 	}
 	return err
 }

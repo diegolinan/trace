@@ -51,6 +51,8 @@ try {
         } elseif ($env:TRACE_UPDATE -ne '1') {
             throw "$exe exists and is another build; set `$env:TRACE_UPDATE = '1' to replace it; nothing changed"
         } else {
+            # A running alarm keeps the old binary open, and Windows will not replace it: stop it first.
+            & (Join-Path $tmp $asset) alarm -stop
             $previous = "$exe.previous"
             Copy-Item -Force $exe $previous
             Move-Item -Force (Join-Path $tmp $asset) $exe # fails while a hook runs the old one: nothing is half-replaced

@@ -9,10 +9,10 @@ import (
 	"time"
 )
 
-// A copy of this test binary that startImport starts (os.Executable) writes the arguments it got to the file
-// GROUPC_SPAWNED names and exits, so a test sees what the detached import would run without running one.
+// A copy of this test binary that startImport or startAlarm starts (os.Executable) writes the arguments it got to the
+// file GROUPC_SPAWNED names and exits, so a test sees what the detached import or alarm would run without running one.
 func init() {
-	if out := os.Getenv("GROUPC_SPAWNED"); out != "" && len(os.Args) > 1 && os.Args[1] == "import" {
+	if out := os.Getenv("GROUPC_SPAWNED"); out != "" && len(os.Args) > 1 && (os.Args[1] == "import" || os.Args[1] == "alarm") {
 		os.WriteFile(out, []byte(strings.Join(os.Args[1:], "\n")), 0o644)
 		os.Exit(0)
 	}

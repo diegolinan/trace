@@ -609,6 +609,7 @@ func seen(tx *sql.Tx, uuid string) bool {
 
 // insertEvent stores one event with its anchors; false when the uuid was already there.
 func (im *importer) insertEvent(tx *sql.Tx, uuid, sid string, seq int, ts, branch string, comp int, fileID, at int64, e ev) error {
+	e = alarmOr(e) // before redaction, which must not decide whether a marker is there
 	text, red := redact(e.text)
 	input, red2 := redact(e.toolInput)
 	red = kindsIn(red + "," + red2) // every kind removed, from the text and the input alike (SPEC P2)

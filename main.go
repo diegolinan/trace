@@ -10,12 +10,14 @@
 //	trace install -host codex   a Codex-only memory for the current folder: config.json and an AGENTS.md line
 //	-home <folder>          on any command: the TRACE home to use (default $TRACE_HOME, else ~/.trace)
 //	trace import            read new bytes of every transcript in scope; safe to run any time
-//	trace hook              for host hooks: starts a detached import and returns at once, always exit 0
+//	trace hook              for host hooks: starts a detached import and returns at once, exit 0 (a Stop that holds the
+//	                        turn for a task not told exits 2)
 //	trace resume            where the last session in this folder stopped, for agents without hooks (-host codex)
 //	trace search <words>    [-n 10] [-who user|assistant|subagent] [-all] [-since 2026-11-01]
 //	trace rules             the rule card a session in this folder gets (re-injection, opt-in)
 //	trace stats
-//	trace task add -text "<what>" [-at "YYYY-MM-DD HH:MM"] | done <id> | drop <id> | list   the user's tasks
+//	trace task add -text "<what>" [-at "YYYY-MM-DD HH:MM"] | done <id> | drop <id> | told <id> | list   the user's tasks
+//	trace alarm [-stop]     fires tasks at their time; started by the start hook and task add -at (-stop: stop it)
 package main
 
 import (
@@ -31,7 +33,7 @@ import (
 
 func main() {
 	if len(os.Args) < 2 {
-		fmt.Fprintln(os.Stderr, "usage: trace install -host claude-code|codex | uninstall -host ... | import | restore | hook | resume | search <words> | rules | stats | task add|done|drop|list")
+		fmt.Fprintln(os.Stderr, "usage: trace install -host claude-code|codex | uninstall -host ... | import | restore | hook | resume | search <words> | rules | stats | task add|done|drop|told|list | alarm [-stop]")
 		os.Exit(2)
 	}
 	cmd := os.Args[1]
@@ -61,7 +63,7 @@ type opts struct {
 	cmd, home, dbPath, projects, history, codexDir, host, notID, archive, scope, trigger, who, since, mode string
 	text, at                                                                                               string
 	n                                                                                                      int
-	all, migrate                                                                                           bool
+	all, migrate, stop                                                                                     bool
 	given                                                                                                  map[string]bool
 	args                                                                                                   []string
 }
@@ -136,6 +138,7 @@ func (o *opts) flagSet(onErr flag.ErrorHandling) *flag.FlagSet {
 	fs.StringVar(&o.mode, "mode", "", "install -host codex (required): agents (a block in AGENTS.md) or hooks (Codex hooks in CODEX_HOME/hooks.json)")
 	fs.StringVar(&o.text, "text", "", "task add: what the task is")
 	fs.StringVar(&o.at, "at", "", "task add: when, as YYYY-MM-DD HH:MM in local time or RFC 3339")
+	fs.BoolVar(&o.stop, "stop", false, "alarm: stop the running alarm and wait for it to exit")
 	fs.BoolVar(&o.migrate, "migrate", false, "install, uninstall: take over TRACE hooks that name no home (installed before -home existed)")
 	fs.String("repo", "", "ignored: kept so hooks written for an older TRACE still run (SPEC G5)")
 	return fs
@@ -209,13 +212,19 @@ var commands = map[string]func(opts) error{
 	"stats":     cmdStats,
 	"rules":     cmdRules,
 	"task":      cmdTask,
+	"alarm":     cmdAlarm,
 }
 
 // runHook answers a host hook. Fail open: a hook error must never block or fail the host's turn.
 func runHook(o opts) {
 	failOpen(func() {
 		run := func(db *sql.DB, trigger string) error { return o.importFn(trigger)(db) }
-		if err := hook(readHookInput(os.Stdin), os.Args[2:], o.dbPath, o.host, o.projects, run, os.Stdout); err != nil {
+		err := hook(readHookInput(os.Stdin), os.Args[2:], o.dbPath, o.host, o.projects, run, os.Stdout)
+		if h := (holdTurn{}); errors.As(err, &h) {
+			fmt.Fprintln(os.Stderr, h.reason)
+			os.Exit(2) // the one exit 2 a hook gives: a Claude Code Stop that keeps the turn going (SPEC A8)
+		}
+		if err != nil {
 			fmt.Fprintln(os.Stderr, "trace hook:", err)
 		}
 	})
@@ -699,6 +708,8 @@ func stats(db *sql.DB) error {
 	q("hook output that never reached the session", "select count(*), max(ts) from event where kind = 'injected' and ltrim(text) like '<persisted-output>%'")
 	q("checks, last 14 days: runs, failures, last failure", "select name, count(*), sum(ok = 0), max(case when ok = 0 then ts end) from check_run where ts >= strftime('%Y-%m-%dT%H:%M:%SZ', 'now', '-14 days') group by 1 order by 1")
 	q("rule card, last 14 days: reason, times, sessions, characters injected", "select reason, count(*), count(distinct session_id), sum(chars) from injection where ts >= strftime('%Y-%m-%dT%H:%M:%SZ', 'now', '-14 days') group by 1 order by 1")
+	// A failure a deliverer gave starts with its name (SPEC A2), so an update that breaks one shows up here (A7).
+	q("alarm, each deliverer's last failure", "select substr(fire_reason, 1, instr(fire_reason, ':') - 1), max(announced_at), fire_reason from task where fire_state = 'failed' and instr(fire_reason, ':') > 0 group by 1 order by 1")
 	q("files with errors", "select path, last_error from source_file where last_error is not null")
 	return nil
 }

@@ -4,6 +4,7 @@ import (
 	"compress/gzip"
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"io"
 	"os"
 	"os/exec"
@@ -66,8 +67,15 @@ func count(t *testing.T, db *sql.DB, q string, args ...any) int {
 }
 
 func TestMain(m *testing.M) {
-	if args, ok := os.LookupEnv("TRACE_TEST_MAIN"); ok { // runTrace: this binary runs trace's main
-		os.Args = append([]string{"trace"}, strings.Split(args, "\x1f")...)
+	// task add -at and the start hook would start this binary as an alarm; tests that start one replace this.
+	spawnAlarm = func(string) error { return nil }
+	// No test opens a real session inbox or starts a real Codex; the deliverer tests replace these with fakes.
+	claudeDial = func(string) (io.ReadWriteCloser, error) { return nil, errors.New("tests open no real inbox") }
+	codexRun = func(string, ...string) (io.ReadWriteCloser, error) {
+		return nil, errors.New("tests start no real Codex")
+	}
+	if args, ok := testMainArgs(); ok { // runTrace: this binary runs trace's main, in the profile runTrace made
+		os.Args = append([]string{"trace"}, args...)
 		main()
 		os.Exit(0)
 	}
@@ -77,13 +85,48 @@ func TestMain(m *testing.M) {
 	if len(os.Args) > 1 && !strings.HasPrefix(os.Args[1], "-") {
 		os.Exit(0)
 	}
+	// Every home a test could reach by default (user, TRACE, Claude Code, Codex) is a throwaway folder, and no session
+	// id of the agent running the suite leaks in: a test, or a mutant of a path lookup, never touches the real ones.
+	fence, err := os.MkdirTemp("", "trace-test-home-")
+	if err != nil {
+		panic(err)
+	}
+	for k, v := range map[string]string{"USERPROFILE": "user", "HOME": "user", "TRACE_HOME": "trace", "CLAUDE_CONFIG_DIR": "claude", "CODEX_HOME": "codex"} {
+		os.Setenv(k, filepath.Join(fence, v))
+	}
+	for _, k := range []string{"CLAUDE_CODE_SESSION_ID", "CLAUDE_CODE_MESSAGING_SOCKET", "CODEX_THREAD_ID", "CODEX_SANDBOX"} {
+		os.Unsetenv(k)
+	}
 	cfg = config{User: "Ana", RelayTools: []string{"mcp__relay"}, Roles: []roleRule{
 		{Name: "aux", Label: "Agent A", Marker: "ROLE.md", Contains: "role: aux", Folder: "claude-worktrees-aux"},
 		{Name: "main", Label: "the main agent", Marker: "ROLE.md", Contains: "role: main", Folder: "work-acme"},
 	}, Anchors: map[string]string{"queue_id": `\bQ\d{1,3}\b`, "card": `\b(?:E\d{3}|[Cc]ard \d{1,3})\b`}}
 	compileConfig()
 	clockNow = func() time.Time { return time.Date(2026, 11, 12, 0, 0, 0, 0, time.UTC) }
-	os.Exit(m.Run())
+	code := m.Run()
+	os.RemoveAll(fence)
+	os.Exit(code)
+}
+
+// testMainArgs are the trace arguments runTrace passed in TRACE_TEST_MAIN, taken out of the environment: a process
+// this child starts (a detached import, an alarm) is the test binary too, and must not run the same command again.
+func testMainArgs() ([]string, bool) {
+	args, ok := os.LookupEnv("TRACE_TEST_MAIN")
+	os.Unsetenv("TRACE_TEST_MAIN")
+	return strings.Split(args, "\x1f"), ok
+}
+
+// A child runTrace starts never hands TRACE_TEST_MAIN on: once, under a mutant, the detached import a hook started
+// ran the hook again, and each of those started another.
+func TestTestMainArgsNotInherited(t *testing.T) {
+	t.Setenv("TRACE_TEST_MAIN", "hook\x1f-host\x1fcodex")
+	args, ok := testMainArgs()
+	if !ok || strings.Join(args, " ") != "hook -host codex" {
+		t.Errorf("args = %q, %v", args, ok)
+	}
+	if _, still := os.LookupEnv("TRACE_TEST_MAIN"); still {
+		t.Error("TRACE_TEST_MAIN is still set for the children")
+	}
 }
 
 func TestImport(t *testing.T) {

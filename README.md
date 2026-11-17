@@ -147,17 +147,28 @@ trace install -host codex -mode hooks|agents   a Codex memory for the current fo
 trace uninstall -host <agent>     remove what install added for this home (the data stays)
 trace import                      read what is new in every transcript in scope; safe to run any time
 trace restore                     rebuild the store from the raw copies (a lost or broken trace.db, or transcripts the host deleted); skips what is stored
-trace hook                        for host hooks; never fails the host's turn
+trace hook                        for host hooks; never fails the host's turn (a Stop for a task not told holds it)
 trace resume                      where the last session in this folder stopped, for agents without hooks
                                   [-host codex|claude-code]
 trace search <words>              [-n 10] [-who user|assistant|subagent] [-all] [-since 2026-11-01]
 trace rules                       the rule card a session in this folder would get, and why
-trace stats                       counts, last runs, checks, rule cards, hook output that never reached the session
+trace stats                       counts, last runs, checks, rule cards, hook output that never reached the session,
+                                  and each alarm deliverer's last failure
 trace task add -text "<what>"     a task the user asked to be reminded of, tied to the message that asked
                                   [-at "YYYY-MM-DD HH:MM" (local) or RFC 3339]; prints its id and the time as understood
 trace task done|drop <id>         close an open task, with the message that closed it
+trace task told <id>              the user was told of a fired task: its session's Stop hook stops holding the turn
 trace task list                   the open tasks, oldest first (the start block shows the first 5; a due one is
-                                  announced once on the next prompt, when UserPromptSubmit is installed)
+                                  announced on the next prompt, when UserPromptSubmit is installed, and named once
+                                  in each later session until done or dropped)
+trace alarm                       fires each task at its time, even with nobody typing; one per store, started by
+                                  the start hook and task add -at, gone when no task has a time left. It writes an
+                                  order into one live session: the one that added the task, else the one used last
+                                  (Claude Code: its inbox; Codex: the app-server daemon, never started by TRACE).
+                                  The Stop hook keeps that turn going (twice at most) until task told. A task fired
+                                  and not told is late in every start block and named once per session on the next
+                                  prompt, until the user is told or it is closed
+trace alarm -stop                 stop the running alarm (the installers run it before replacing the binary)
 
 -home <folder>                    on any command: the memory to use
 -migrate                          install, uninstall: take over what an install before -home wrote

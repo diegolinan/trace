@@ -69,6 +69,7 @@ if [ -e "$exe" ]; then
     echo "trace: $exe exists and is another build; set TRACE_UPDATE=1 to replace it; nothing changed" >&2
     exit 1
   else
+    "$tmp/$asset" alarm -stop || true # the alarm also exits on its own once the binary changes
     previous="$exe.previous"
     cp -p "$exe" "$previous"
     mv "$tmp/$asset" "$exe"

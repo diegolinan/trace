@@ -12,3 +12,6 @@ func startDetached(cmd *exec.Cmd) error {
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setsid: true}
 	return cmd.Start()
 }
+
+// startAlone is startDetached: a session of its own is all the leaving a Unix caller allows (SPEC A1).
+var startAlone = startDetached
