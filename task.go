@@ -26,7 +26,7 @@ func cmdTask(o opts) error {
 		run = taskCommands[o.args[0]]
 	}
 	if run == nil {
-		return usageError{errors.New(`task needs add -text "<what>" [-at "<when>" [-zone UTC-3]] [-after <id>] [-needs "<what>"] [-self], done <id>, drop <id>, told <id>, met <id> <n>, start <id> or list`)}
+		return usageError{errors.New(`task needs add -text "<what>" [-at "<when>" [-zone UTC-3]] [-after <id>] [-needs "<what>"] [-then "<criterion>"] [-self], then <id> "<criterion>", done <id>, drop <id>, told <id>, met <id> <n>, start <id> or list`)}
 	}
 	t, err := taskFromFlags(o)
 	if err != nil {
@@ -53,6 +53,7 @@ var taskCommands = map[string]taskCommand{
 	"told":  func(db *sql.DB, o opts, t newTask) error { return taskTold(db, o.args, os.Stdout) },
 	"met":   func(db *sql.DB, o opts, t newTask) error { return taskMet(db, o.args, os.Stdout) },
 	"start": func(db *sql.DB, o opts, t newTask) error { return taskStart(db, o.args, os.Stdout) },
+	"then":  func(db *sql.DB, o opts, t newTask) error { return taskThen(db, o.args, os.Stdout) },
 	"done":  func(db *sql.DB, o opts, t newTask) error { return taskClose(db, o.args, os.Stdout) },
 	"drop":  func(db *sql.DB, o opts, t newTask) error { return taskClose(db, o.args, os.Stdout) },
 }
@@ -62,7 +63,7 @@ var taskCommands = map[string]taskCommand{
 func taskFromFlags(o opts) (newTask, error) {
 	t := newTask{text: o.text, self: o.self}
 	var err error
-	if t.conds, err = conditionsFromFlags(o.after, o.needs); err != nil {
+	if t.conds, err = conditionsFromFlags(o.after, o.needs, o.then); err != nil {
 		return t, err
 	}
 	loc, given := time.Local, o.zone != "" || o.given["zone"]
@@ -154,6 +155,9 @@ func taskClose(db *sql.DB, args []string, w io.Writer) error {
 	if len(args) < 2 {
 		return usageError{fmt.Errorf("task %s needs a task id", args[0])}
 	}
+	if unmet := criteriaText(db, args[1]); args[0] == "done" && unmet != "" {
+		return fmt.Errorf("task %s is not done: %s; nothing changed", args[1], unmet)
+	}
 	res, err := db.Exec(`update task set closed_at = ?1, told_at = coalesce(told_at, ?1), closed_how = ?2, closed_event = `+newestTyped("?4")+` where id = ?3 and closed_at is null`,
 		clockNow().UTC().Format(time.RFC3339), args[0], args[1], callerSession(db))
 	if err != nil {
@@ -238,7 +242,10 @@ func taskSection(db *sql.DB, w io.Writer, user string) error {
 		"that %s did not ask for. -at is read in this computer's zone, %s now; when %s gives another zone, pass -zone with it "+
 		"(UTC-3, or a zone name), and tell the user the time the add echoes. When a task waits on another, add -after <id>; "+
 		"on anything else (a decision, a reply, a file), -needs \"<what>\" (both repeat); run task met <id> <n> when the user says one is met, "+
-		"and task start <id> before working on a task, to see what it still waits on. Close a task only after asking %s: %s or %s.\n\n",
+		"and task start <id> before working on a task, to see what it still waits on and what done means. "+
+		"Write how to tell a task is done as -then \"<criterion>\" (repeats), each one Given / When / Then in the user's language; "+
+		"task then <id> \"<criterion>\" adds one later; task met <id> <n> meets one when the user says so, and task done needs every criterion met. "+
+		"Close a task only after asking %s: %s or %s.\n\n",
 		user, traceCmd("task add", ` -text "<what>" [-at "YYYY-MM-DD HH:MM"]`), user, offsetName(off), user, user,
 		traceCmd("task done", " <id>"), traceCmd("task drop", " <id>"))
 	return nil

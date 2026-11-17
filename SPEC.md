@@ -167,10 +167,27 @@ sees a board, only an agent that remembers and asks.
   unknown or closed task fails with exit 1. The start block tells the agent about `-after`, `-needs`, `task met` and
   `task start`. Tests: `TestWaitingOnShownEverywhere`, `TestAlarmMessageSaysWaitingOn`, `TestTaskStartChecks`.
 
-Why T5 to T7, and not conditions of done: 25 of 93 real deferrals waited on another task, a third party, a
-decision of Diego's or an input not there yet, over the threshold of 1 in 5 fixed before the run; conditions of
-done (Gherkin at close) were disputed in 9 of 93, under 1 in 10, so they are not built
-(`system/research/2026-11-16_trace-tasks/test4-ready-done.md`).
+- **T8.** Conditions of done (Gherkin). `task add -then "<criterion>"` (repeats) and `trace task then <id>
+  "<criterion>"` on an open task add a criterion of done: how to tell the task is done. Criteria share the task's
+  numbering with its conditions of ready (T5): at add they come after the `-after` and `-needs` ones, in the order
+  given; `task then` takes the next number. Numbers are never reused. The text is free and stored like `-needs`
+  text (redacted, clipped and quoted when shown); TRACE does not check its form, and the start block asks the agent
+  to write each one as Given / When / Then in the user's language. An empty criterion, and `task then` on an
+  unknown or closed task, are refused and nothing is stored. A criterion is met only by `task met <id> <n>`, after
+  the user says so (T6). Criteria are not conditions of ready: they never show as `waiting on:` and never make a
+  task not ready. Tests: `TestThenCriteriaStored`, `TestTaskThenRefusals`.
+- **T9.** Closing with criteria. `task done <id>` refuses while a criterion of the task is unmet: it prints each
+  unmet one as `then <n>: "<words>"`, exits 1 and changes nothing. `task drop` closes a task whatever its criteria.
+  `task start` prints, after its verdict, the task's unmet criteria as `done when: then <n>: "<words>"; ...`, so
+  the agent knows what done means before it starts. The start block tells the agent about `-then`, `task then` and
+  that `task done` needs every criterion met. Tests: `TestDoneRefusedUntilThenMet`, `TestTaskStartShowsDoneWhen`.
+
+Why T5 to T7: 25 of 93 real deferrals waited on another task, a third party, a decision of Diego's or an input not
+there yet, over the threshold of 1 in 5 fixed before the run. Conditions of done (Gherkin at close) were disputed in
+9 of 93, under the threshold of 1 in 10 by one item, and that count is a floor (ten turns often end before the
+work does; `system/research/2026-11-16_trace-tasks/test4-ready-done.md`). B first left them out on the threshold
+without asking; Diego decided to build them anyway ("si, construilo igual"), with `task done` refusing until every
+criterion is met, free text, and criteria addable later (T8, T9).
 
 ## A. Alarm
 

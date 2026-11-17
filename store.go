@@ -283,6 +283,7 @@ func addColumns(db *sql.DB) error {
 		{"alter table task add column marker text", nil},                      // trace-alarm:<id>:<nonce> of the fire's message (A4, A9)
 		{"alter table task add column zone text", nil},                        // the UTC offset the time was said in (A10)
 		{"alter table task add column self integer not null default 0", nil}, // added with -self: no message asked for it (T1)
+		{"alter table task_condition add column done_when text", nil},        // a criterion of done, in words (T8)
 	} {
 		_, err := db.Exec(c.alter)
 		if err != nil && !strings.Contains(err.Error(), "duplicate column") {

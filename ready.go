@@ -25,14 +25,15 @@ type exitCodeError struct {
 	error
 }
 
-// condition is one condition to add: the task it waits on, or the words of what it needs.
+// condition is one condition to add: the task it waits on, the words of what it needs, or a criterion of done (then).
 type condition struct {
-	after int64
-	needs string
+	after       int64
+	needs, then string
 }
 
-// conditionsFromFlags reads -after (task ids, in order) then -needs; an id that is not a number is refused.
-func conditionsFromFlags(after, needs []string) ([]condition, error) {
+// conditionsFromFlags reads -after (task ids, in order), then -needs, then -then (SPEC T8); an id that is not a number
+// and an empty criterion are refused.
+func conditionsFromFlags(after, needs, then []string) ([]condition, error) {
 	var out []condition
 	for _, a := range after {
 		id, err := strconv.ParseInt(a, 10, 64)
@@ -44,6 +45,12 @@ func conditionsFromFlags(after, needs []string) ([]condition, error) {
 	for _, n := range needs {
 		out = append(out, condition{needs: n})
 	}
+	for _, c := range then {
+		if strings.TrimSpace(c) == "" {
+			return nil, errors.New("-then needs a criterion in words; nothing stored")
+		}
+		out = append(out, condition{then: c})
+	}
 	return out, nil
 }
 
@@ -51,7 +58,7 @@ func conditionsFromFlags(after, needs []string) ([]condition, error) {
 func checkAfter(db *sql.DB, conds []condition) (done map[int64]bool, err error) {
 	done = map[int64]bool{}
 	for _, c := range conds {
-		if c.needs != "" {
+		if c.after == 0 {
 			continue
 		}
 		var how sql.NullString
@@ -71,11 +78,11 @@ func addConditions(db *sql.DB, task int64, conds []condition, done map[int64]boo
 	now := clockNow().UTC().Format(time.RFC3339)
 	for i, c := range conds {
 		met := ""
-		if c.needs == "" && done[c.after] {
+		if done[c.after] { // done holds -after ids only
 			met = now
 		}
-		if _, err := db.Exec(`insert into task_condition(task_id, n, after_id, needs, met_at) values (?, ?, nullif(?, 0), nullif(?, ''), nullif(?, ''))`,
-			task, i+1, c.after, redacted(c.needs), met); err != nil {
+		if _, err := db.Exec(`insert into task_condition(task_id, n, after_id, needs, done_when, met_at) values (?, ?, nullif(?, 0), nullif(?, ''), nullif(?, ''), nullif(?, ''))`,
+			task, i+1, c.after, redacted(c.needs), redacted(c.then), met); err != nil {
 			return err
 		}
 	}
@@ -143,10 +150,53 @@ func taskStart(db *sql.DB, args []string, w io.Writer) error {
 	waiting := waitingOn(db, id, 0)
 	if waiting == "" {
 		fmt.Fprintf(w, "task %d is ready\n", id)
-		return nil
+	} else {
+		fmt.Fprintf(w, "task %d is not ready: %s\n", id, waiting)
 	}
-	fmt.Fprintf(w, "task %d is not ready: %s\n", id, waiting)
-	return exitCodeError{3, fmt.Errorf("task %d is not ready", id)}
+	if done := criteriaText(db, args[1]); done != "" {
+		fmt.Fprintf(w, "done when: %s\n", done)
+	}
+	if waiting != "" {
+		return exitCodeError{3, fmt.Errorf("task %d is not ready", id)}
+	}
+	return nil
+}
+
+// taskThen adds a criterion of done to an open task, with the task's next condition number (SPEC T8).
+func taskThen(db *sql.DB, args []string, w io.Writer) error {
+	if len(args) < 3 || strings.TrimSpace(args[2]) == "" {
+		return usageError{errors.New(`task then needs a task id and a criterion in words; nothing stored`)}
+	}
+	res, err := db.Exec(`insert into task_condition(task_id, n, done_when) select id, (select coalesce(max(n), 0) + 1 from task_condition where task_id = task.id), ?
+		from task where id = ? and closed_at is null`, redacted(args[2]), args[1])
+	if err != nil {
+		return err
+	}
+	if n, _ := res.RowsAffected(); n == 0 {
+		return fmt.Errorf("task %s is not an open task; nothing stored", args[1])
+	}
+	id, _ := res.LastInsertId()
+	var n int64
+	db.QueryRow(`select n from task_condition where rowid = ?`, id).Scan(&n)
+	fmt.Fprintf(w, "task %s: criterion %d added\n", args[1], n)
+	return nil
+}
+
+// criteriaText is a task's unmet criteria of done as then <n>: "<words>", joined, or "" when none is unmet (SPEC T9).
+func criteriaText(db *sql.DB, task string) string {
+	rows, err := db.Query(`select n, done_when from task_condition where task_id = ? and done_when is not null and met_at is null order by n`, task)
+	if err != nil {
+		return ""
+	}
+	defer rows.Close()
+	var parts []string
+	for rows.Next() {
+		var n int64
+		var words string
+		rows.Scan(&n, &words)
+		parts = append(parts, fmt.Sprintf("then %d: %s", n, strconv.Quote(strings.Join(strings.Fields(clip(words, 300)), " "))))
+	}
+	return strings.Join(parts, "; ")
 }
 
 // waitingOn is "waiting on: ..." with a task's unmet conditions, at most limit (0: all) and how many more, or "" when
@@ -154,7 +204,7 @@ func taskStart(db *sql.DB, args []string, w io.Writer) error {
 func waitingOn(db *sql.DB, task int64, limit int) string {
 	rows, err := db.Query(`select c.n, coalesce(c.after_id, 0), coalesce(c.needs, ''), coalesce(a.closed_how, ''),
 		exists (select 1 from task_condition x where x.task_id = c.after_id and x.met_at is null)
-		from task_condition c left join task a on a.id = c.after_id where c.task_id = ? and c.met_at is null order by c.n`, task)
+		from task_condition c left join task a on a.id = c.after_id where c.task_id = ? and c.met_at is null and c.done_when is null order by c.n`, task)
 	if err != nil {
 		return ""
 	}

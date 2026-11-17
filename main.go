@@ -64,7 +64,7 @@ type opts struct {
 	text, at, zone                                                                                         string
 	n                                                                                                      int
 	all, migrate, stop, self                                                                               bool
-	after, needs                                                                                           listFlag
+	after, needs, then                                                                                     listFlag
 	given                                                                                                  map[string]bool
 	args                                                                                                   []string
 }
@@ -143,6 +143,7 @@ func (o *opts) flagSet(onErr flag.ErrorHandling) *flag.FlagSet {
 	fs.BoolVar(&o.stop, "stop", false, "alarm: stop the running alarm and wait for it to exit")
 	fs.Var(&o.after, "after", "task add: a task this one waits on (repeatable)")
 	fs.Var(&o.needs, "needs", "task add: something else this one waits on, in words (repeatable)")
+	fs.Var(&o.then, "then", "task add: a criterion of done, Given / When / Then in words (repeatable)")
 	fs.BoolVar(&o.self, "self", false, "task add: the agent adds it on its own; no message of the user asked for it")
 	fs.BoolVar(&o.migrate, "migrate", false, "install, uninstall: take over TRACE hooks that name no home (installed before -home existed)")
 	fs.String("repo", "", "ignored: kept so hooks written for an older TRACE still run (SPEC G5)")
