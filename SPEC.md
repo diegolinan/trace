@@ -138,45 +138,93 @@ sees a board, only an agent that remembers and asks.
 The alarm brings a task back at its time even when nobody is typing: at the time, it writes a message into a live
 agent session, and that message opens a turn and carries the order. One core serves every program; only the
 deliverer, which writes into one program's live session, is per program. Agreed with Diego on 2026-11-16 after two
-live tests per program (`system/research/2026-11-16_trace-tasks/clock-prior-art.md`).
+live tests per program (`system/research/2026-11-16_trace-tasks/clock-prior-art.md`). Not built yet: the tests
+named below are still to be written, and must fail first.
 
-- **A1.** One alarm per store. `trace alarm` sleeps until the next open task with a time that has not fired, fires
-  it, and rereads the store when a task is added, closed or moved. A second `trace alarm` on the same store exits at
-  once and fires nothing. The start hook and `trace task add -at` start the alarm when it is not running; started
-  twice in a row, one runs. With no open task left that has a time, the alarm exits. Tests:
-  `TestAlarmRunsOnce`, `TestTaskAddStartsAlarm`, `TestAlarmExitsWhenNothingIsDue`.
-- **A2.** A task fires once. Firing claims the task (when, deliverer, target session) in one store transaction; a
-  fired task is never fired again by any path: the alarm, the prompt hook (T4) or the start block. T4's line counts
-  as a fire. Test: `TestTaskFiresOnce`.
-- **A3.** Times are stored in UTC with the zone they were given in. A task whose time passed while no alarm ran
-  (sleep, reboot, no session) fires once when the alarm next runs, and its message says how late it is. Test:
-  `TestLateTaskFiresOnceSayingHowLate`.
-- **A4.** The message is an order, not a time. It names the task's id, its time and the words that asked for it,
-  and tells the agent: if it is in the middle of something, finish it, then end the reply by telling the user;
-  then run `trace task told <id>`; close the task only after asking the user. Test: `TestAlarmMessageIsAnOrder`.
-- **A5.** It wakes one session: the live session where the asking message was written; if that one is gone, the
-  live session used last whose folder is inside the folder tree this TRACE serves. Never a session outside that
-  tree, even if it is the only one open; never more than one. Tests: `TestAlarmWakesAskingSessionElseLastInTree`,
+- **A1.** One alarm per store. `trace alarm` holds an OS file lock kept in the store's folder; a second one exits
+  at once and fires nothing. It wakes at least every 30 seconds, compares the wall clock with the due times and
+  rereads the store each time, so laptop sleep, clock changes and tasks added by other processes are seen within 30
+  seconds; it holds no read transaction while it waits. With no open task left that has a time it releases the
+  lock, reads the store again, and takes the lock back if a task appeared meanwhile. The start hook and `trace task
+  add -at` start it when it is not running, only where it can detach for real (outside the caller's job, process
+  tree and sandbox); where it cannot, it is not started and the start hook is the backstop. It exits when its
+  executable file has been replaced, and install stops a running alarm before replacing the binary. Tests:
+  `TestAlarmRunsOnce`, `TestAlarmSeesWallClockJump`, `TestAlarmTakesLockBackForLateTask`,
+  `TestTaskAddStartsAlarm`, `TestAlarmExitsWhenReplaced`.
+- **A2.** A task fires once. The claim is `announced_at`, the column T4 already sets, so an older binary sees a
+  fired task as announced; one store transaction claims the task with its target session and state `delivering`,
+  and the result (delivered, or failed with its reason) is recorded after. A claim left `delivering` by a crash is
+  recorded as failed (crashed) by the next alarm. Delivery is never retried. T4's line is a fire into the session
+  that prompted. Tasks announced before the alarm existed count as told. Tests: `TestTaskFiresOnce`,
+  `TestCrashedClaimIsRecordedFailed`.
+- **A3.** Times are stored in UTC with the offset they were given in. A local time that does not exist (the hour
+  skipped by a daylight-saving change) is refused; an ambiguous one (the repeated hour) is echoed with its UTC
+  offset. The zone is the user's current zone (A10), not the computer's. A task whose time passed while no alarm ran
+  (sleep, reboot, no session) fires once when the alarm next runs, and its message says how late it is. Tests:
+  `TestLateTaskFiresOnceSayingHowLate`, `TestNonexistentLocalTimeRefused`.
+- **A4.** The message is an order, not a time, and only its fixed wrapper is the order: if you are in the middle of
+  something, finish it, then end the reply by telling the user; then run `trace task told <id>`; close the task
+  only after asking the user. The task's text and the words that asked for it are quoted as what to report to the
+  user, never as instructions to carry out (any agent in the tree can write a task's text). Every message carries
+  the marker `trace-alarm:<id>:<nonce>`. Test: `TestAlarmMessageIsAnOrderQuotingTheTask`.
+- **A5.** It wakes one session. `task add` records the session that ran it (the session id the program gives the
+  command when it gives one, otherwise the S1 rule); `asked_event` stays only the words. A session qualifies only
+  if it is a main, user-facing session: live, inside the folder tree this TRACE serves, not started by a program
+  (I9, I11), not in an excluded folder (I4), with a role this memory speaks to, and for Codex a thread a client is
+  attached to. Live means: Claude Code, its registry entry's process is alive; Codex, the daemon lists the thread
+  as loaded. The alarm wakes the recorded session if it qualifies, otherwise the qualifying session used last;
+  never one outside the tree, even if it is the only one open; never more than one. Tests:
+  `TestAlarmWakesSessionThatAddedTask`, `TestAlarmSkipsProgramAndExcludedSessions`,
   `TestAlarmNeverWakesOutsideTree`.
 - **A6.** Deliverers. Claude Code: the session's native inbox (live-session registry, its peer key, the
   cross-session message envelope). Codex: the `codex app-server` daemon through that daemon's own executable
-  (`app-server proxy`), `turn/start` on an idle thread, `turn/steer` on a running turn. Code that knows a program
-  lives only in its deliverer. Tests (fake inbox, fake daemon): `TestClaudeDelivererWritesPeerMessage`,
-  `TestCodexDelivererStartsIdleSteersBusy`.
-- **A7.** When no live session qualifies, or delivery fails, the task stays fired and not told: the start block
-  lists it as late and the prompt hook names it on the next prompt. A failed delivery is recorded with its reason,
+  (`app-server proxy`), `turn/start` on an idle thread, `turn/steer` on a running turn; it never starts the
+  daemon (not running is a failed delivery, A7), and it considers only threads whose folder is in scope, compared
+  the way the import compares folders. Code that knows a program lives only in its deliverer. Tests (fake inbox,
+  fake daemon): `TestClaudeDelivererWritesPeerMessage`, `TestCodexDelivererStartsIdleSteersBusy`,
+  `TestCodexDelivererNeverStartsDaemon`.
+- **A7.** A task fired and not told, for any reason (no qualifying session, a failed delivery, a crash, or the
+  target session closed before telling), is listed as late in every start block until told or closed, and the
+  prompt hook names it once per session; naming it is not a fire. A failed delivery is recorded with its reason,
   and `trace stats` shows each deliverer's last failure, so an update that breaks a deliverer shows up. Test:
-  `TestFailedDeliveryFallsBackAndIsReported`.
-- **A8.** Told. `trace task told <id>` records that the user was told (when, which session). While a task fired into
-  a session is not told, that session's stop hook keeps the turn going and names the task (Claude Code: exit 2 with
-  the reason on stderr; Codex: `decision: "block"` with a `reason`). When the hook already kept the turn going once
-  (`stop_hook_active`), it lets the turn end, so it cannot loop. Tests: `TestStopHookHoldsUntilTold`,
-  `TestStopHookDoesNotLoop`.
-- **A9.** What a deliverer sends is not the user's words. Each sent message is recorded (session, time, hash of
-  the text); the import stores the matching user message as speaker `program`, kind `alarm`, on both programs
-  (Codex records it as a plain user message, with no mark of its own). Test: `TestAlarmMessageStoredAsProgram`.
+  `TestUntoldTaskShowsLateAndFailureIsReported`.
+- **A8.** Told. `trace task told <id>` records that the user was told and when; the session is the one the claim
+  targeted. `task done` and `task drop` also count as told. While a task delivered into a session is not told,
+  that session's stop hook keeps the turn going and names the task (Claude Code: exit 2 with the reason on stderr;
+  Codex: `decision: "block"` with a `reason`). Only the main session's stop event holds: never a subagent's stop
+  or a payload carrying an `agent_id`. When the hook already held the turn (`stop_hook_active`) it lets the turn
+  end, and after two holds for one task it stops holding and leaves the task to A7. The hook waits for the store at
+  most one second; on any store error it lets the turn end. Tests: `TestStopHookHoldsUntilTold`,
+  `TestStopHookDoesNotLoop`, `TestStopHookIgnoresSubagents`, `TestStopHookGivesUpAfterTwoHolds`.
+- **A9.** What the alarm or its stop hook writes is not the user's words. The deliverer records each message
+  (task, session, marker) before sending it, and every import stores any row carrying an alarm marker, in whatever
+  shape the program stored it (a user message, a meta or queued message, a Codex user message), as speaker
+  `program`, kind `alarm`. Stop-hook reasons carry the marker too and are stored the same way. Tests:
+  `TestAlarmMessageStoredAsProgramInEveryShape`, `TestStopHookReasonIsNotTheUsers`.
 
-Not decided yet: a notification to the user's desktop or phone when no session is open; starting an agent
+- **A10.** Where the user is. A task stores its instant in UTC and the zone it was said in, by name (IANA, such
+  as `America/Argentina/Buenos_Aires`, never a fixed offset, which breaks across daylight saving). A one-time task is
+  a fixed instant: "tomorrow at 9" means 9 in the zone the user is in when it is said, and in another country it
+  fires at that same instant. (A time that follows the user, 9 wherever they are, matters only for repeating
+  tasks, which do not exist yet; it comes with them.) TRACE keeps two zones: the home zone (config `home_zone`;
+  if unset, the first one learned) and the current zone, where the user is. The current zone comes from the
+  internet, not from the computer's zone setting, which does not change when the user travels: TRACE asks a
+  geolocation-by-IP service (config `zone_service`, a URL that answers JSON with a `timezone` field; default
+  `https://ipinfo.io/json`; `""` turns it off) at most once an hour and keeps the last answer when the service
+  does not answer; an answer older than 72 hours, or none, falls back to home. The location source is one
+  interface, so another (a phone) can replace IP later. When no zone is known, `task add -at` refuses and tells
+  the agent to ask the user for their zone; nothing assumes UTC. All offset arithmetic is TRACE's; the agent passes
+  the words' time, TRACE echoes the instant. Every time shown to the agent or the user (the echo, `task list`, the
+  start block, the alarm's message) is in the current zone, and also in the home zone when the user is away
+  ("06:00 Los Angeles (11:00 Buenos Aires)"). Behind a VPN the service answers the VPN's location. Diego,
+  2026-11-16: "si yo te digo que me avises el martes a las 11 y estoy en argentina, pero me salio un viaje a Los
+  angeles, we are in deep shit... vamos a tener que consultar la hora desde mi localización", then "de internet".
+  Prior art: `system/research/2026-11-16_trace-tasks/travel-zones-prior-art.md`. Tests:
+  `TestOneTimeTaskKeepsItsInstantAcrossZones`, `TestZoneComesFromServiceNotComputer`,
+  `TestZoneServiceDownKeepsLastAnswer`, `TestStaleZoneFallsBackHome`, `TestNoZoneKnownRefusesAndAsks`,
+  `TestTimesShownInCurrentAndHomeZones`.
+
+Not decided yet: repeating tasks, and with them times that follow the user (A10); a notification to the user's desktop or phone when no session is open; starting an agent
 (`claude -p`, `codex exec`) for tasks the agent should do alone; an MCP entry point for adding tasks.
 
 ## C. Checks
@@ -188,4 +236,14 @@ Not decided yet: a notification to the user's desktop or phone when no session i
   running check is stopped with every process it started, and the hook returns within a few seconds of the limit.
   Checks still waiting are reported as not run. Tests: `TestChecksShareOneLimit`, and on Unix
   `TestCheckKillsWhatItStarted`, which checks that a child the check started is gone.
+
+## K. Does the rule card help
+
+- **K1.** With `"alternate": true` under `reinject` in config.json (off by default, so no user is in a trial
+  without asking), the card is shown only on even days and withheld on odd ones, a day being the number of whole
+  UTC days since 1970-01-01, so any record's day and arm follow from its UTC timestamp alone. On a withheld day the
+  decision is still made and recorded, with the reason prefixed `withheld-` and nothing shown, so the count of new
+  context moves the same way in both arms; the card after a compaction is not printed either. Claude Code's own
+  reload of its instruction files after a compaction happens in both arms. Diego, 2026-11-17: "dale, va así" (queue
+  Q50). Tests: `TestAlternateDaysWithholdCard`, `TestAlternateDaysWithholdCompactCard`.
 

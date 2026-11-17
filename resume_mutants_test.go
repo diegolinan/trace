@@ -461,3 +461,32 @@ func TestSubagentRoleFromCwd(t *testing.T) {
 		t.Errorf("SubagentStart output %q", out.String())
 	}
 }
+
+// SPEC K1: on a withheld (odd UTC) day the card after a compaction is not printed; on an even day it is.
+func TestAlternateDaysWithholdCompactCard(t *testing.T) {
+	rzStubImport(t)
+	oldRe, oldClock := cfg.Reinject, clockNow
+	t.Cleanup(func() { cfg.Reinject, clockNow = oldRe, oldClock })
+	cfg.Reinject = &reinjectCfg{Alternate: true}
+	dir := t.TempDir()
+	record, _ := json.Marshal(map[string]any{"type": "attachment", "attachment": map[string]any{"type": "instructions",
+		"files": []map[string]string{{"path": filepath.Join(dir, "gone", "CLAUDE.md"), "type": "Project", "content": "NONCE_CARD_RULE"}}}})
+	p := filepath.Join(dir, "projects", proj, "s1.jsonl")
+	os.MkdirAll(filepath.Dir(p), 0o755)
+	os.WriteFile(p, append(record, '\n'), 0o644)
+	even := time.Date(2026, 11, 17, 12, 0, 0, 0, time.UTC)
+	for _, c := range []struct {
+		day  time.Time
+		card bool
+	}{{even, true}, {even.Add(24 * time.Hour), false}} {
+		clockNow = func() time.Time { return c.day }
+		var out strings.Builder
+		in := hookInput{Event: "SessionStart", Source: "compact", SessionID: "s1", Cwd: dir, Transcript: p}
+		if err := hook(in, nil, filepath.Join(dir, "none.db"), "claude-code", filepath.Join(dir, "projects"), nil, &out); err != nil {
+			t.Fatal(err)
+		}
+		if got := strings.Contains(out.String(), "NONCE_CARD_RULE"); got != c.card {
+			t.Errorf("%s: card printed %v, want %v", c.day.Format("2006-01-02"), got, c.card)
+		}
+	}
+}

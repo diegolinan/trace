@@ -122,3 +122,53 @@ func TestReinjectionParallel(t *testing.T) {
 		t.Fatalf("%d of 8 parallel hooks injected, want 1", injected)
 	}
 }
+
+// SPEC K1: with alternate days on, an odd UTC day records the decision as withheld and shows nothing, and the count
+// restarts there as it would have; an even day shows the card. Off, every day shows it.
+func TestAlternateDaysWithholdCard(t *testing.T) {
+	old := cfg.Reinject
+	t.Cleanup(func() { cfg.Reinject = old })
+	even := time.Date(2026, 11, 17, 12, 0, 0, 0, time.UTC) // day 20774
+	odd := even.Add(24 * time.Hour)
+	if d := even.Unix() / 86400; d%2 != 0 {
+		t.Fatalf("fixture: day %d is not even", d)
+	}
+	cardText := strings.Repeat("r", 400) // threshold every 700 tokens
+	for _, c := range []struct {
+		name      string
+		alternate bool
+		day       time.Time
+		show      bool
+	}{
+		{"alternate, even day", true, even, true},
+		{"alternate, odd day", true, odd, false},
+		{"not alternating, odd day", false, odd, true},
+	} {
+		cfg.Reinject = &reinjectCfg{Alternate: c.alternate}
+		db, err := openDB(filepath.Join(t.TempDir(), "r.db"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		reinjection(db, "s", 10000, cardText, 7, c.day)
+		out, reason, err := reinjection(db, "s", 10700, cardText, 7, c.day)
+		if err != nil {
+			t.Fatal(err)
+		}
+		wantReason := "threshold"
+		if !c.show {
+			wantReason = "withheld-threshold"
+		}
+		if (out == cardText) != c.show || reason != wantReason {
+			t.Errorf("%s: shown %v, reason %q; want shown %v, reason %q", c.name, out == cardText, reason, c.show, wantReason)
+		}
+		var chars int
+		db.QueryRow("select chars from injection order by id desc limit 1").Scan(&chars)
+		if c.show != (chars > 0) {
+			t.Errorf("%s: recorded %d characters", c.name, chars)
+		}
+		if out, _, _ := reinjection(db, "s", 11000, cardText, 7, c.day); out != "" {
+			t.Errorf("%s: the count did not restart at the decision", c.name)
+		}
+		db.Close()
+	}
+}

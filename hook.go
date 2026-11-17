@@ -124,7 +124,7 @@ func detachedHook(in hookInput, flags []string, dbPath, role, host string, mine 
 	switch {
 	case in.Event == "PreCompact" && host != "codex": // Codex drops PreCompact stdout, and its hooks.json gets no PreCompact
 		fmt.Fprintf(w, compactSteer, userName())
-	case in.Event == "SessionStart" && cfg.Reinject != nil:
+	case in.Event == "SessionStart" && cfg.Reinject != nil && !withheld(clockNow()):
 		return errors.Join(err, compactCard(in, dbPath, role, host, w))
 	}
 	return err

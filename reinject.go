@@ -26,6 +26,8 @@ import (
 type reinjectCfg struct {
 	Factor float64 `json:"factor"` // new context, in card sizes, before the card comes again; 0: 7
 	Budget int     `json:"budget"` // most characters of the card; 0: 8000, so it fits one hook output with room for checks
+	// Alternate withholds the card on odd UTC days, a trial of whether it helps (SPEC K1).
+	Alternate bool `json:"alternate"`
 }
 
 // limits are the card's factor and budget, with their defaults (7, 8000) for an absent, zero or negative setting.
@@ -360,7 +362,16 @@ func reinjection(db *sql.DB, sid string, ctx int, text string, factor float64, n
 	if out, reason, err = injectionDue(db, sid, ctx, text, factor); err != nil || reason == "" {
 		return "", "", err
 	}
+	if withheld(now) {
+		out, reason = "", "withheld-"+reason
+	}
 	return out, reason, recordInjection(db, sid, ctx, text, out, reason, now)
+}
+
+// withheld says whether the card is held back on this day of an alternate-days trial (SPEC K1): odd days since
+// 1970-01-01 in UTC.
+func withheld(now time.Time) bool {
+	return cfg.Reinject != nil && cfg.Reinject.Alternate && now.Unix()/86400%2 == 1
 }
 
 // injectionDue decides against the session's last record: "start" (none yet: the host loaded the files itself, this
