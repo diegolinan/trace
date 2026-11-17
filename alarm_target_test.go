@@ -38,7 +38,7 @@ func atLive(sessions ...liveTarget) func() ([]liveTarget, error) {
 }
 
 // SPEC A5: task add records the session that ran it: the id its program gives the command, otherwise the S1 rule; the
-// words that asked stay apart. The alarm wakes that session when it qualifies, not the one used last, and only it.
+// words that asked come from that session (T1). The alarm wakes that session when it qualifies, not the one used last, and only it.
 // When it is gone, the alarm wakes the qualifying session used last. The message is A4's, with the marker the claim
 // recorded.
 func TestAlarmWakesSessionThatAddedTask(t *testing.T) {
@@ -48,8 +48,8 @@ func TestAlarmWakesSessionThatAddedTask(t *testing.T) {
 		deliverer{name: "fa", sessionVar: "TRACE_TEST_FA_SESSION", live: atLive(atSession("fa", "s-last", acme, false, 300, got, nil))},
 		deliverer{name: "fb", sessionVar: "TRACE_TEST_FB_SESSION", live: atLive(atSession("fb", "s-asker", acme, false, 100, got, nil))})
 	db, _ := alarmStore(t)
-	rzExec(t, db, `insert into session(id, host, role) values ('s-typed', 'claude-code', 'main')`)
-	rzExec(t, db, `insert into event(session_id, seq, ts, speaker, kind, text) values ('s-typed', 1, '2026-11-11T09:00:00Z', 'user', 'prompt', 'remind me to call Bob')`)
+	rzExec(t, db, `insert into session(id, host, role) values ('s-asker', 'claude-code', 'main')`)
+	rzExec(t, db, `insert into event(session_id, seq, ts, speaker, kind, text) values ('s-asker', 1, '2026-11-11T09:00:00Z', 'user', 'prompt', 'remind me to call Bob')`)
 	var out strings.Builder
 	t.Setenv("TRACE_TEST_FB_SESSION", "s-asker")
 	if err := taskAdd(db, newTask{text: "call Bob", due: time.Date(2026, 11, 12, 9, 0, 0, 0, time.UTC)}, &out); err != nil {
@@ -58,7 +58,7 @@ func TestAlarmWakesSessionThatAddedTask(t *testing.T) {
 	t.Setenv("TRACE_TEST_FB_SESSION", "")
 	t.Setenv("TRACE_TEST_FA_SESSION", "s-closed")
 	taskAdd(db, newTask{text: "renew the domain", due: time.Date(2026, 11, 12, 9, 0, 0, 0, time.UTC)}, &out)
-	if got := mutStr(t, db, "select group_concat(id || ':' || coalesce(added_session, '-') || ':' || asked_event, ' ') from task"); got != "1:s-asker:1 2:s-closed:1" {
+	if got := mutStr(t, db, "select group_concat(id || ':' || coalesce(added_session, '-') || ':' || coalesce(asked_event, '-'), ' ') from task"); got != "1:s-asker:1 2:s-closed:-" {
 		t.Fatalf("recorded sessions: %s", got)
 	}
 	alarmAt(t, "2026-11-12T09:00:00Z")

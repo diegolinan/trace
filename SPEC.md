@@ -117,17 +117,21 @@ home, shared by every agent that writes to it. The agent records and closes task
 sees a board, only an agent that remembers and asks.
 
 - **T1.** `trace task add -text "<what>" [-at "<when>"]` reads what is new first (as search does), then records an
-  open task tied to the newest message the user typed (speaker `user`, kind `prompt` or `steering`) in the store:
-  the message that asked. It prints the task's id and, with `-at`, the time as understood, with its weekday, so
+  open task tied to a pair: the session that ran the command (A5) and the message that asked, the newest message
+  the user typed (speaker `user`, kind `prompt` or `steering`) in that session. A message typed in any other
+  session is never the ask, even a newer one. A subagent's command names its main session (Claude Code gives a
+  subagent the main session's id, checked live 2026-11-17), where the user types; no agent id reaches a command,
+  so none is stored. Codex gives its thread id, the id the import gives the thread (checked live 2026-11-17). A
+  call whose session is not known, or whose session has no typed message, is tied to no message. It prints the task's id and, with `-at`, the time as understood, with its weekday, so
   the agent can confirm it to the user. `-at` takes `YYYY-MM-DD HH:MM` in local time or RFC 3339; anything else
   is refused and nothing is stored. With `-self` the agent says it adds the task on its own: no message of the
   user asked for it, so the task is tied to none, and wherever its asking words would show (task list, start
   block, prompt hook, alarm) it says that an agent added it on its own. Only stored typed messages are ever quoted
   as the user's words: there is no flag that takes them as text, so no agent can write a quote for the user.
-  Tests: `TestTaskAddTiesToAskingMessage`, `TestTaskAddSelfTiesToNoMessage`, `TestTaskAddEchoesTheTime`,
-  `TestTaskAddRefusesABadTime`.
+  Tests: `TestTaskAddTiesToAskingMessage`, `TestTaskAddAskedInItsOwnSession`, `TestTaskAddSelfTiesToNoMessage`,
+  `TestTaskAddEchoesTheTime`, `TestTaskAddRefusesABadTime`.
 - **T2.** `trace task done <id>` and `trace task drop <id>` close an open task, recording when and the newest
-  message the user typed (the words that closed it). Closing a closed or unknown task fails and changes nothing.
+  message the user typed in the session that ran the command, by T1's rule (the words that closed it). Closing a closed or unknown task fails and changes nothing.
   `trace task list` prints the open tasks, oldest first, each with its id, age, time if any, and the words that
   asked for it. Test: `TestTaskCloseAndList`.
 - **T3.** The start block lists the open tasks (at most 5, oldest first; with how many more there are) with the
@@ -183,7 +187,7 @@ reason (A9 matches the marker in every shape listed there).
   message carries the marker `trace-alarm:<id>:<nonce>`. Tests: `TestAlarmMessageIsAnOrderQuotingTheTask`,
   `TestAlarmMessageForSelfAddedTask`.
 - **A5.** It wakes one session. `task add` records the session that ran it (the session id the program gives the
-  command when it gives one, otherwise the S1 rule); `asked_event` stays only the words. A session qualifies only
+  command when it gives one, otherwise the S1 rule); the words that asked come from that session (T1). A session qualifies only
   if it is a main, user-facing session: live, inside the folder tree this TRACE serves, not started by a program
   (I9, I11), not in an excluded folder (I4), with a role this memory speaks to, and for Codex a thread a client is
   attached to. Live means: Claude Code, its registry entry's process is alive; Codex, the daemon lists the thread

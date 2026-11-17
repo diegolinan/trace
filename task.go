@@ -13,9 +13,11 @@ import (
 	"time"
 )
 
-// newestTyped is the newest message the user typed, in any session of the store: the words that asked for a task or
-// closed it (SPEC T1, T2).
-const newestTyped = `(select id from event where speaker = 'user' and kind in ('prompt', 'steering') order by ts desc, id desc limit 1)`
+// newestTyped is the newest message the user typed in the session the parameter param names: the words that asked for
+// a task or closed it (SPEC T1, T2). Never one from another session; a session not known gives none.
+func newestTyped(param string) string {
+	return `(select id from event where session_id = ` + param + ` and speaker = 'user' and kind in ('prompt', 'steering') order by ts desc, id desc limit 1)`
+}
 
 // cmdTask records, closes and lists the user's tasks (SPEC T1, T2). It reads what is new first, as search does, so the
 // message that asked or closed is in the store.
@@ -92,7 +94,7 @@ func taskAdd(db *sql.DB, t newTask, w io.Writer) error {
 		at = t.due.UTC().Format(time.RFC3339) // UTC, so times compare as text
 	}
 	res, err := db.Exec(`insert into task(text, due, asked_event, created_at, added_session)
-		values (?, nullif(?, ''), case when ? then null else `+newestTyped+` end, ?, nullif(?, ''))`,
+		values (?1, nullif(?2, ''), case when ?3 then null else `+newestTyped("?5")+` end, ?4, nullif(?5, ''))`,
 		redacted(t.text), at, t.self, clockNow().UTC().Format(time.RFC3339), callerSession(db))
 	if err != nil {
 		return err
@@ -119,8 +121,8 @@ func taskClose(db *sql.DB, args []string, w io.Writer) error {
 	if len(args) < 2 {
 		return usageError{fmt.Errorf("task %s needs a task id", args[0])}
 	}
-	res, err := db.Exec(`update task set closed_at = ?1, told_at = coalesce(told_at, ?1), closed_how = ?2, closed_event = `+newestTyped+` where id = ?3 and closed_at is null`,
-		clockNow().UTC().Format(time.RFC3339), args[0], args[1])
+	res, err := db.Exec(`update task set closed_at = ?1, told_at = coalesce(told_at, ?1), closed_how = ?2, closed_event = `+newestTyped("?4")+` where id = ?3 and closed_at is null`,
+		clockNow().UTC().Format(time.RFC3339), args[0], args[1], callerSession(db))
 	if err != nil {
 		return err
 	}

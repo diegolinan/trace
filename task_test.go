@@ -40,10 +40,11 @@ func tkStore(t *testing.T, root string) *sql.DB {
 	return db
 }
 
-// tkTrace runs trace in the profile and fails the test on a non-zero exit.
+// tkTrace runs trace in the profile as session s1 (the transcript tkRoot writes) runs a command, and fails the test on
+// a non-zero exit.
 func tkTrace(t *testing.T, root string, args ...string) string {
 	t.Helper()
-	out, errOut, code := runTrace(t, root, "", nil, args...)
+	out, errOut, code := runTrace(t, root, "", map[string]string{"CLAUDE_CODE_SESSION_ID": "s1"}, args...)
 	if code != 0 || strings.Contains(errOut, "import before task failed") {
 		t.Fatalf("trace %s: exit %d\n%s\n%s", strings.Join(args, " "), code, out, errOut)
 	}
@@ -65,6 +66,28 @@ func TestTaskAddTiesToAskingMessage(t *testing.T) {
 	got := mutStr(t, db, "select t.text || ' | ' || coalesce(e.text, '<none>') || ' | ' || coalesce(t.closed_at, 'open') from task t left join event e on e.id = t.asked_event")
 	if got != "call the bank | acordate de llamar al banco | open" {
 		t.Errorf("task, asking words, state = %q", got)
+	}
+}
+
+// SPEC T1, T2: the ask and the close are the newest typed message of the session that ran the command, never a newer
+// one typed in another session; a session not known gives no message.
+func TestTaskAddAskedInItsOwnSession(t *testing.T) {
+	root := tkRoot(t, mutLines(mutUser("u1", 0, "acordate de llamar al banco")))
+	tkWrite(t, root, "s2.jsonl", mutLine(mutUser("u2", 5, "dale")))
+	run := func(session string, args ...string) {
+		t.Helper()
+		if out, errOut, code := runTrace(t, root, "", map[string]string{"CLAUDE_CODE_SESSION_ID": session}, args...); code != 0 {
+			t.Fatalf("trace %v in %s: exit %d\n%s\n%s", args, session, code, out, errOut)
+		}
+	}
+	run("s1", "task", "add", "-text", "call the bank")
+	run("s2", "task", "add", "-text", "renew the domain")
+	run("no-such-session", "task", "add", "-text", "pay the rent")
+	run("s2", "task", "done", "2")
+	got := mutStr(t, tkStore(t, root), `select group_concat(t.text || ' | ' || coalesce(a.text, '<none>') || ' | ' || coalesce(c.text, '<open>'), '; ')
+		from task t left join event a on a.id = t.asked_event left join event c on c.id = t.closed_event`)
+	if want := "call the bank | acordate de llamar al banco | <open>; renew the domain | dale | dale; pay the rent | <none> | <open>"; got != want {
+		t.Errorf("task, ask, close:\n got %s\nwant %s", got, want)
 	}
 }
 

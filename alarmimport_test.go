@@ -108,7 +108,7 @@ func TestStopHookReasonIsNotTheUsers(t *testing.T) {
 	if got := aiStored(t, f, "c2") + " | " + aiStored(t, f, "t2"); got != "user/prompt program/alarm program/alarm | program/alarm program/alarm" {
 		t.Errorf("stored as %s", got)
 	}
-	if got := mutStr(t, f.db, "select text from event where id = "+newestTyped); got != "remind me to call Bob at 9" {
+	if got := mutStr(t, f.db, "select text from event where id = "+newestTyped("'c2'")); got != "remind me to call Bob at 9" {
 		t.Errorf("the newest typed message is %q, not the user's", got)
 	}
 }
