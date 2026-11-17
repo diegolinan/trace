@@ -123,7 +123,7 @@ sees a board, only an agent that remembers and asks.
   subagent the main session's id, checked live 2026-11-17), where the user types; no agent id reaches a command,
   so none is stored. Codex gives its thread id, the id the import gives the thread (checked live 2026-11-17). A
   call whose session is not known, or whose session has no typed message, is tied to no message. It prints the task's id and, with `-at`, the time as understood, with its weekday, so
-  the agent can confirm it to the user. `-at` takes `YYYY-MM-DD HH:MM` in local time or RFC 3339; anything else
+  the agent can confirm it to the user. `-at` takes `YYYY-MM-DD HH:MM` in the task's zone (A10) or RFC 3339; anything else
   is refused and nothing is stored. With `-self` the agent says it adds the task on its own: no message of the
   user asked for it, so the task is tied to none, and wherever its asking words would show (task list, start
   block, prompt hook, alarm) it says that an agent added it on its own. Only stored typed messages are ever quoted
@@ -148,8 +148,8 @@ sees a board, only an agent that remembers and asks.
 The alarm brings a task back at its time even when nobody is typing: at the time, it writes a message into a live
 agent session, and that message opens a turn and carries the order. One core serves every program; only the
 deliverer, which writes into one program's live session, is per program. Agreed with Diego on 2026-11-16 after two
-live tests per program (`system/research/2026-11-16_trace-tasks/clock-prior-art.md`). Built: A1, A2, A4 to A9.
-Not yet: A3 and A10. Of A5, a Codex thread counts as attached to a client when the daemon holds it loaded (idle or
+live tests per program (`system/research/2026-11-16_trace-tasks/clock-prior-art.md`). Built: A1, A2, A4 to A10, and A3 but its message saying how late a task fires.
+Not yet: that part of A3 (`TestLateTaskFiresOnceSayingHowLate`). Of A5, a Codex thread counts as attached to a client when the daemon holds it loaded (idle or
 running); nothing seen yet tells an attached client apart. Not checked live: how each program stores a stop hook's
 reason (A9 matches the marker in every shape listed there).
 
@@ -174,11 +174,12 @@ reason (A9 matches the marker in every shape listed there).
   that prompted. Tasks announced before the alarm existed count as told. A fire with no qualifying session (A5) is
   recorded failed with why; a failure a deliverer gave starts with its name (`codex: ...`). Tests:
   `TestTaskFiresOnce`, `TestCrashedClaimIsRecordedFailed`, `TestOldAnnouncedTasksCountAsTold`, `TestAlarmStoreErrorsAreReturned`.
-- **A3.** Times are stored in UTC with the offset they were given in. A local time that does not exist (the hour
-  skipped by a daylight-saving change) is refused; an ambiguous one (the repeated hour) is echoed with its UTC
-  offset. The zone is the user's current zone (A10), not the computer's. A task whose time passed while no alarm ran
+- **A3.** Times are stored as a UTC instant with the UTC offset they were said in (A10). A local time that does not
+  exist in the zone it is read in (the hour a daylight-saving change skips) is refused and nothing is stored. A
+  local time that happens twice (the hour a change repeats) is the earlier instant, and the echo says the hour
+  repeats and that the later one is given in RFC 3339 with its offset. A task whose time passed while no alarm ran
   (sleep, reboot, no session) fires once when the alarm next runs, and its message says how late it is. Tests:
-  `TestLateTaskFiresOnceSayingHowLate`, `TestNonexistentLocalTimeRefused`.
+  `TestLateTaskFiresOnceSayingHowLate`, `TestNonexistentLocalTimeRefused`, `TestRepeatedLocalTimeTakesEarlier`.
 - **A4.** The message is an order, not a time, and only its fixed wrapper is the order: if you are in the middle of
   something, finish it, then end the reply by telling the user; then run `trace task told <id>`; close the task
   only after asking the user. The task's text and the words that asked for it are quoted as what to report to the
@@ -222,27 +223,36 @@ reason (A9 matches the marker in every shape listed there).
   `program`, kind `alarm`. Stop-hook reasons carry the marker too and are stored the same way. Tests:
   `TestAlarmMessageStoredAsProgramInEveryShape`, `TestStopHookReasonIsNotTheUsers`.
 
-- **A10.** Where the user is. A task stores its instant in UTC and the zone it was said in, by name (IANA, such
-  as `America/Argentina/Buenos_Aires`, never a fixed offset, which breaks across daylight saving). A one-time task is
-  a fixed instant: "tomorrow at 9" means 9 in the zone the user is in when it is said, and in another country it
-  fires at that same instant. (A time that follows the user, 9 wherever they are, matters only for repeating
-  tasks, which do not exist yet; it comes with them.) TRACE keeps two zones: the home zone (config `home_zone`;
-  if unset, the first one learned) and the current zone, where the user is. The current zone comes from the
-  internet, not from the computer's zone setting, which does not change when the user travels: TRACE asks a
-  geolocation-by-IP service (config `zone_service`, a URL that answers JSON with a `timezone` field; default
-  `https://ipinfo.io/json`; `""` turns it off) at most once an hour and keeps the last answer when the service
-  does not answer; an answer older than 72 hours, or none, falls back to home. The location source is one
-  interface, so another (a phone) can replace IP later. When no zone is known, `task add -at` refuses and tells
-  the agent to ask the user for their zone; nothing assumes UTC. All offset arithmetic is TRACE's; the agent passes
-  the words' time, TRACE echoes the instant. Every time shown to the agent or the user (the echo, `task list`, the
-  start block, the alarm's message) is in the current zone, and also in the home zone when the user is away
-  ("06:00 Los Angeles (11:00 Buenos Aires)"). Behind a VPN the service answers the VPN's location. Diego,
-  2026-11-16: "si yo te digo que me avises el martes a las 11 y estoy en argentina, pero me salio un viaje a Los
-  angeles, we are in deep shit... vamos a tener que consultar la hora desde mi localización", then "de internet".
-  Prior art: `system/research/2026-11-16_trace-tasks/travel-zones-prior-art.md`. Tests:
-  `TestOneTimeTaskKeepsItsInstantAcrossZones`, `TestZoneComesFromServiceNotComputer`,
-  `TestZoneServiceDownKeepsLastAnswer`, `TestStaleZoneFallsBackHome`, `TestNoZoneKnownRefusesAndAsks`,
-  `TestTimesShownInCurrentAndHomeZones`.
+- **A10.** Zones. Only the UTC offset matters, never a place: a task stores its UTC instant and the offset it was
+  said in (`UTC-03:00`), and every time shown carries its offset. The time is read in, in order: `task add -zone`,
+  which the agent passes when the user has said their zone; otherwise the computer's clock, with its daylight-saving
+  rules. `-zone` takes an offset (`UTC`, `UTC-3`, `UTC+5:30`) or a zone name (`America/Los_Angeles`), from which
+  TRACE takes the offset at that date, daylight saving included; the zone database is built into trace. Refused,
+  with nothing stored: an empty zone, `Local`, any `Etc/` name (`Etc/GMT-3` means UTC+3), a name or offset TRACE
+  cannot read, and `-zone` without `-at`. With `-at` in RFC 3339 the offset fixes the instant; with `-zone` too, an
+  offset that differs from the zone's at that instant is refused. TRACE never looks the zone up on the internet. A
+  user who travels does one of two things, and going and coming back are the same case: turns on the system's
+  automatic time zone (Windows: Settings > Time & language > Date & time > Set time zone automatically; macOS:
+  System Settings > General > Date & Time > Set time zone automatically using your current location; GNOME:
+  Settings > Date & Time > Automatic Time Zone), or tells the agent their zone. The README states this as a
+  requirement, and says that a server or container's clock is not the user's zone. A one-time task is a fixed
+  instant: 11:00 said at UTC-3 fires at 14:00 UTC wherever the user is then. (A time that follows the user matters
+  only for repeating tasks, which do not exist yet; it comes with them.) The echo of `task add` shows the time in
+  its offset, the time it is now in that offset, and how far away it is: "Tuesday 2026-11-18 11:00 (UTC-03:00);
+  now Monday 23:00, in 12h", so a wrong day or zone is seen when the task is added; when the computer's offset at
+  that instant differs, it adds the computer's time too: "here 06:00 (UTC-08:00)". `task list`, the start block,
+  the prompt hook and the alarm's message show a task's time in its stored offset; a task stored before offsets
+  were kept is shown in the computer's offset. The start block tells the agent that `-at` is read in the computer's
+  zone, names its offset, says to pass `-zone` when the user gives another zone, and to tell the user the echoed
+  time. Diego, 2026-11-17, replacing the lookup by IP he had suggested: "tampoco podemos resolver cada fucking
+  problema autoMAGICAmente para todo el mundo y correr el riesgo de buscar la hora en internet si no es seguro...
+  Activa tu mierda para que chequee la hora si sos de esos que viajan siempre", "podemos dar las dos opciones 1)
+  cambiar la config del reloj 2) avisarle al agente", "ir y volver son lo mismo", and on names: "prefiero UTC-3...
+  en DONDE estas fisicamente importa poco, lo que importa es la zona". Prior art:
+  `system/research/2026-11-16_trace-tasks/travel-zones-prior-art.md`. Tests:
+  `TestOneTimeTaskKeepsItsInstantAcrossZones`, `TestTaskAddZone`, `TestTaskAddRefusesBadZone`,
+  `TestRFC3339OffsetMustMatchZone`, `TestTaskAddEchoesNowAndDistance`, `TestTimesShownWithOffset`,
+  `TestStartBlockNamesTheZone`, `TestNoZoneLookupOnline`.
 
 Not decided yet: repeating tasks, and with them times that follow the user (A10); a notification to the user's desktop or phone when no session is open; starting an agent
 (`claude -p`, `codex exec`) for tasks the agent should do alone; an MCP entry point for adding tasks.

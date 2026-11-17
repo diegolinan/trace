@@ -155,7 +155,8 @@ trace rules                       the rule card a session in this folder would g
 trace stats                       counts, last runs, checks, rule cards, hook output that never reached the session,
                                   and each alarm deliverer's last failure
 trace task add -text "<what>"     a task the user asked to be reminded of, tied to the message that asked
-                                  [-at "YYYY-MM-DD HH:MM" (local) or RFC 3339]; prints its id and the time as understood
+                                  [-at "YYYY-MM-DD HH:MM" or RFC 3339 [-zone UTC-3 | America/Los_Angeles]] [-self];
+                                  prints its id, the time with its UTC offset, the time now and how far away it is
 trace task done|drop <id>         close an open task, with the message that closed it
 trace task told <id>              the user was told of a fired task: its session's Stop hook stops holding the turn
 trace task list                   the open tasks, oldest first (the start block shows the first 5; a due one is
@@ -173,6 +174,20 @@ trace alarm -stop                 stop the running alarm (the installers run it 
 -home <folder>                    on any command: the memory to use
 -migrate                          install, uninstall: take over what an install before -home wrote
 ```
+
+### Time zones: a requirement if you travel
+
+A task's time is read in this computer's clock zone, unless the agent passes `-zone`. TRACE never looks your location up on the internet. Only the UTC offset matters: every time is shown as, for example, `Tuesday 2026-11-18 11:00 (UTC-03:00)`. A task said for 11:00 at UTC-3 fires at 14:00 UTC wherever you are by then.
+
+If you travel, do one of two things, both when you leave and when you come back:
+
+1. Turn on your system's automatic time zone, so the computer's clock follows you:
+   - Windows: Settings > Time & language > Date & time > Set time zone automatically (needs location services on).
+   - macOS: System Settings > General > Date & Time > Set time zone automatically using your current location.
+   - Linux with GNOME: Settings > Date & Time > Automatic Time Zone.
+2. Tell the agent your zone ("I'm at UTC-8", or "I'm in Los Angeles"). It passes `-zone` with the task.
+
+A server or container's clock is not your zone. When your agent runs on one, tell it your zone.
 
 ## Configuration
 

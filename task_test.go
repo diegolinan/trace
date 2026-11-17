@@ -107,14 +107,16 @@ func TestTaskAddSelfTiesToNoMessage(t *testing.T) {
 	}
 }
 
-// SPEC T1: -at is echoed as understood, with its weekday, in local time; it is stored in UTC.
+// SPEC T1, A10: -at is echoed as understood, with its weekday and its offset: the computer's for YYYY-MM-DD HH:MM, its
+// own for RFC 3339; it is stored in UTC.
 func TestTaskAddEchoesTheTime(t *testing.T) {
 	root := t.TempDir()
 	localAt := time.Date(2026, 11, 16, 15, 0, 0, 0, time.Local)
 	utcAt := time.Date(2026, 11, 17, 9, 30, 0, 0, time.UTC)
 	for at, want := range map[string]time.Time{"2026-11-16 15:00": localAt, "2026-11-17T09:30:00Z": utcAt} {
 		out := tkTrace(t, root, "task", "add", "-text", "x "+at, "-at", at)
-		if echo := want.Local().Format("Monday 2006-01-02 15:04"); !strings.Contains(out, echo) {
+		_, off := want.Zone()
+		if echo := want.Format("Monday 2006-01-02 15:04") + " (" + offsetName(off) + ")"; !strings.Contains(out, echo) {
 			t.Errorf("-at %q: output %q does not echo %q", at, out, echo)
 		}
 		if got := mutStr(t, tkStore(t, root), "select due from task where text = ?", "x "+at); got != want.UTC().Format(time.RFC3339) {
@@ -304,7 +306,9 @@ func TestDueTaskAnnouncedOnceAtNextPrompt(t *testing.T) {
 	clockNow = func() time.Time { return time.Date(2026, 11, 12, 10, 0, 0, 0, time.UTC) }
 	riWrite(t, dir, "s.jsonl", rec, smUsage(t, 1), smUsage(t, 1000000))
 	got := smHook(t, in, dbPath, false) // smHook fails on more than one JSON object
-	due := time.Date(2026, 11, 12, 10, 0, 0, 0, time.UTC).Local().Format("Monday 2006-01-02 15:04")
+	dueAt := time.Date(2026, 11, 12, 10, 0, 0, 0, time.UTC).Local()
+	_, off := dueAt.Zone()
+	due := dueAt.Format("Monday 2006-01-02 15:04") + " (" + offsetName(off) + ")" // a task with no stored offset: the computer's
 	want := `Reminder for Ana: task 1, due ` + due + `: call the bank (asked: "avisame a las 10 que llame al banco")`
 	if !strings.HasPrefix(got, want+"\n\n") || !strings.Contains(got, "SM-RULE keep it") {
 		t.Fatalf("want the reminder line first, then the card:\n%s", got)

@@ -23,9 +23,9 @@ func newestTyped(param string) string {
 // message that asked or closed is in the store.
 func cmdTask(o opts) error {
 	if len(o.args) == 0 || !slices.Contains([]string{"add", "done", "drop", "told", "list"}, o.args[0]) {
-		return usageError{errors.New(`task needs add -text "<what>" [-at "<when>"] [-self], done <id>, drop <id>, told <id> or list`)}
+		return usageError{errors.New(`task needs add -text "<what>" [-at "<when>" [-zone UTC-3]] [-self], done <id>, drop <id>, told <id> or list`)}
 	}
-	due, err := parseAt(o.at)
+	t, err := taskFromFlags(o)
 	if err != nil {
 		return err
 	}
@@ -39,7 +39,7 @@ func cmdTask(o opts) error {
 	defer db.Close()
 	switch o.args[0] {
 	case "add":
-		return taskAddWake(db, o.dbPath, newTask{o.text, due, o.self})
+		return taskAddWake(db, o.dbPath, t)
 	case "list":
 		return taskList(db, os.Stdout)
 	case "told":
@@ -48,27 +48,35 @@ func cmdTask(o opts) error {
 	return taskClose(db, o.args, os.Stdout)
 }
 
-// parseAt reads -at: YYYY-MM-DD HH:MM in local time, or RFC 3339. Empty is no time.
-func parseAt(s string) (time.Time, error) {
-	if s == "" {
-		return time.Time{}, nil
+// taskFromFlags reads task add's flags: -at in -zone, else in the computer's zone (SPEC A10). -zone without -at is
+// refused. Empty -at is no time.
+func taskFromFlags(o opts) (newTask, error) {
+	t := newTask{text: o.text, self: o.self}
+	loc, given := time.Local, o.zone != "" || o.given["zone"]
+	if given {
+		if o.at == "" {
+			return t, errors.New("-zone needs -at: it says which zone the time is in; nothing stored")
+		}
+		var err error
+		if loc, err = parseZone(o.zone); err != nil {
+			return t, err
+		}
 	}
-	if t, err := time.ParseInLocation("2006-01-02 15:04", s, time.Local); err == nil {
+	if o.at == "" {
 		return t, nil
 	}
-	t, err := time.Parse(time.RFC3339, s)
-	if err != nil {
-		return t, fmt.Errorf("-at %q is not a time: give YYYY-MM-DD HH:MM (local time) or RFC 3339; nothing stored", s)
-	}
-	return t, nil
+	var err error
+	t.due, t.repeated, err = readDue(o.at, loc, given)
+	return t, err
 }
 
-// newTask is a task to add: what it is, its time (zero for none), and whether the agent adds it on its own, asked for
-// by no message (SPEC T1 -self).
+// newTask is a task to add: what it is, its time (zero for none) and whether that local time happens twice (SPEC A3),
+// and whether the agent adds it on its own, asked for by no message (SPEC T1 -self).
 type newTask struct {
-	text string
-	due  time.Time
-	self bool
+	text     string
+	due      time.Time
+	self     bool
+	repeated bool
 }
 
 // taskAddWake adds the task, then starts the alarm when it is not running (SPEC A1). A start that fails is said and the
@@ -89,18 +97,24 @@ func taskAdd(db *sql.DB, t newTask, w io.Writer) error {
 	if strings.TrimSpace(t.text) == "" {
 		return errors.New(`task add needs -text "<what>"; nothing stored`)
 	}
-	at := ""
+	at, zone := "", ""
 	if !t.due.IsZero() {
 		at = t.due.UTC().Format(time.RFC3339) // UTC, so times compare as text
+		_, off := t.due.Zone()
+		zone = offsetName(off) // the offset it was said in (SPEC A10)
 	}
-	res, err := db.Exec(`insert into task(text, due, asked_event, created_at, added_session)
-		values (?1, nullif(?2, ''), case when ?3 then null else `+newestTyped("?5")+` end, ?4, nullif(?5, ''))`,
-		redacted(t.text), at, t.self, clockNow().UTC().Format(time.RFC3339), callerSession(db))
+	res, err := db.Exec(`insert into task(text, due, zone, asked_event, created_at, added_session)
+		values (?1, nullif(?2, ''), nullif(?6, ''), case when ?3 then null else `+newestTyped("?5")+` end, ?4, nullif(?5, ''))`,
+		redacted(t.text), at, t.self, clockNow().UTC().Format(time.RFC3339), callerSession(db), zone)
 	if err != nil {
 		return err
 	}
 	id, _ := res.LastInsertId()
-	fmt.Fprintf(w, "task %d added%s\n", id, dueText(at, ", due "))
+	echo := ""
+	if at != "" {
+		echo = ", due " + addEcho(t.due, storedZone(zone), clockNow(), time.Local, t.repeated)
+	}
+	fmt.Fprintf(w, "task %d added%s\n", id, echo)
 	return nil
 }
 
@@ -149,7 +163,7 @@ func taskList(db *sql.DB, w io.Writer) error {
 // openTasks are the open tasks that also meet the condition and (a SQL "and ..." on task t, or ""), oldest first, at
 // most limit (-1: all), one line each, and how many more there are.
 func openTasks(db *sql.DB, and string, limit int) (lines []string, more int, err error) {
-	rows, err := db.Query(`select t.id, t.created_at, coalesce(t.due, ''), t.text, coalesce(e.text, ''), count(*) over ()
+	rows, err := db.Query(`select t.id, t.created_at, coalesce(t.due, ''), coalesce(t.zone, ''), t.text, coalesce(e.text, ''), count(*) over ()
 		from task t left join event e on e.id = t.asked_event where t.closed_at is null`+and+` order by t.id limit ?`, limit)
 	if err != nil {
 		return lines, more, err
@@ -158,10 +172,10 @@ func openTasks(db *sql.DB, and string, limit int) (lines []string, more int, err
 	total := 0
 	for rows.Next() {
 		var id int
-		var created, due, text, asked string
-		rows.Scan(&id, &created, &due, &text, &asked, &total)
+		var created, due, zone, text, asked string
+		rows.Scan(&id, &created, &due, &zone, &text, &asked, &total)
 		c, _ := time.Parse(time.RFC3339, created)
-		lines = append(lines, fmt.Sprintf("- task %d, %s ago%s: %s", id, clockNow().Sub(c).Round(time.Minute), dueText(due, ", due "), taskWords(text, asked)))
+		lines = append(lines, fmt.Sprintf("- task %d, %s ago%s: %s", id, clockNow().Sub(c).Round(time.Minute), dueText(due, zone, ", due "), taskWords(text, asked)))
 	}
 	return lines, total - len(lines), rows.Err()
 }
@@ -184,9 +198,12 @@ func taskSection(db *sql.DB, w io.Writer, user string) error {
 	if late, _, _ := openTasks(db, untold, -1); len(late) > 0 {
 		fmt.Fprintf(w, "### Late: their time came and %s has not been told (oldest first)\n%s\n", user, strings.Join(late, "\n"))
 	}
+	_, off := clockNow().In(time.Local).Zone()
 	fmt.Fprintf(w, "When %s asks to be reminded of something or to note it for later, run %s. Add -self to a task you add on your own, "+
-		"that %s did not ask for. Close a task only after asking %s: %s or %s.\n\n",
-		user, traceCmd("task add", ` -text "<what>" [-at "YYYY-MM-DD HH:MM"]`), user, user, traceCmd("task done", " <id>"), traceCmd("task drop", " <id>"))
+		"that %s did not ask for. -at is read in this computer's zone, %s now; when %s gives another zone, pass -zone with it "+
+		"(UTC-3, or a zone name), and tell the user the time the add echoes. Close a task only after asking %s: %s or %s.\n\n",
+		user, traceCmd("task add", ` -text "<what>" [-at "YYYY-MM-DD HH:MM"]`), user, offsetName(off), user, user,
+		traceCmd("task done", " <id>"), traceCmd("task drop", " <id>"))
 	return nil
 }
 
@@ -223,7 +240,7 @@ func nameUntold(d *sql.DB, session string) ([]string, error) {
 		where closed_at is null and announced_at is null and due <= ?1`, clockNow().UTC().Format(time.RFC3339), session); err != nil {
 		return nil, err
 	}
-	rows, err := d.Query(`select t.id, t.due, t.text, coalesce(e.text, '') from task t left join event e on e.id = t.asked_event
+	rows, err := d.Query(`select t.id, t.due, coalesce(t.zone, ''), t.text, coalesce(e.text, '') from task t left join event e on e.id = t.asked_event
 		where t.closed_at is null`+untold+` and not exists (select 1 from task_named n where n.task_id = t.id and n.session_id = ?)
 		order by t.id`, session)
 	if err != nil {
@@ -233,9 +250,9 @@ func nameUntold(d *sql.DB, session string) ([]string, error) {
 	var ids []int
 	for rows.Next() {
 		var id int
-		var due, text, asked string
-		rows.Scan(&id, &due, &text, &asked)
-		lines = append(lines, fmt.Sprintf("Reminder for %s: task %d%s: %s", userName(), id, dueText(due, ", due "), taskWords(text, asked)))
+		var due, zone, text, asked string
+		rows.Scan(&id, &due, &zone, &text, &asked)
+		lines = append(lines, fmt.Sprintf("Reminder for %s: task %d%s: %s", userName(), id, dueText(due, zone, ", due "), taskWords(text, asked)))
 		ids = append(ids, id)
 	}
 	rows.Close() // read whole before writing: the store has one connection
@@ -247,13 +264,14 @@ func nameUntold(d *sql.DB, session string) ([]string, error) {
 	return lines, rows.Err()
 }
 
-// dueText is a stored time as the user reads it, local and with its weekday, after prefix; "" for no time.
-func dueText(due, prefix string) string {
+// dueText is a stored time as the user reads it, in the offset it was said in (the computer's for a task stored before
+// offsets were kept), with its weekday and offset, after prefix; "" for no time (SPEC A10).
+func dueText(due, zone, prefix string) string {
 	t, err := time.Parse(time.RFC3339, due)
 	if err != nil {
 		return ""
 	}
-	return prefix + t.Local().Format("Monday 2006-01-02 15:04")
+	return prefix + showAt(t, storedZone(zone))
 }
 
 // taskWords is a task and the words that asked for it, clipped and on one line; a task no message asked for says an
