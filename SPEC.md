@@ -182,12 +182,57 @@ sees a board, only an agent that remembers and asks.
   the agent knows what done means before it starts. The start block tells the agent about `-then`, `task then` and
   that `task done` needs every criterion met. Tests: `TestDoneRefusedUntilThenMet`, `TestTaskStartShowsDoneWhen`.
 
+Levels and parents are under the hood (T10 to T13). The user never hears of epics, stories, tasks, subtasks, ids
+or a board, and is never asked to pick a level or a parent: the agent decides both from what the user says, and
+talks to the user only about the things themselves, in the user's words, at a natural moment (when something
+ends, when the user changes subject, at the start of a session), never in the middle of work. The agent is the
+scrum master: it moves the board as the situation asks (Diego, 2026-11-17: "el agente es el scrum master...
+mueve el tablero como quiere dependiendo de la situación. Punto."). What it may not do alone is what T2 and T6
+already keep for the user: closing, dropping and meeting.
+- **T10.** Levels. Every task has one level: `epic`, `story`, `task` or `subtask`. `task add -level <level>` sets
+  it; without `-level` it is `task`, so every task stored before levels existed is a `task`. Any other word is
+  refused and nothing is stored. `trace task level <id> <level>` changes an open task's level, refused if that
+  breaks T11 (its parent one level up, its children one level down) and recorded like a move (T11). Tests:
+  `TestTaskLevels`, `TestTaskRelevel`.
+- **T11.** Parents, one level up only. `task add -under <id>` puts the new task under an open task one level above
+  it: a story under an epic, a task under a story, a subtask under a task. With `-under` and no `-level`, the new
+  task takes the level below its parent. An epic has no parent; a story and a task may have none; a subtask must
+  have one. An unknown or closed parent, a parent at the wrong level, and a subtask without `-under` are refused
+  and nothing is stored. `trace task under <id> <parent>` moves an open task under another open parent by the same
+  rules, and `trace task under <id> none` takes it out of its parent (refused for a subtask). Grouping is the
+  agent's own call, so a move asks nothing of the user; it records when and the session that ran it. Tests: `TestTaskUnder`, `TestTaskUnderRefusals`,
+  `TestTaskMoveUnder`.
+- **T12.** Closing a parent. `task done <id>` and `task drop <id>` refuse while a task directly under it is open:
+  they print each open child as `task <n> (<level>): "<words>"`, exit 1 and change nothing. The agent then asks
+  the user about each pending thing by what it is, never by its level or id ("quedó pendiente X, ¿lo hacemos
+  igual o lo dejamos?"), and closes, drops or moves it as the user says. Nothing is closed, dropped or left
+  without its parent silently. Test: `TestParentCloseRefusedWithOpenChildren`.
+- **T13.** Showing levels. `task list` prints open tasks as a tree: each top task oldest first, its open children
+  indented under it, oldest first, each line with its level after its id. The start block, the prompt hook's lines,
+  the alarm's message and `task start` name a task's level and, if it has one, its parent (`story 7, in epic 3`); a task at level `task` with no parent
+  is shown as before levels, with neither.
+  Ready (T5) is not inherited: a child's conditions are its own, and an open parent never makes a child not ready.
+  These lines are for the agent, not to be shown to the user. Criteria of done (T8) may be given at any level.
+  The start block tells the agent about `-level`, `-under`, `task under` and `task level`; that it is the
+  scrum master and picks levels and groups on
+  its own; that a story gets its Given / When / Then criteria, agreed with the user in plain words; and that
+  levels, ids and the board are never named to the user. Tests: `TestTaskListTree`,
+  `TestLevelShownEverywhere`, `TestStartBlockTellsAboutLevels`.
+
 Why T5 to T7: 25 of 93 real deferrals waited on another task, a third party, a decision of Diego's or an input not
 there yet, over the threshold of 1 in 5 fixed before the run. Conditions of done (Gherkin at close) were disputed in
 9 of 93, under the threshold of 1 in 10 by one item, and that count is a floor (ten turns often end before the
 work does; `system/research/2026-11-16_trace-tasks/test4-ready-done.md`). B first left them out on the threshold
 without asking; Diego decided to build them anyway ("si, construilo igual"), with `task done` refusing until every
 criterion is met, free text, and criteria addable later (T8, T9).
+
+Why T10 to T13: the board's four levels, épica → historia → tarea → subtarea, agreed by Diego and B
+(`system/research/2026-11-16_trace-tasks/README.md`, "A mini board"). In test 5, 39 of 93 real deferrals belonged to
+a group with one shared goal, over the threshold of 1 in 4 fixed before the run; the groups were small, like
+stories. The sample was our own short history, made without a board, which cannot show an epic that lasts months;
+Diego: "no podemos romper el plan solo porque lo que tenemos PARECIERA no cuadrar basado en casos medio bogus", so
+all four levels are built (`system/research/2026-11-16_trace-tasks/test5-groups.md`). Points, the backlog's order
+and sprints are not specified yet.
 
 ## A. Alarm
 

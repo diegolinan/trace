@@ -40,12 +40,14 @@ type dueTask struct {
 	added, due, zone, text, asked string
 	self                          bool
 	waiting                       string // what it waits on (SPEC T7), or ""
+	tag                           string // its level and parent (SPEC T13), or ""
 }
 
 // toFire reads the tasks due and not fired, whole, before any delivery: the store has one connection.
 func toFire(db *sql.DB, now string) ([]dueTask, error) {
-	rows, err := db.Query(`select t.id, coalesce(t.added_session, ''), t.due, coalesce(t.zone, ''), t.text, coalesce(e.text, ''), t.self from task t
-		left join event e on e.id = t.asked_event where t.closed_at is null and t.announced_at is null and t.due <= ? order by t.id`, now)
+	rows, err := db.Query(`select t.id, coalesce(t.added_session, ''), t.due, coalesce(t.zone, ''), t.text, coalesce(e.text, ''), t.self, `+tagSQL+` from task t
+		left join event e on e.id = t.asked_event left join task p on p.id = t.parent_id
+		where t.closed_at is null and t.announced_at is null and t.due <= ? order by t.id`, now)
 	if err != nil {
 		return nil, err
 	}
@@ -53,7 +55,10 @@ func toFire(db *sql.DB, now string) ([]dueTask, error) {
 	var due []dueTask
 	for rows.Next() {
 		var t dueTask
-		rows.Scan(&t.id, &t.added, &t.due, &t.zone, &t.text, &t.asked, &t.self)
+		var level, parentLevel string
+		var parent int64
+		rows.Scan(&t.id, &t.added, &t.due, &t.zone, &t.text, &t.asked, &t.self, &level, &parentLevel, &parent)
+		t.tag = levelTag(level, parentLevel, parent)
 		due = append(due, t)
 	}
 	rows.Close() // read whole before asking more: the store has one connection
@@ -301,9 +306,9 @@ func alarmMessage(t dueTask, marker string, late time.Duration) string {
 	if t.waiting != "" {
 		quoted += "\nIt is " + t.waiting + ". Tell " + user + " what is still missing."
 	}
-	return fmt.Sprintf("TRACE alarm: task %d%s. This order is from TRACE, not from %s: if you are in the middle of something, finish it, "+
+	return fmt.Sprintf("TRACE alarm: %s%s. This order is from TRACE, not from %s: if you are in the middle of something, finish it, "+
 		"then end your reply by telling %s about this task. Then run %s. Close the task (%s or %s) only after asking %s. %s\n%s",
-		t.id, when, user, user, traceCmd("task told", fmt.Sprintf(" %d", t.id)), traceCmd("task done", fmt.Sprintf(" %d", t.id)),
+		tagged(t.id, t.tag), when, user, user, traceCmd("task told", fmt.Sprintf(" %d", t.id)), traceCmd("task done", fmt.Sprintf(" %d", t.id)),
 		traceCmd("task drop", fmt.Sprintf(" %d", t.id)), user, quoted, marker)
 }
 

@@ -26,7 +26,7 @@ func cmdTask(o opts) error {
 		run = taskCommands[o.args[0]]
 	}
 	if run == nil {
-		return usageError{errors.New(`task needs add -text "<what>" [-at "<when>" [-zone UTC-3]] [-after <id>] [-needs "<what>"] [-then "<criterion>"] [-self], then <id> "<criterion>", done <id>, drop <id>, told <id>, met <id> <n>, start <id> or list`)}
+		return usageError{errors.New(`task needs add -text "<what>" [-at "<when>" [-zone UTC-3]] [-after <id>] [-needs "<what>"] [-then "<criterion>"] [-level epic|story|task|subtask] [-under <id>] [-self], then <id> "<criterion>", under <id> <parent|none>, level <id> <level>, done <id>, drop <id>, told <id>, met <id> <n>, start <id> or list`)}
 	}
 	t, err := taskFromFlags(o)
 	if err != nil {
@@ -54,6 +54,8 @@ var taskCommands = map[string]taskCommand{
 	"met":   func(db *sql.DB, o opts, t newTask) error { return taskMet(db, o.args, os.Stdout) },
 	"start": func(db *sql.DB, o opts, t newTask) error { return taskStart(db, o.args, os.Stdout) },
 	"then":  func(db *sql.DB, o opts, t newTask) error { return taskThen(db, o.args, os.Stdout) },
+	"under": func(db *sql.DB, o opts, t newTask) error { return taskUnder(db, o.args, os.Stdout) },
+	"level": func(db *sql.DB, o opts, t newTask) error { return taskLevel(db, o.args, os.Stdout) },
 	"done":  func(db *sql.DB, o opts, t newTask) error { return taskClose(db, o.args, os.Stdout) },
 	"drop":  func(db *sql.DB, o opts, t newTask) error { return taskClose(db, o.args, os.Stdout) },
 }
@@ -61,7 +63,7 @@ var taskCommands = map[string]taskCommand{
 // taskFromFlags reads task add's flags: -at in -zone, else in the computer's zone (SPEC A10). -zone without -at is
 // refused. Empty -at is no time.
 func taskFromFlags(o opts) (newTask, error) {
-	t := newTask{text: o.text, self: o.self}
+	t := newTask{text: o.text, self: o.self, level: o.level, under: o.under}
 	var err error
 	if t.conds, err = conditionsFromFlags(o.after, o.needs, o.then); err != nil {
 		return t, err
@@ -90,6 +92,8 @@ type newTask struct {
 	self     bool
 	repeated bool
 	conds    []condition
+	level    string // -level, "" when not given (SPEC T10)
+	under    string // -under, "" for none (SPEC T11)
 }
 
 // taskAddWake adds the task, then starts the alarm when it is not running (SPEC A1). A start that fails is said and the
@@ -114,15 +118,19 @@ func taskAdd(db *sql.DB, t newTask, w io.Writer) error {
 	if err != nil {
 		return err
 	}
+	level, parent, err := placeTask(db, t.level, t.under)
+	if err != nil {
+		return err
+	}
 	at, zone := "", ""
 	if !t.due.IsZero() {
 		at = t.due.UTC().Format(time.RFC3339) // UTC, so times compare as text
 		_, off := t.due.Zone()
 		zone = offsetName(off) // the offset it was said in (SPEC A10)
 	}
-	res, err := db.Exec(`insert into task(text, due, zone, self, asked_event, created_at, added_session)
-		values (?1, nullif(?2, ''), nullif(?6, ''), ?3, case when ?3 then null else `+newestTyped("?5")+` end, ?4, nullif(?5, ''))`,
-		redacted(t.text), at, t.self, clockNow().UTC().Format(time.RFC3339), callerSession(db), zone)
+	res, err := db.Exec(`insert into task(text, due, zone, self, asked_event, created_at, added_session, level, parent_id)
+		values (?1, nullif(?2, ''), nullif(?6, ''), ?3, case when ?3 then null else `+newestTyped("?5")+` end, ?4, nullif(?5, ''), ?7, nullif(?8, 0))`,
+		redacted(t.text), at, t.self, clockNow().UTC().Format(time.RFC3339), callerSession(db), zone, level, parent)
 	if err != nil {
 		return err
 	}
@@ -155,6 +163,9 @@ func taskClose(db *sql.DB, args []string, w io.Writer) error {
 	if len(args) < 2 {
 		return usageError{fmt.Errorf("task %s needs a task id", args[0])}
 	}
+	if open := openChildren(db, args[1]); open != "" {
+		return fmt.Errorf("task %s has open tasks under it: %s; ask the user about each one; nothing changed", args[1], open)
+	}
 	if unmet := criteriaText(db, args[1]); args[0] == "done" && unmet != "" {
 		return fmt.Errorf("task %s is not done: %s; nothing changed", args[1], unmet)
 	}
@@ -182,41 +193,63 @@ func afterClose(db *sql.DB, how, task string, w io.Writer) error {
 	return err
 }
 
-// taskList prints every open task, oldest first.
+// taskList prints every open task as a tree, children indented under their parent, oldest first (SPEC T13).
 func taskList(db *sql.DB, w io.Writer) error {
-	lines, _, err := openTasks(db, "", -1)
+	lines, _, rows, err := openTaskRows(db, "", -1)
 	if err != nil {
 		return err
 	}
 	if len(lines) == 0 {
-		lines = []string{"No open tasks."}
+		_, err = fmt.Fprintln(w, "No open tasks.")
+		return err
 	}
-	_, err = fmt.Fprintln(w, strings.Join(lines, "\n"))
+	tree := make([]string, 0, len(lines))
+	order, depth := treeOrder(column(rows, 0), column(rows, 1))
+	for k, i := range order {
+		tree = append(tree, strings.Repeat("  ", depth[k])+lines[i])
+	}
+	_, err = fmt.Fprintln(w, strings.Join(tree, "\n"))
 	return err
+}
+
+// column is one column of rows of ids.
+func column(rows [][2]int64, c int) []int64 {
+	out := make([]int64, len(rows))
+	for i, r := range rows {
+		out[i] = r[c]
+	}
+	return out
 }
 
 // openTasks are the open tasks that also meet the condition and (a SQL "and ..." on task t, or ""), oldest first, at
 // most limit (-1: all), one line each, and how many more there are.
 func openTasks(db *sql.DB, and string, limit int) (lines []string, more int, err error) {
-	rows, err := db.Query(`select t.id, t.created_at, coalesce(t.due, ''), coalesce(t.zone, ''), t.text, coalesce(e.text, ''), t.self, count(*) over ()
-		from task t left join event e on e.id = t.asked_event where t.closed_at is null`+and+` order by t.id limit ?`, limit)
+	lines, more, _, err = openTaskRows(db, and, limit)
+	return lines, more, err
+}
+
+// openTaskRows is openTasks with each line's task id and parent id (0 for none).
+func openTaskRows(db *sql.DB, and string, limit int) (lines []string, more int, idParent [][2]int64, err error) {
+	rows, err := db.Query(`select t.id, t.created_at, coalesce(t.due, ''), coalesce(t.zone, ''), t.text, coalesce(e.text, ''), t.self, `+tagSQL+`, count(*) over ()
+		from task t left join event e on e.id = t.asked_event left join task p on p.id = t.parent_id where t.closed_at is null`+and+` order by t.id limit ?`, limit)
 	if err != nil {
-		return lines, more, err
+		return lines, more, idParent, err
 	}
 	defer rows.Close()
 	total := 0
 	var ids []int64
 	for rows.Next() {
-		var id int64
-		var created, due, zone, text, asked string
+		var id, parent int64
+		var created, due, zone, text, asked, level, parentLevel string
 		var self bool
-		rows.Scan(&id, &created, &due, &zone, &text, &asked, &self, &total)
+		rows.Scan(&id, &created, &due, &zone, &text, &asked, &self, &level, &parentLevel, &parent, &total)
 		c, _ := time.Parse(time.RFC3339, created)
-		lines = append(lines, fmt.Sprintf("- task %d, %s ago%s: %s", id, clockNow().Sub(c).Round(time.Minute), dueText(due, zone, ", due "), taskWords(text, asked, self)))
+		lines = append(lines, fmt.Sprintf("- %s, %s ago%s: %s", tagged(id, levelTag(level, parentLevel, parent)), clockNow().Sub(c).Round(time.Minute), dueText(due, zone, ", due "), taskWords(text, asked, self)))
 		ids = append(ids, id)
+		idParent = append(idParent, [2]int64{id, parent})
 	}
 	rows.Close() // read whole before asking more: the store has one connection
-	return withWaiting(db, lines, ids), total - len(lines), rows.Err()
+	return withWaiting(db, lines, ids), total - len(lines), idParent, rows.Err()
 }
 
 // taskSection is the start block's list of open tasks, left out when there is none like any empty section, and what
@@ -245,6 +278,10 @@ func taskSection(db *sql.DB, w io.Writer, user string) error {
 		"and task start <id> before working on a task, to see what it still waits on and what done means. "+
 		"Write how to tell a task is done as -then \"<criterion>\" (repeats), each one Given / When / Then in the user's language; "+
 		"task then <id> \"<criterion>\" adds one later; task met <id> <n> meets one when the user says so, and task done needs every criterion met. "+
+		"You are the scrum master of this board: you pick each task's level (-level epic|story|task|subtask, task by default) and group it "+
+		"(-under <id>, one level up), and regroup as the situation asks (task under <id> <parent|none>, task level <id> <level>), all on your own. "+
+		"A story gets its Given / When / Then criteria, agreed with the user in plain words. To the user, never name levels, ids or the board: "+
+		"talk about the things themselves, when something ends, when the subject changes or at the start, never in the middle of work. "+
 		"Close a task only after asking %s: %s or %s.\n\n",
 		user, traceCmd("task add", ` -text "<what>" [-at "YYYY-MM-DD HH:MM"]`), user, offsetName(off), user, user,
 		traceCmd("task done", " <id>"), traceCmd("task drop", " <id>"))
@@ -284,7 +321,8 @@ func nameUntold(d *sql.DB, session string) ([]string, error) {
 		where closed_at is null and announced_at is null and due <= ?1`, clockNow().UTC().Format(time.RFC3339), session); err != nil {
 		return nil, err
 	}
-	rows, err := d.Query(`select t.id, t.due, coalesce(t.zone, ''), t.text, coalesce(e.text, ''), t.self from task t left join event e on e.id = t.asked_event
+	rows, err := d.Query(`select t.id, t.due, coalesce(t.zone, ''), t.text, coalesce(e.text, ''), t.self, `+tagSQL+` from task t left join event e on e.id = t.asked_event
+		left join task p on p.id = t.parent_id
 		where t.closed_at is null`+untold+` and not exists (select 1 from task_named n where n.task_id = t.id and n.session_id = ?)
 		order by t.id`, session)
 	if err != nil {
@@ -293,11 +331,11 @@ func nameUntold(d *sql.DB, session string) ([]string, error) {
 	var lines []string
 	var ids []int64
 	for rows.Next() {
-		var id int64
-		var due, zone, text, asked string
+		var id, parent int64
+		var due, zone, text, asked, level, parentLevel string
 		var self bool
-		rows.Scan(&id, &due, &zone, &text, &asked, &self)
-		lines = append(lines, fmt.Sprintf("Reminder for %s: task %d%s: %s", userName(), id, dueText(due, zone, ", due "), taskWords(text, asked, self)))
+		rows.Scan(&id, &due, &zone, &text, &asked, &self, &level, &parentLevel, &parent)
+		lines = append(lines, fmt.Sprintf("Reminder for %s: %s%s: %s", userName(), tagged(id, levelTag(level, parentLevel, parent)), dueText(due, zone, ", due "), taskWords(text, asked, self)))
 		ids = append(ids, id)
 	}
 	rows.Close() // read whole before writing: the store has one connection

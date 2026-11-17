@@ -284,6 +284,10 @@ func addColumns(db *sql.DB) error {
 		{"alter table task add column zone text", nil},                        // the UTC offset the time was said in (A10)
 		{"alter table task add column self integer not null default 0", nil}, // added with -self: no message asked for it (T1)
 		{"alter table task_condition add column done_when text", nil},        // a criterion of done, in words (T8)
+		{"alter table task add column level text not null default 'task'", nil}, // epic, story, task or subtask (T10)
+		{"alter table task add column parent_id integer", nil},                 // the open task one level up (T11)
+		{"alter table task add column moved_at text", nil},                     // the last move or level change (T11)
+		{"alter table task add column moved_session text", nil},                // the session that ran it (T11)
 	} {
 		_, err := db.Exec(c.alter)
 		if err != nil && !strings.Contains(err.Error(), "duplicate column") {

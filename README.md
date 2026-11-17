@@ -159,15 +159,19 @@ trace task add -text "<what>"     a task the user asked to be reminded of, tied 
                                   prints its id, the time with its UTC offset, the time now and how far away it is
                                   [-after <id>] [-needs "<what>"]: what it waits on before it can start (both repeat)
                                   [-then "<criterion>"]: how to tell it is done, Given / When / Then in words (repeats)
+                                  [-level epic|story|task|subtask] [-under <id>]: its level (task by default) and the
+                                  open task one level up it goes under; the agent picks both, the user never sees them
 trace task then <id> "<criterion>"  add a criterion of done to an open task later
+trace task under <id> <parent|none>  move an open task under another open task one level up, or out of its parent
+trace task level <id> <level>     change an open task's level, keeping its parent one level up and its children one down
 trace task met <id> <n>           condition or criterion n of a task is met (a -needs, a -then, or an -after whose
                                   task was dropped), when the user says so; recorded with the user's words
 trace task start <id>             before working on a task: "ready" (exit 0), or what it still waits on (exit 3),
                                   then its unmet criteria ("done when: ...")
 trace task done|drop <id>         close an open task, with the message that closed it; done refuses while a
-                                  criterion is unmet
+                                  criterion is unmet, and both refuse while a task under it is open
 trace task told <id>              the user was told of a fired task: its session's Stop hook stops holding the turn
-trace task list                   the open tasks, oldest first (the start block shows the first 5; a due one is
+trace task list                   the open tasks as a tree, oldest first, with level and parent (the start block shows the first 5; a due one is
                                   announced on the next prompt, when UserPromptSubmit is installed, and named once
                                   in each later session until done or dropped)
 trace alarm                       fires each task at its time, even with nobody typing; one per store, started by
