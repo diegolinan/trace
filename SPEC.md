@@ -120,7 +120,11 @@ sees a board, only an agent that remembers and asks.
   open task tied to the newest message the user typed (speaker `user`, kind `prompt` or `steering`) in the store:
   the message that asked. It prints the task's id and, with `-at`, the time as understood, with its weekday, so
   the agent can confirm it to the user. `-at` takes `YYYY-MM-DD HH:MM` in local time or RFC 3339; anything else
-  is refused and nothing is stored. Tests: `TestTaskAddTiesToAskingMessage`, `TestTaskAddEchoesTheTime`,
+  is refused and nothing is stored. With `-self` the agent says it adds the task on its own: no message of the
+  user asked for it, so the task is tied to none, and wherever its asking words would show (task list, start
+  block, prompt hook, alarm) it says that an agent added it on its own. Only stored typed messages are ever quoted
+  as the user's words: there is no flag that takes them as text, so no agent can write a quote for the user.
+  Tests: `TestTaskAddTiesToAskingMessage`, `TestTaskAddSelfTiesToNoMessage`, `TestTaskAddEchoesTheTime`,
   `TestTaskAddRefusesABadTime`.
 - **T2.** `trace task done <id>` and `trace task drop <id>` close an open task, recording when and the newest
   message the user typed (the words that closed it). Closing a closed or unknown task fails and changes nothing.
@@ -128,7 +132,8 @@ sees a board, only an agent that remembers and asks.
   asked for it. Test: `TestTaskCloseAndList`.
 - **T3.** The start block lists the open tasks (at most 5, oldest first; with how many more there are) with the
   words that asked for them, and tells the agent: when the user asks to be reminded of something or to note it
-  for later, run `trace task add`; close a task only after asking the user. Test: `TestStartBlockShowsOpenTasks`.
+  for later, run `trace task add`, and add `-self` to a task the agent adds on its own; close a task only after
+  asking the user. Test: `TestStartBlockShowsOpenTasks`.
 - **T4.** On the first user prompt after a task's time, the prompt hook adds one line naming the task, its time
   and the words that asked for it. Each task is fired once (A2); an announced task stays open until closed, and
   until it is told or closed every other session is shown it once (A7). Test:
@@ -173,8 +178,10 @@ reason (A9 matches the marker in every shape listed there).
 - **A4.** The message is an order, not a time, and only its fixed wrapper is the order: if you are in the middle of
   something, finish it, then end the reply by telling the user; then run `trace task told <id>`; close the task
   only after asking the user. The task's text and the words that asked for it are quoted as what to report to the
-  user, never as instructions to carry out (any agent in the tree can write a task's text). Every message carries
-  the marker `trace-alarm:<id>:<nonce>`. Test: `TestAlarmMessageIsAnOrderQuotingTheTask`.
+  user, never as instructions to carry out (any agent in the tree can write a task's text). A task no message
+  asked for (T1 `-self`) has only its text quoted, and the wrapper says an agent added it on its own. Every
+  message carries the marker `trace-alarm:<id>:<nonce>`. Tests: `TestAlarmMessageIsAnOrderQuotingTheTask`,
+  `TestAlarmMessageForSelfAddedTask`.
 - **A5.** It wakes one session. `task add` records the session that ran it (the session id the program gives the
   command when it gives one, otherwise the S1 rule); `asked_event` stays only the words. A session qualifies only
   if it is a main, user-facing session: live, inside the folder tree this TRACE serves, not started by a program

@@ -52,12 +52,12 @@ func TestAlarmWakesSessionThatAddedTask(t *testing.T) {
 	rzExec(t, db, `insert into event(session_id, seq, ts, speaker, kind, text) values ('s-typed', 1, '2026-11-11T09:00:00Z', 'user', 'prompt', 'remind me to call Bob')`)
 	var out strings.Builder
 	t.Setenv("TRACE_TEST_FB_SESSION", "s-asker")
-	if err := taskAdd(db, "call Bob", time.Date(2026, 11, 12, 9, 0, 0, 0, time.UTC), &out); err != nil {
+	if err := taskAdd(db, newTask{text: "call Bob", due: time.Date(2026, 11, 12, 9, 0, 0, 0, time.UTC)}, &out); err != nil {
 		t.Fatal(err)
 	}
 	t.Setenv("TRACE_TEST_FB_SESSION", "")
 	t.Setenv("TRACE_TEST_FA_SESSION", "s-closed")
-	taskAdd(db, "renew the domain", time.Date(2026, 11, 12, 9, 0, 0, 0, time.UTC), &out)
+	taskAdd(db, newTask{text: "renew the domain", due: time.Date(2026, 11, 12, 9, 0, 0, 0, time.UTC)}, &out)
 	if got := mutStr(t, db, "select group_concat(id || ':' || coalesce(added_session, '-') || ':' || asked_event, ' ') from task"); got != "1:s-asker:1 2:s-closed:1" {
 		t.Fatalf("recorded sessions: %s", got)
 	}

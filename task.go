@@ -21,7 +21,7 @@ const newestTyped = `(select id from event where speaker = 'user' and kind in ('
 // message that asked or closed is in the store.
 func cmdTask(o opts) error {
 	if len(o.args) == 0 || !slices.Contains([]string{"add", "done", "drop", "told", "list"}, o.args[0]) {
-		return usageError{errors.New(`task needs add -text "<what>" [-at "<when>"], done <id>, drop <id>, told <id> or list`)}
+		return usageError{errors.New(`task needs add -text "<what>" [-at "<when>"] [-self], done <id>, drop <id>, told <id> or list`)}
 	}
 	due, err := parseAt(o.at)
 	if err != nil {
@@ -37,7 +37,7 @@ func cmdTask(o opts) error {
 	defer db.Close()
 	switch o.args[0] {
 	case "add":
-		return taskAddWake(db, o.dbPath, o.text, due)
+		return taskAddWake(db, o.dbPath, newTask{o.text, due, o.self})
 	case "list":
 		return taskList(db, os.Stdout)
 	case "told":
@@ -61,10 +61,18 @@ func parseAt(s string) (time.Time, error) {
 	return t, nil
 }
 
+// newTask is a task to add: what it is, its time (zero for none), and whether the agent adds it on its own, asked for
+// by no message (SPEC T1 -self).
+type newTask struct {
+	text string
+	due  time.Time
+	self bool
+}
+
 // taskAddWake adds the task, then starts the alarm when it is not running (SPEC A1). A start that fails is said and the
 // task stays stored: the next session start starts the alarm.
-func taskAddWake(db *sql.DB, dbPath, text string, due time.Time) error {
-	if err := taskAdd(db, text, due, os.Stdout); err != nil {
+func taskAddWake(db *sql.DB, dbPath string, t newTask) error {
+	if err := taskAdd(db, t, os.Stdout); err != nil {
 		return err
 	}
 	if err := wakeAlarm(dbPath); err != nil {
@@ -73,18 +81,19 @@ func taskAddWake(db *sql.DB, dbPath, text string, due time.Time) error {
 	return nil
 }
 
-// taskAdd stores an open task tied to the message that asked for it and to the session that ran the command, and
-// prints its id and the time as understood.
-func taskAdd(db *sql.DB, text string, due time.Time, w io.Writer) error {
-	if strings.TrimSpace(text) == "" {
+// taskAdd stores an open task tied to the message that asked for it (none with -self) and to the session that ran the
+// command, and prints its id and the time as understood.
+func taskAdd(db *sql.DB, t newTask, w io.Writer) error {
+	if strings.TrimSpace(t.text) == "" {
 		return errors.New(`task add needs -text "<what>"; nothing stored`)
 	}
 	at := ""
-	if !due.IsZero() {
-		at = due.UTC().Format(time.RFC3339) // UTC, so times compare as text
+	if !t.due.IsZero() {
+		at = t.due.UTC().Format(time.RFC3339) // UTC, so times compare as text
 	}
-	res, err := db.Exec(`insert into task(text, due, asked_event, created_at, added_session) values (?, nullif(?, ''), `+newestTyped+`, ?, nullif(?, ''))`,
-		redacted(text), at, clockNow().UTC().Format(time.RFC3339), callerSession(db))
+	res, err := db.Exec(`insert into task(text, due, asked_event, created_at, added_session)
+		values (?, nullif(?, ''), case when ? then null else `+newestTyped+` end, ?, nullif(?, ''))`,
+		redacted(t.text), at, t.self, clockNow().UTC().Format(time.RFC3339), callerSession(db))
 	if err != nil {
 		return err
 	}
@@ -173,8 +182,9 @@ func taskSection(db *sql.DB, w io.Writer, user string) error {
 	if late, _, _ := openTasks(db, untold, -1); len(late) > 0 {
 		fmt.Fprintf(w, "### Late: their time came and %s has not been told (oldest first)\n%s\n", user, strings.Join(late, "\n"))
 	}
-	fmt.Fprintf(w, "When %s asks to be reminded of something or to note it for later, run %s. Close a task only after asking %s: %s or %s.\n\n",
-		user, traceCmd("task add", ` -text "<what>" [-at "YYYY-MM-DD HH:MM"]`), user, traceCmd("task done", " <id>"), traceCmd("task drop", " <id>"))
+	fmt.Fprintf(w, "When %s asks to be reminded of something or to note it for later, run %s. Add -self to a task you add on your own, "+
+		"that %s did not ask for. Close a task only after asking %s: %s or %s.\n\n",
+		user, traceCmd("task add", ` -text "<what>" [-at "YYYY-MM-DD HH:MM"]`), user, user, traceCmd("task done", " <id>"), traceCmd("task drop", " <id>"))
 	return nil
 }
 
@@ -244,8 +254,12 @@ func dueText(due, prefix string) string {
 	return prefix + t.Local().Format("Monday 2006-01-02 15:04")
 }
 
-// taskWords is a task and the words that asked for it, clipped and on one line.
+// taskWords is a task and the words that asked for it, clipped and on one line; a task no message asked for says an
+// agent added it (SPEC T1 -self).
 func taskWords(text, asked string) string {
+	if asked == "" {
+		return text + " (added by an agent on its own, not asked by " + userName() + ")"
+	}
 	return text + ` (asked: "` + strings.Join(strings.Fields(clip(asked, 300)), " ") + `")`
 }
 

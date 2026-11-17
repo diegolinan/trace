@@ -91,7 +91,7 @@ func TestNoSecretInTheStore(t *testing.T) {
 	reinjection(db, "s9", 1000, text, 7, now)
 	reinjection(db, "s9", 1000000, text, 7, now)
 	// A task the agent writes down (task).
-	if err := taskAdd(db, "rotate "+tok, time.Time{}, io.Discard); err != nil {
+	if err := taskAdd(db, newTask{text: "rotate " + tok}, io.Discard); err != nil {
 		t.Fatal(err)
 	}
 	if secretScan(t, db, tok) == 0 {

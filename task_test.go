@@ -68,6 +68,22 @@ func TestTaskAddTiesToAskingMessage(t *testing.T) {
 	}
 }
 
+// SPEC T1: with -self no message asked for the task, so it is tied to none and every listing says an agent added it,
+// instead of quoting the user's newest words as the ask.
+func TestTaskAddSelfTiesToNoMessage(t *testing.T) {
+	root := tkRoot(t, mutLines(mutUser("u1", 0, "explicate")))
+	if out := tkTrace(t, root, "task", "add", "-text", "test the alarm", "-self"); !strings.Contains(out, "task 1 added") {
+		t.Errorf("the add does not print the task's id: %q", out)
+	}
+	if got := mutStr(t, tkStore(t, root), "select coalesce(asked_event, '<none>') from task where id = 1"); got != "<none>" {
+		t.Errorf("a self-added task is tied to message %s", got)
+	}
+	list := tkTrace(t, root, "task", "list")
+	if strings.Contains(list, "explicate") || !strings.Contains(list, "test the alarm (added by an agent on its own, not asked by ") {
+		t.Errorf("the list does not say an agent added the task:\n%s", list)
+	}
+}
+
 // SPEC T1: -at is echoed as understood, with its weekday, in local time; it is stored in UTC.
 func TestTaskAddEchoesTheTime(t *testing.T) {
 	root := t.TempDir()
@@ -203,7 +219,8 @@ func TestStartBlockShowsOpenTasks(t *testing.T) {
 	for _, want := range []string{
 		`pay the rent (asked: "recordame pagar el alquiler el lunes")`,
 		"and 1 more (" + cmdLine(shellPath(mustExe(t)), "", "task list", "") + ")",
-		"When Ana asks to be reminded of something or to note it for later, run " + cmdLine(shellPath(mustExe(t)), "", "task add", ` -text "<what>" [-at "YYYY-MM-DD HH:MM"]`),
+		"When Ana asks to be reminded of something or to note it for later, run " + cmdLine(shellPath(mustExe(t)), "", "task add", ` -text "<what>" [-at "YYYY-MM-DD HH:MM"]`) +
+			". Add -self to a task you add on your own, that Ana did not ask for.",
 		"Close a task only after asking Ana: " + cmdLine(shellPath(mustExe(t)), "", "task done", " <id>") + " or " + cmdLine(shellPath(mustExe(t)), "", "task drop", " <id>") + ".",
 	} {
 		if !strings.Contains(sec, want) {

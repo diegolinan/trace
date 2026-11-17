@@ -16,7 +16,7 @@
 //	trace search <words>    [-n 10] [-who user|assistant|subagent] [-all] [-since 2026-11-01]
 //	trace rules             the rule card a session in this folder gets (re-injection, opt-in)
 //	trace stats
-//	trace task add -text "<what>" [-at "YYYY-MM-DD HH:MM"] | done <id> | drop <id> | told <id> | list   the user's tasks
+//	trace task add -text "<what>" [-at "YYYY-MM-DD HH:MM"] [-self] | done <id> | drop <id> | told <id> | list   the user's tasks
 //	trace alarm [-stop]     fires tasks at their time; started by the start hook and task add -at (-stop: stop it)
 package main
 
@@ -63,7 +63,7 @@ type opts struct {
 	cmd, home, dbPath, projects, history, codexDir, host, notID, archive, scope, trigger, who, since, mode string
 	text, at                                                                                               string
 	n                                                                                                      int
-	all, migrate, stop                                                                                     bool
+	all, migrate, stop, self                                                                               bool
 	given                                                                                                  map[string]bool
 	args                                                                                                   []string
 }
@@ -139,6 +139,7 @@ func (o *opts) flagSet(onErr flag.ErrorHandling) *flag.FlagSet {
 	fs.StringVar(&o.text, "text", "", "task add: what the task is")
 	fs.StringVar(&o.at, "at", "", "task add: when, as YYYY-MM-DD HH:MM in local time or RFC 3339")
 	fs.BoolVar(&o.stop, "stop", false, "alarm: stop the running alarm and wait for it to exit")
+	fs.BoolVar(&o.self, "self", false, "task add: the agent adds it on its own; no message of the user asked for it")
 	fs.BoolVar(&o.migrate, "migrate", false, "install, uninstall: take over TRACE hooks that name no home (installed before -home existed)")
 	fs.String("repo", "", "ignored: kept so hooks written for an older TRACE still run (SPEC G5)")
 	return fs

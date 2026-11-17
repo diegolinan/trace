@@ -4,6 +4,7 @@ import (
 	"os"
 	"os/exec"
 	"testing"
+	"unsafe"
 
 	"golang.org/x/sys/windows"
 )
@@ -25,9 +26,14 @@ func TestStartAloneRefusedInsideJob(t *testing.T) {
 	defer func() {
 		if err := setJobLimits(job, windows.JOB_OBJECT_LIMIT_BREAKAWAY_OK|windows.JOB_OBJECT_LIMIT_SILENT_BREAKAWAY_OK); err != nil {
 			t.Errorf("the test process stays in a job that forbids breakaway: %v", err)
+		} else if jobForbidsBreakaway() {
+			t.Error("jobForbidsBreakaway still sees a job that now lets children break away")
 		}
 		windows.CloseHandle(job)
 	}()
+	if !jobForbidsBreakaway() {
+		t.Error("jobForbidsBreakaway does not see the job the test process is in")
+	}
 	cmd := exec.Command(os.Args[0], "startupinfo")
 	if err := startAlone(cmd); err == nil {
 		cmd.Wait()
@@ -36,6 +42,18 @@ func TestStartAloneRefusedInsideJob(t *testing.T) {
 	if cmd.Process != nil {
 		t.Fatal("a process was left from the refused start")
 	}
+}
+
+// jobForbidsBreakaway says whether the test process runs in a job its children cannot break away from, as on GitHub's
+// Windows runners: there startAlone refuses by design (SPEC A1), so a test that needs the alarm started cannot run.
+// The null handle names the job the caller is in; with none, the query fails.
+func jobForbidsBreakaway() bool {
+	var info windows.JOBOBJECT_EXTENDED_LIMIT_INFORMATION
+	if err := windows.QueryInformationJobObject(0, windows.JobObjectExtendedLimitInformation,
+		uintptr(unsafe.Pointer(&info)), uint32(unsafe.Sizeof(info)), nil); err != nil {
+		return false
+	}
+	return info.BasicLimitInformation.LimitFlags&(windows.JOB_OBJECT_LIMIT_BREAKAWAY_OK|windows.JOB_OBJECT_LIMIT_SILENT_BREAKAWAY_OK) == 0
 }
 
 // pidAlive: a process that has exited is not alive even while a handle keeps its process object, and a pid no process
