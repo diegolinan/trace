@@ -269,7 +269,7 @@ func TestStartBlockShowsOpenTasks(t *testing.T) {
 		t.Errorf("with no open task the block has an empty section or lacks how to add one:\n%s", b)
 	}
 	tkTask(t, db, "only one", "", "2026-11-11T10:00:00Z", "s", 1)
-	if b := rzBlock(t, db, cwd); !strings.Contains(b, "### Open tasks (oldest first)\n- task 1, ") || strings.Contains(b, "more (") {
+	if b := rzBlock(t, db, cwd); !strings.Contains(b, "### Open tasks (most important first, as a tree)\n- task 1, ") || strings.Contains(b, "more (") {
 		t.Errorf("one open task is not listed alone:\n%s", b)
 	}
 }

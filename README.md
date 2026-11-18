@@ -176,10 +176,11 @@ trace task start <id>             before working on a task: "ready" and now in p
                                   waits on (exit 3), then its unmet criteria ("done when: ..."); a second story in
                                   progress is refused (exit 1) without a sprint
 trace task stop <id>              put a task in progress back to to do
+trace task order <id> <n>         move an open task to place n among the open tasks under the same parent
 trace task done|drop <id>         close an open task, with the message that closed it; done refuses while a
                                   criterion is unmet, and both refuse while a task under it is open
 trace task told <id>              the user was told of a fired task: its session's Stop hook stops holding the turn
-trace task list                   the open tasks as a tree, oldest first, with level and parent (the start block shows the first 5; a due one is
+trace task list                   the open tasks as a tree, each group in order of importance, with level and parent (the start block shows the first 5; a due one is
                                   announced on the next prompt, when UserPromptSubmit is installed, and named once
                                   in each later session until done or dropped)
 trace alarm                       fires each task at its time, even with nobody typing; one per store, started by
