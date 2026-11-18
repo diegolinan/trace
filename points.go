@@ -121,7 +121,8 @@ func pointsText(n int) string {
 
 // taskSizes prints the last 20 stories closed as done with points, for the agent to estimate against (SPEC T15).
 func taskSizes(db *sql.DB, w io.Writer) error {
-	rows, err := db.Query(`select id, points, coalesce(kind, 'story'), text, created_at, closed_at from task
+	rows, err := db.Query(`select id, points, coalesce(kind, 'story'), text, coalesce(started_at, created_at), closed_at,
+		case when started_at is null then 'added' else 'started' end from task
 		where level = 'story' and closed_how = 'done' and points is not null order by closed_at desc, id desc limit 20`)
 	if err != nil {
 		return err
@@ -131,11 +132,11 @@ func taskSizes(db *sql.DB, w io.Writer) error {
 	for rows.Next() {
 		var id int64
 		var points int
-		var kind, text, created, closed string
-		rows.Scan(&id, &points, &kind, &text, &created, &closed)
+		var kind, text, created, closed, from string
+		rows.Scan(&id, &points, &kind, &text, &created, &closed, &from)
 		c, _ := time.Parse(time.RFC3339, created)
 		d, _ := time.Parse(time.RFC3339, closed)
-		lines = append(lines, fmt.Sprintf("- task %d (%s, %s): %q, %s from added to done", id, kind, pointsText(points), clip(text, 300), d.Sub(c).Round(time.Minute)))
+		lines = append(lines, fmt.Sprintf("- task %d (%s, %s): %q, %s from %s to done", id, kind, pointsText(points), clip(text, 300), d.Sub(c).Round(time.Minute), from))
 	}
 	if len(lines) == 0 {
 		lines = []string{"No story closed as done with points yet."}

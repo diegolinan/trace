@@ -137,8 +137,8 @@ func taskMet(db *sql.DB, args []string, w io.Writer) error {
 	return nil
 }
 
-// taskStart checks a task before work on it starts: ready, or what it waits on with exit 3. It records nothing
-// (SPEC T7).
+// taskStart checks a task before work on it starts: ready, and then in progress (SPEC T16), or what it waits on with
+// exit 3, recording nothing (SPEC T7).
 func taskStart(db *sql.DB, args []string, w io.Writer) error {
 	if len(args) < 2 {
 		return usageError{errors.New("task start needs a task id")}
@@ -151,7 +151,10 @@ func taskStart(db *sql.DB, args []string, w io.Writer) error {
 	name := tagged(id, g.String())
 	waiting := waitingOn(db, id, 0)
 	if waiting == "" {
-		fmt.Fprintf(w, "%s is ready\n", name)
+		if err := startWork(db, id, g.level); err != nil {
+			return err
+		}
+		fmt.Fprintf(w, "%s is ready; now in progress\n", name)
 	} else {
 		fmt.Fprintf(w, "%s is not ready: %s\n", name, waiting)
 	}

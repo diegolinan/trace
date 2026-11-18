@@ -188,7 +188,10 @@ talks to the user only about the things themselves, in the user's words, at a na
 ends, when the user changes subject, at the start of a session), never in the middle of work. The agent is the
 scrum master: it moves the board as the situation asks (Diego, 2026-11-17: "el agente es el scrum master...
 mueve el tablero como quiere dependiendo de la situación. Punto."). What it may not do alone is what T2 and T6
-already keep for the user: closing, dropping and meeting.
+already keep for the user: closing, dropping and meeting. Most conversations put nothing on the board: a question
+answered or work finished in the same conversation is not a task. Something goes on it only when it is left for
+later (T1) or is work that will outlast the conversation, and it becomes an epic, a story or a sprint only when the
+work really has that shape (Diego, 2026-11-17: "no toda charla deriva en un backlog"). The start block says so (test: `TestStartBlockSaysMostTalkIsNoTask`).
 - **T10.** Levels. Every task has one level: `epic`, `story`, `task` or `subtask`. `task add -level <level>` sets
   it; without `-level` it is `task`, so every task stored before levels existed is a `task`. Any other word is
   refused and nothing is stored. `trace task level <id> <level>` changes an open task's level, refused if that
@@ -237,6 +240,28 @@ already keep for the user: closing, dropping and meeting.
   its points, kind and how long it took from added to done, for the agent to compare with. Points show with the
   level (`story, 3 points, in epic 1`; `epic, 8 points`). Tests: `TestTaskPoints`, `TestTaskPointsRefusals`,
   `TestEpicPointsSum`, `TestTaskSizes`, `TestStartBlockTellsAboutPoints`.
+- **T16.** In progress. An open task is to do or in progress. `trace task start <id>` on a ready task now also puts
+  it in progress, with when and the session (amends T7's "it records nothing"; a task not ready still records nothing
+  and exits 3), and `trace task stop <id>` puts it back to to do, recorded the same way. Without a sprint (T18) work in
+  progress is one story at a time: starting a story while another is in progress is refused, naming it, so the agent
+  finishes it, stops it or asks the user first. Tasks and subtasks under the story in progress, and plain tasks with
+  no parent (a reminder is not board work), are not limited. `task list`, the start block, the prompt hook's lines and
+  the alarm's message show `in progress` in the tag. `task sizes` measures from started to done when the story was
+  started, otherwise from added. Tests: `TestTaskStartPutsInProgress`, `TestTaskStop`, `TestOneStoryInProgress`,
+  `TestInProgressShown`, `TestSizesFromStart`.
+- **T17.** Backlog order. Open tasks under the same parent (or with none) have an order of importance: `task add`
+  puts a task last among them and `trace task order <id> <n>` moves it to place n, shifting the rest. `task list`,
+  the tree and the start block show them in that order instead of oldest first. The agent orders by what the user
+  says matters ("esto primero", "urgente", a date) and never names the order to the user. Tests: `TestTaskOrder`,
+  `TestTaskOrderRefusals`, `TestListInOrder`.
+- **T18.** Sprints. When the user names a date for a set of things ("para el viernes, X, Y y Z"), the agent opens a
+  sprint: `trace task sprint -at "<when>" -text "<goal, the user's words>" <id>...` stores its end, its goal and its
+  stories (open stories only; one sprint open at a time), and `trace task sprint add|out <id>` changes them. Inside a
+  sprint, its stories are not held to one in progress. The start block shows the sprint: goal, end, stories and points
+  done and left. At its end the alarm fires it like a task (A2), and the agent goes over each story left with the
+  user: done, back to the backlog, or into a next sprint, recorded with the user's words; `trace task sprint close`
+  ends it. With no sprint the board is kanban (T16). Tests: `TestSprintOpen`, `TestSprintRefusals`,
+  `TestSprintLiftsWIP`, `TestSprintShown`, `TestSprintEndFires`, `TestSprintClose`.
 
 Why T5 to T7: 25 of 93 real deferrals waited on another task, a third party, a decision of Diego's or an input not
 there yet, over the threshold of 1 in 5 fixed before the run. Conditions of done (Gherkin at close) were disputed in

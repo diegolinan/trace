@@ -166,14 +166,16 @@ trace task add -text "<what>"     a task the user asked to be reminded of, tied 
                                   are its stories'; the agent picks both and tells the user only what the work is like
 trace task kind <id> <kind>       change an open story's kind
 trace task points <id> <n>        change an open story's points
-trace task sizes                  the last 20 stories closed as done with points: points, kind, time from added to done
+trace task sizes                  the last 20 stories closed as done with points: points, kind, time from started (else added) to done
 trace task then <id> "<criterion>"  add a criterion of done to an open task later
 trace task under <id> <parent|none>  move an open task under another open task one level up, or out of its parent
 trace task level <id> <level>     change an open task's level, keeping its parent one level up and its children one down
 trace task met <id> <n>           condition or criterion n of a task is met (a -needs, a -then, or an -after whose
                                   task was dropped), when the user says so; recorded with the user's words
-trace task start <id>             before working on a task: "ready" (exit 0), or what it still waits on (exit 3),
-                                  then its unmet criteria ("done when: ...")
+trace task start <id>             before working on a task: "ready" and now in progress (exit 0), or what it still
+                                  waits on (exit 3), then its unmet criteria ("done when: ..."); a second story in
+                                  progress is refused (exit 1) without a sprint
+trace task stop <id>              put a task in progress back to to do
 trace task done|drop <id>         close an open task, with the message that closed it; done refuses while a
                                   criterion is unmet, and both refuse while a task under it is open
 trace task told <id>              the user was told of a fired task: its session's Stop hook stops holding the turn

@@ -289,7 +289,11 @@ func addColumns(db *sql.DB) error {
 		{"alter table task add column moved_at text", nil},                      // the last move or level change (T11)
 		{"alter table task add column moved_session text", nil},                 // the session that ran it (T11)
 		{"alter table task add column kind text", nil},                          // a story's kind; none is story (T14)
-		{"alter table task add column points integer", nil},                     // a story's points, 1 to 13 (T15)
+		{"alter table task add column points integer", nil},
+		{"alter table task add column started_at text", nil},      // in progress since (T16)
+		{"alter table task add column started_session text", nil}, // the session that started it (T16)
+		{"alter table task add column stopped_at text", nil},      // back to to do, the last time (T16)
+		{"alter table task add column stopped_session text", nil}, // the session that stopped it (T16)                     // a story's points, 1 to 13 (T15)
 	} {
 		_, err := db.Exec(c.alter)
 		if err != nil && !strings.Contains(err.Error(), "duplicate column") {

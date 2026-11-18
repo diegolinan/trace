@@ -41,30 +41,37 @@ func fitsUnder(level, parentLevel string) error {
 	return nil
 }
 
-// taskTag is what shows a task's level, points and parent to the agent (SPEC T13, T15), scanned from tagSQL.
+// taskTag is what shows a task's level, points, parent and progress to the agent (SPEC T13, T15, T16), scanned from
+// tagSQL.
 type taskTag struct {
 	level, parentLevel string
 	parent             int64
 	points             int
+	started            bool
 }
 
 // dest is where a row's tagSQL columns are scanned into.
-func (g *taskTag) dest() []any { return []any{&g.level, &g.parentLevel, &g.parent, &g.points} }
+func (g *taskTag) dest() []any {
+	return []any{&g.level, &g.parentLevel, &g.parent, &g.points, &g.started}
+}
 
-// String is "story, 3 points, in epic 3", "epic, 8 points", "epic", or "" for a task with no parent, the only kind
-// there was before levels.
+// String is "story, 3 points, in epic 3, in progress", "epic, 8 points", "epic", "in progress", or "" for a task with
+// no parent not started, the only kind there was before levels.
 func (g taskTag) String() string {
-	if g.parent == 0 && g.level == "task" {
-		return ""
+	var parts []string
+	if g.parent != 0 || g.level != "task" {
+		parts = append(parts, g.level)
 	}
-	s := g.level
 	if g.points > 0 {
-		s += ", " + pointsText(g.points)
+		parts = append(parts, pointsText(g.points))
 	}
 	if g.parent != 0 {
-		s += fmt.Sprintf(", in %s %d", g.parentLevel, g.parent)
+		parts = append(parts, fmt.Sprintf("in %s %d", g.parentLevel, g.parent))
 	}
-	return s
+	if g.started {
+		parts = append(parts, "in progress")
+	}
+	return strings.Join(parts, ", ")
 }
 
 // tagged is "task <id>" with its level tag in parentheses when it has one.
@@ -75,10 +82,11 @@ func tagged(id int64, tag string) string {
 	return fmt.Sprintf("task %d (%s)", id, tag)
 }
 
-// tagSQL selects a task t's taskTag: its level, its parent's level, its parent's id (0 for none) and its points, an
-// epic's being the sum of its stories' not dropped (SPEC T15); it needs "left join task p on p.id = t.parent_id".
+// tagSQL selects a task t's taskTag: its level, its parent's level, its parent's id (0 for none), its points, an
+// epic's being the sum of its stories' not dropped (SPEC T15), and whether it is in progress (SPEC T16); it needs
+// "left join task p on p.id = t.parent_id".
 const tagSQL = `t.level, coalesce(p.level, ''), coalesce(t.parent_id, 0), coalesce(case when t.level = 'epic'
-	then (select sum(c.points) from task c where c.parent_id = t.id and coalesce(c.closed_how, '') != 'drop') else t.points end, 0)`
+	then (select sum(c.points) from task c where c.parent_id = t.id and coalesce(c.closed_how, '') != 'drop') else t.points end, 0), t.started_at is not null`
 
 // openLevel is an open task's level, or an error naming it as not open.
 func openLevel(db *sql.DB, id string) (string, error) {

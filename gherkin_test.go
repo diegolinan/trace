@@ -93,7 +93,7 @@ func TestTaskStartShowsDoneWhen(t *testing.T) {
 	root := tkRoot(t, mutLines(mutUser("u1", 0, "anotá")))
 	tkTrace(t, root, "task", "add", "-text", "send it", "-then", "a", "-then", "b")
 	tkTrace(t, root, "task", "add", "-text", "later", "-needs", "x", "-then", "c")
-	if out, _, code := rdRun(t, root, "task", "start", "1"); code != 0 || !strings.Contains(out, "task 1 is ready\ndone when: then 1: \"a\"; then 2: \"b\"") {
+	if out, _, code := rdRun(t, root, "task", "start", "1"); code != 0 || !strings.Contains(out, "task 1 is ready; now in progress\ndone when: then 1: \"a\"; then 2: \"b\"") {
 		t.Errorf("start 1: exit %d, %q", code, out)
 	}
 	if out, _, code := rdRun(t, root, "task", "start", "2"); code != 3 || !strings.Contains(out, `done when: then 2: "c"`) {

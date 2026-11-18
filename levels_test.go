@@ -40,7 +40,7 @@ func TestTaskRelevel(t *testing.T) {
 		t.Errorf("task level prints %q", out)
 	}
 	tkTrace(t, root, "task", "add", "-text", "child", "-under", "1")
-	lvRefused(t, root, "task", "level", "1", "epic") // its child, a task, would sit two levels down
+	lvRefused(t, root, "task", "level", "1", "epic")  // its child, a task, would sit two levels down
 	lvRefused(t, root, "task", "level", "2", "story") // its parent, a story, would be at its own level
 	lvRefused(t, root, "task", "level", "1", "saga")
 	lvRefused(t, root, "task", "level", "9", "story")
@@ -171,10 +171,10 @@ func TestLevelShownEverywhere(t *testing.T) {
 	root := tkRoot(t, mutLines(mutUser("u1", 0, "anotá")))
 	tkTrace(t, root, "task", "add", "-text", "the CV", "-level", "story", "-needs", "a decision")
 	tkTrace(t, root, "task", "add", "-text", "write it", "-under", "1", "-at", "2026-11-12T10:00:00Z")
-	const tag = "task 2 (task, in story 1)"
-	if out, _, code := rdRun(t, root, "task", "start", "2"); code != 0 || !strings.Contains(out, tag+" is ready") {
+	if out, _, code := rdRun(t, root, "task", "start", "2"); code != 0 || !strings.Contains(out, "task 2 (task, in story 1) is ready") {
 		t.Errorf("start 2: exit %d, %q", code, out)
 	}
+	const tag = "task 2 (task, in story 1, in progress)"
 	db := tkStore(t, root)
 	var block strings.Builder
 	if err := taskSection(db, &block, "Ana"); err != nil {

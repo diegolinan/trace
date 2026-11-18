@@ -26,7 +26,7 @@ func cmdTask(o opts) error {
 		run = taskCommands[o.args[0]]
 	}
 	if run == nil {
-		return usageError{errors.New(`task needs add -text "<what>" [-at "<when>" [-zone UTC-3]] [-after <id>] [-needs "<what>"] [-then "<criterion>"] [-level epic|story|task|subtask] [-under <id>] [-kind story|bug|chore|spike|impediment] [-points 1|2|3|5|8|13] [-self], then <id> "<criterion>", under <id> <parent|none>, level <id> <level>, kind <id> <kind>, points <id> <n>, sizes, done <id>, drop <id>, told <id>, met <id> <n>, start <id> or list`)}
+		return usageError{errors.New(`task needs add -text "<what>" [-at "<when>" [-zone UTC-3]] [-after <id>] [-needs "<what>"] [-then "<criterion>"] [-level epic|story|task|subtask] [-under <id>] [-kind story|bug|chore|spike|impediment] [-points 1|2|3|5|8|13] [-self], then <id> "<criterion>", under <id> <parent|none>, level <id> <level>, kind <id> <kind>, points <id> <n>, sizes, stop <id>, done <id>, drop <id>, told <id>, met <id> <n>, start <id> or list`)}
 	}
 	t, err := taskFromFlags(o)
 	if err != nil {
@@ -58,6 +58,7 @@ var taskCommands = map[string]taskCommand{
 	"level":  func(db *sql.DB, o opts, t newTask) error { return taskLevel(db, o.args, os.Stdout) },
 	"kind":   func(db *sql.DB, o opts, t newTask) error { return taskKind(db, o.args, os.Stdout) },
 	"points": func(db *sql.DB, o opts, t newTask) error { return taskPoints(db, o.args, os.Stdout) },
+	"stop":   func(db *sql.DB, o opts, t newTask) error { return taskStop(db, o.args, os.Stdout) },
 	"sizes":  func(db *sql.DB, o opts, t newTask) error { return taskSizes(db, os.Stdout) },
 	"done":   func(db *sql.DB, o opts, t newTask) error { return taskClose(db, o.args, os.Stdout) },
 	"drop":   func(db *sql.DB, o opts, t newTask) error { return taskClose(db, o.args, os.Stdout) },
@@ -298,6 +299,9 @@ func taskSection(db *sql.DB, w io.Writer, user string) error {
 		"and, unless it is a spike or an impediment, points you estimate on your own against the stories already done "+
 		"(-points 1|2|3|5|8|13; task points <id> <n>; task sizes lists the done ones); bound a spike by its time (-at) instead. "+
 		"At 13, propose to split it. To the user, never say kinds or points: say what the work is like, in your own words. "+
+		"task start <id> also puts a ready task in progress, and task stop <id> puts it back to to do; keep one story in progress at a time. "+
+		"Most conversations put nothing on the board: a question answered or work finished in the conversation is no task; "+
+		"add one only for what is left for later or will outlast the conversation, and make it an epic, a story or a sprint only when the work has that shape. "+
 		"Close a task only after asking %s: %s or %s.\n\n",
 		user, traceCmd("task add", ` -text "<what>" [-at "YYYY-MM-DD HH:MM"]`), user, offsetName(off), user, user,
 		traceCmd("task done", " <id>"), traceCmd("task drop", " <id>"))
@@ -440,18 +444,29 @@ func stopReason(dbPath, session string) string {
 }
 
 // taskTold records that the user was told of a fired task (SPEC A8); its session's stop hook holds no more.
-func taskTold(db *sql.DB, args []string, w io.Writer) error {
+var taskTold = taskMark{`update task set told_at = ?1 where id = ?3 and announced_at is not null and told_at is null and closed_at is null`,
+	"a fired task waiting to be told", "told"}.run
+
+// taskStop puts a task in progress back to to do, with when and the session (SPEC T16).
+var taskStop = taskMark{`update task set started_at = null, started_session = null, stopped_at = ?1, stopped_session = nullif(?2, '')
+	where id = ?3 and closed_at is null and started_at is not null`, "a task in progress", "to do"}.run
+
+// taskMark is a subcommand that marks one task: update, with ?1 the time now, ?2 the calling session and ?3 the task;
+// what the task must be for update to change it; and what it says when it does.
+type taskMark struct{ update, is, said string }
+
+// run marks task args[1] and prints "task <id>: <said>", or refuses the task as not being what m.is.
+func (m taskMark) run(db *sql.DB, args []string, w io.Writer) error {
 	if len(args) < 2 {
-		return usageError{errors.New("task told needs a task id")}
+		return usageError{fmt.Errorf("task %s needs a task id", args[0])}
 	}
-	res, err := db.Exec(`update task set told_at = ? where id = ? and announced_at is not null and told_at is null and closed_at is null`,
-		clockNow().UTC().Format(time.RFC3339), args[1])
+	res, err := db.Exec(m.update, clockNow().UTC().Format(time.RFC3339), callerSession(db), args[1])
 	if err != nil {
 		return err
 	}
 	if n, _ := res.RowsAffected(); n == 0 {
-		return fmt.Errorf("task %s is not a fired task waiting to be told; nothing changed", args[1])
+		return fmt.Errorf("task %s is not %s; nothing changed", args[1], m.is)
 	}
-	fmt.Fprintf(w, "task %s: told\n", args[1])
+	fmt.Fprintf(w, "task %s: %s\n", args[1], m.said)
 	return nil
 }
