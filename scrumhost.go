@@ -88,14 +88,10 @@ func scrumEnv(env []string) []string {
 	return append(out, scrumChildVar+"=1", "CLAUDE_CODE_DISABLE_ADVISOR_TOOL=1")
 }
 
-// scrumTrigger is the scrum run a hook event starts: after a turn, or at a session start (not after a compaction);
-// "" for none (SPEC T19).
+// scrumTrigger is the scrum run a hook event starts: after a turn, which may hold a hand-off; "" for none (SPEC T19).
 func scrumTrigger(in hookInput) string {
-	switch {
-	case in.Event == "Stop":
+	if in.Event == "Stop" {
 		return "stop"
-	case in.Event == "SessionStart" && in.Source != "compact":
-		return "session-start"
 	}
 	return ""
 }
@@ -143,7 +139,7 @@ func cmdScrum(o opts) error {
 		return err
 	}
 	defer db.Close()
-	if !scrumDue(db, o.trigger, o.host) {
+	if !scrumDue(db, o.host) {
 		return nil
 	}
 	return scrumRun(db, o.trigger, o.host, hostScrum)

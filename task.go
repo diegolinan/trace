@@ -316,7 +316,8 @@ func taskSection(db *sql.DB, w io.Writer, user string) error {
 // to the scrum master when one is on (SPEC T21).
 func boardGuide() string {
 	if scrumOn() {
-		return "A scrum master agent runs the board in the background: leave levels, groups, kinds, points, order and sprints to it. " +
+		return "A scrum master agent runs the board in the background. When something is left for later, add it at once in plain words, " +
+			"with -self when the user did not ask: that hands it to the scrum master; leave levels, groups, kinds, points, order and sprints to it. " +
 			"When the prompt hook hands you its note, tell the user in your own words at a natural moment, never naming the board. "
 	}
 	return "You are the scrum master of this board: you pick each task's level (-level epic|story|task|subtask, task by default) and group it " +

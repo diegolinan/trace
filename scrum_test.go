@@ -62,45 +62,42 @@ func TestScrumOffByDefault(t *testing.T) {
 			t.Errorf("%q: off has it %v, on has it %v", want, strings.Contains(off.String(), want), strings.Contains(on.String(), want))
 		}
 	}
-	for _, want := range []string{"task add", "task stop", "task done", "task sprint close", "scrum master agent runs the board", "Most conversations put nothing on the board"} {
+	for _, want := range []string{"task add", "-self", "at once", "task stop", "task done", "task sprint close", "scrum master agent runs the board", "Most conversations put nothing on the board"} {
 		if !strings.Contains(on.String(), want) {
 			t.Errorf("on, the start block lacks %q:\n%s", want, on.String())
 		}
 	}
 }
 
-// SPEC T19: a run is due at session start when the user said something new on that host since the last good run, and
-// after a turn only when the board also changed since that run ended.
+// SPEC T19: a run is due after a hand-off: the working agent changed the board since the last good run ended, in a
+// turn of that host since its cursor. No hand-off, no run.
 func TestScrumDue(t *testing.T) {
 	db := rzDB(t)
-	if scrumDue(db, "session-start", claudeName) {
+	if scrumDue(db, claudeName) {
 		t.Error("due with nothing said")
 	}
 	smEvent(t, db, claudeName, "s1", "user", "prompt", "acordate de llamar a Ana", "2026-11-18T10:00:00Z")
-	if !scrumDue(db, "session-start", claudeName) || scrumDue(db, "session-start", codexName) {
-		t.Error("session start: due on the host that was talked to only")
-	}
-	if scrumDue(db, "stop", claudeName) {
-		t.Error("stop: due with no board change")
+	if scrumDue(db, claudeName) {
+		t.Error("due with words but no hand-off")
 	}
 	rzExec(t, db, `insert into task(text, created_at, level, rank) values ('x', '2026-11-18T10:01:00Z', 'task', 1)`)
-	if !scrumDue(db, "stop", claudeName) {
-		t.Error("stop: not due after a board change")
+	if !scrumDue(db, claudeName) || scrumDue(db, codexName) {
+		t.Error("a hand-off: due on the host that was talked to only")
 	}
 	rzExec(t, db, `insert into scrum_run(trigger, host, started_at, ended_at, ok, events_to) values ('stop', ?, '2026-11-18T10:02:00Z', '2026-11-18T10:03:00Z', 1, (select max(id) from event))`, claudeName)
-	if scrumDue(db, "session-start", claudeName) || scrumDue(db, "stop", claudeName) {
+	if scrumDue(db, claudeName) {
 		t.Error("due again with nothing new since a good run")
 	}
 	smEvent(t, db, claudeName, "s1", "user", "prompt", "y lo del CV", "2026-11-18T10:04:00Z")
-	if !scrumDue(db, "session-start", claudeName) || scrumDue(db, "stop", claudeName) {
-		t.Error("something new said: due at session start only")
+	if scrumDue(db, claudeName) {
+		t.Error("something new said and no hand-off: due")
 	}
 	rzExec(t, db, `update task set closed_at = '2026-11-18T10:05:00Z', closed_how = 'done'`)
-	if !scrumDue(db, "stop", claudeName) {
-		t.Error("stop: not due after a close")
+	if !scrumDue(db, claudeName) {
+		t.Error("not due after a close")
 	}
 	rzExec(t, db, `insert into scrum_run(trigger, host, started_at, ended_at, ok, events_to) values ('stop', ?, '2026-11-18T10:06:00Z', '2026-11-18T10:07:00Z', 0, (select max(id) from event))`, claudeName)
-	if !scrumDue(db, "stop", claudeName) {
+	if !scrumDue(db, claudeName) {
 		t.Error("a failed run moved the cursor")
 	}
 }
@@ -116,7 +113,7 @@ func TestScrumPromptHostOnly(t *testing.T) {
 	smEvent(t, db, codexName, "c1", "user", "prompt", "CODEX-ONLY words", "2026-11-18T10:01:00Z")
 	smEvent(t, db, claudeName, "s1", "assistant", "tool_call", "TOOL-CALL noise", "2026-11-18T10:02:00Z")
 	prompt, to := scrumPrompt(db, claudeName)
-	for _, want := range []string{"task 1 (story)", "después vemos lo de LinkedIn", "dale, lo dejamos para después", `"commands"`, `"note"`} {
+	for _, want := range []string{"task 1 (story)", "después vemos lo de LinkedIn", "dale, lo dejamos para después", `"commands"`, `"note"`, "only a story carries a kind and points", "A sprint holds stories only"} {
 		if !strings.Contains(prompt, want) {
 			t.Errorf("prompt lacks %q", want)
 		}
@@ -162,8 +159,8 @@ func TestScrumAllows(t *testing.T) {
 	}
 }
 
-// SPEC T20: only board commands from the fixed list run, in process; an add is always -self; closing, dropping,
-// meeting, sprint close and anything else are refused.
+// SPEC T20: only board commands from the fixed list run, in process; adding, closing, dropping, meeting, sprint close
+// and anything else are refused.
 func TestScrumExecAllowlist(t *testing.T) {
 	root := tkRoot(t, mutLines(mutUser("u1", 0, "anotá")))
 	tkTrace(t, root, "task", "add", "-text", "the CV")
@@ -182,10 +179,10 @@ func TestScrumExecAllowlist(t *testing.T) {
 		{"task"},
 		{"task", "level", "9", "story"}, // allowed, refused by the command itself
 	})
-	if len(ran) != 4 || len(refused) != 8 {
+	if len(ran) != 3 || len(refused) != 9 {
 		t.Errorf("ran %q\nrefused %q", ran, refused)
 	}
-	if got := mutStr(t, db, `select group_concat(id || ':' || level || ':' || self || ':' || coalesce(points, '-') || ':' || (closed_at is null), ';') from (select * from task order by id)`); got != "1:story:0:5:1;2:story:1:3:1;3:task:1:-:1" {
+	if got := mutStr(t, db, `select group_concat(id || ':' || level || ':' || self || ':' || coalesce(points, '-') || ':' || (closed_at is null), ';') from (select * from task order by id)`); got != "1:story:0:5:1;2:task:1:-:1" {
 		t.Errorf("tasks %q", got)
 	}
 }
@@ -197,14 +194,14 @@ func TestScrumRunRecordsAndHandsNote(t *testing.T) {
 	tkTrace(t, root, "task", "add", "-text", "the CV")
 	db := tkStore(t, root)
 	fail := &smRunner{err: errors.New("no credit")}
-	if err := scrumRun(db, "session-start", claudeName, fail.run); err == nil {
+	if err := scrumRun(db, "stop", claudeName, fail.run); err == nil {
 		t.Error("a failed host run is no error")
 	}
-	if !scrumDue(db, "session-start", claudeName) {
+	if !scrumDue(db, claudeName) {
 		t.Error("a failed run moved the cursor")
 	}
 	good := &smRunner{reply: `{"commands": [["task", "level", "1", "story"], ["task", "done", "1"]], "note": "quedó pendiente LinkedIn"}`}
-	if err := scrumRun(db, "session-start", claudeName, good.run); err != nil {
+	if err := scrumRun(db, "stop", claudeName, good.run); err != nil {
 		t.Fatal(err)
 	}
 	if good.calls != 1 || !strings.Contains(good.prompt, "después vemos lo de LinkedIn") {
@@ -213,7 +210,7 @@ func TestScrumRunRecordsAndHandsNote(t *testing.T) {
 	if got := mutStr(t, db, `select group_concat(ok || '|' || coalesce(commands, '') || '|' || coalesce(refused, '') || '|' || coalesce(note, '') || '|' || coalesce(error, ''), ';') from (select * from scrum_run order by id)`); !strings.Contains(got, "0||||no credit") || !strings.Contains(got, `1|["task","level","1","story"]|["task","done","1"]|quedó pendiente LinkedIn|`) {
 		t.Errorf("runs %q", got)
 	}
-	if scrumDue(db, "session-start", claudeName) {
+	if scrumDue(db, claudeName) {
 		t.Error("a good run left the cursor")
 	}
 	if other := scrumNotes(db, codexName); len(other) != 0 {
@@ -246,8 +243,8 @@ func TestScrumChildIsInert(t *testing.T) {
 	}
 }
 
-// SPEC T19: when on, a Stop and a session start each start a detached scrum run for their host and return; off, or in
-// the scrum master's own session, none starts.
+// SPEC T19: when on, a Stop starts a detached scrum run for its host and returns; a session start starts none; off, or
+// in the scrum master's own session, none starts.
 func TestScrumHooksSpawn(t *testing.T) {
 	_, dbPath := shStore(t)
 	var spawned []string
@@ -270,7 +267,7 @@ func TestScrumHooksSpawn(t *testing.T) {
 	shStop(t, dbPath, claudeName, hookInput{SessionID: "s9"})
 	shStop(t, dbPath, codexName, hookInput{SessionID: "s9"})
 	start(claudeName)
-	if got := strings.Join(spawned, " "); got != "stop:claude-code stop:codex session-start:claude-code" {
+	if got := strings.Join(spawned, " "); got != "stop:claude-code stop:codex" {
 		t.Errorf("spawned %q", got)
 	}
 	if said := smStderr(t, func() { shStop(t, dbPath, claudeName, hookInput{SessionID: "s9"}) }); said != "" {
@@ -283,7 +280,7 @@ func TestScrumHooksSpawn(t *testing.T) {
 	spawnScrum = func(_ []string, trigger, host string) error { spawned = append(spawned, trigger+":"+host); return nil }
 	t.Setenv(scrumChildVar, "1")
 	shStop(t, dbPath, claudeName, hookInput{SessionID: "s9"})
-	if len(spawned) != 4 {
+	if len(spawned) != 3 {
 		t.Errorf("the child spawned: %q", spawned)
 	}
 }
@@ -306,7 +303,7 @@ func TestCmdScrum(t *testing.T) {
 	old := hostScrum
 	hostScrum = fake.run
 	t.Cleanup(func() { hostScrum = old })
-	o := opts{dbPath: dbPath, trigger: "session-start", host: claudeName}
+	o := opts{dbPath: dbPath, trigger: "stop", host: claudeName}
 	if err := cmdScrum(o); err != nil || fake.calls != 0 {
 		t.Fatalf("off: %v, %d calls", err, fake.calls)
 	}
@@ -342,13 +339,13 @@ func TestScrumPromptCut(t *testing.T) {
 	}
 }
 
-// SPEC T19: a Stop and a session start that is not after a compaction start a run; nothing else does.
+// SPEC T19: only a Stop, the end of a turn that may hold a hand-off, starts a run.
 func TestScrumTrigger(t *testing.T) {
 	for _, c := range []struct {
 		in   hookInput
 		want string
 	}{
-		{hookInput{Event: "Stop"}, "stop"}, {hookInput{Event: "SessionStart", Source: "startup"}, "session-start"}, {hookInput{Event: "SessionStart", Source: "resume"}, "session-start"},
+		{hookInput{Event: "Stop"}, "stop"}, {hookInput{Event: "SessionStart", Source: "startup"}, ""}, {hookInput{Event: "SessionStart", Source: "resume"}, ""},
 		{hookInput{Event: "SessionStart", Source: "compact"}, ""}, {hookInput{Event: "PreCompact"}, ""}, {hookInput{Event: "SessionEnd"}, ""}, {hookInput{Event: "UserPromptSubmit"}, ""},
 	} {
 		if got := scrumTrigger(c.in); got != c.want {
@@ -381,13 +378,14 @@ func TestCmdScrumWaitsForImport(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(root, "trace", "config.json"), []byte(`{"scrum_master": {}}`), 0o644); err != nil {
 		t.Fatal(err)
 	}
+	tkTrace(t, root, "task", "add", "-text", "the CV") // the hand-off
 	dbPath := filepath.Join(root, "trace", "trace.db")
 	lock, err := tryLock(dbPath + ".lock")
 	if err != nil || lock == nil {
 		t.Fatal(err)
 	}
 	go func() { time.Sleep(1500 * time.Millisecond); lock.Close() }()
-	if _, errOut, code := runTrace(t, root, "", nil, "scrum", "-trigger", "session-start", "-host", claudeName); code != 1 || !strings.Contains(errOut, "test binary") {
+	if _, errOut, code := runTrace(t, root, "", nil, "scrum", "-trigger", "stop", "-host", claudeName); code != 1 || !strings.Contains(errOut, "test binary") {
 		t.Errorf("scrum: exit %d, %q", code, errOut)
 	}
 	if got := mutStr(t, tkStore(t, root), `select coalesce(group_concat(ok || ':' || error, ';'), '') from scrum_run`); got != "0:no scrum master host runs from a test binary" {

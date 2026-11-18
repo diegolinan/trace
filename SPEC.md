@@ -263,14 +263,18 @@ work really has that shape (Diego, 2026-11-17: "no toda charla deriva en un back
   ends it. With no sprint the board is kanban (T16). Tests: `TestSprintOpen`, `TestSprintRefusals`,
   `TestSprintLiftsWIP`, `TestSprintShown`, `TestSprintEndFires`, `TestSprintClose`.
 
-The scrum master (T19 to T22, draft). The board is run by its own agent, not by the agent working with the user
-(Diego, 2026-11-18: "crear un agente especializado en ser el scrummaster"). The working agent keeps only what must
-happen in the turn: adding what the user asks to be reminded of or to note (T1), with the time echoed back; task
-start and task stop; and closing, dropping and meeting with the user's words (T2, T6). Everything else on the board
-is the scrum master's: levels, groups, kinds, points, order, sprints, and adding work that was left for later
-without the user asking (-self).
-- **T19.** When it runs. TRACE starts the scrum master in the background, never holding the user's turn: after a
-  turn in which the board changed, and once at session start over what the sessions since its last run said. It
+The scrum master (T19 to T22, draft, second version). The board is run by its own agent, not by the agent working
+with the user (Diego, 2026-11-18: "crear un agente especializado en ser el scrummaster"). The working agent keeps what
+needs the conversation as it happens: noticing what is left for later and putting it on the board at once, asked
+for (T1) or not (-self), in plain words, with the time echoed back; task start and task stop; and closing, dropping and
+meeting with the user's words (T2, T6). That add is its hand-off: it says nothing about level, group, kind, points,
+order or sprint, which are the scrum master's (Diego, 2026-11-18: "vos llames al scrum master cuando llegue algo y te
+sacas la tarea de encima"). The first version also gave the scrum master the -self adds and ran it at each session
+start; in test 6 it caught 65.6% of the deferrals against 77.4% for the working agent alone, because noticing moved
+away from the agent that was in the conversation
+(`system/research/2026-11-16_trace-tasks/README.md`, "Test 6").
+- **T19.** When it runs. A hand-off starts it: after a turn in which the working agent added a task or changed the
+  board, TRACE starts the scrum master in the background, never holding the user's turn. No hand-off, no run. It
   runs on the host the session runs on (`claude -p` for Claude Code, `codex exec` for Codex), with a model and an on
   or off set in config.json (off by default until T22 passes). One run at a time per store; a run that fails is
   recorded and the next one covers what it missed.
@@ -278,18 +282,20 @@ without the user asking (-self).
   new events since its last run, verbatim from the store, from the sessions of the host it runs on only, so a
   Claude Code session's words never go to Codex's vendor or the other way. It answers with board commands only, as
   JSON lists of arguments, never through a shell, from a fixed list:
-  `task add -self`, `task level`, `task under`, `task kind`, `task points`, `task order`, `task then`, `task sprint`
-  and `task sprint add|out`. TRACE runs each one as the agent's would and refuses any other: it never closes, drops,
-  meets, or reads or writes outside the store. Most runs change nothing: a conversation puts nothing on the board
-  unless something was left for later or the work outlasts it.
+  `task level`, `task under`, `task kind`, `task points`, `task order`, `task then`, `task sprint` and
+  `task sprint add|out`. TRACE runs each one as the agent's would and refuses any other: it never adds, closes,
+  drops, meets, or reads or writes outside the store. The words are its context for placing and sizing what was
+  handed to it, not a source of new tasks.
 - **T21.** What reaches the user. The scrum master never talks to the user. It may leave at most one note per run
   for the working agent ("quedó pendiente X", "el viernes vence Y"), which the prompt hook hands it on the next
   typed prompt, and which the working agent tells the user in its own words at a natural moment, never naming the
   board. Every run is recorded: when, the session that triggered it, the commands it gave, what TRACE refused, the
-  note. The start block of the working agent drops its board instructions and keeps T1, T2, T6 and T16.
+  note. The start block of the working agent drops its board instructions and keeps T1 with -self, T2, T6 and
+  T16: add what was left for later at once, in plain words, and leave the rest to the scrum master.
 - **T22.** Proof before it is on by default. Real sessions replayed twice, once with the working agent running the
   board alone and once with the scrum master, and compared by what was lost (left for later and never on the
-  board) and what was added that should not have been. The threshold is fixed with Diego before the run.
+  board), what was added that should not have been, and what the hand-off is for: a better-run board for less of
+  the working agent's attention. The threshold is fixed with Diego before the run.
 
 Why T5 to T7: 25 of 93 real deferrals waited on another task, a third party, a decision of Diego's or an input not
 there yet, over the threshold of 1 in 5 fixed before the run. Conditions of done (Gherkin at close) were disputed in

@@ -196,13 +196,14 @@ trace alarm                       fires each task at its time, even with nobody 
                                   and not told is late in every start block and named once per session on the next
                                   prompt, until the user is told or it is closed
 trace alarm -stop                 stop the running alarm (the installers run it before replacing the binary)
-trace scrum -trigger stop|session-start -host claude-code|codex
-                                  one scrum master run, started detached by the Stop and start hooks when
-                                  config.json has "scrum_master": {"model": "<model or empty>"} (off by default).
+trace scrum -trigger stop -host claude-code|codex
+                                  one scrum master run, started detached by the Stop hook after a hand-off (the
+                                  working agent added a task or changed the board) when config.json has
+                                  "scrum_master": {"model": "<model or empty>"} (off by default).
                                   It runs the host's command line headless (claude -p with no tools and no session
                                   kept; codex exec read-only and ephemeral), reads the board and what that host's
-                                  sessions said since its last good run, and gives board commands from a fixed list
-                                  (never done, drop, met or sprint close); its note reaches the next prompt of that
+                                  sessions said since its last good run, and places and sizes what it was handed with
+                                  board commands from a fixed list (never add, done, drop, met or sprint close); its note reaches the next prompt of that
                                   host when UserPromptSubmit is installed. Each run is recorded in scrum_run
 
 -home <folder>                    on any command: the memory to use

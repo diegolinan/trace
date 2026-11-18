@@ -37,17 +37,14 @@ func scrumCursor(db *sql.DB, host string) (events int64, ended string) {
 // hostEvents is the SQL for the events after ?1 of the sessions of host ?2 (SPEC T20).
 const hostEvents = `from event e join source_file f on f.id = e.file_id where e.id > ?1 and f.host = ?2 and e.kind in ` + scrumKinds
 
-// scrumDue says whether a run is due: something new typed by the user on host since the last good run, and, after a
-// turn, a board that changed since that run ended (SPEC T19).
-func scrumDue(db *sql.DB, trigger, host string) bool {
+// scrumDue says whether a run is due: a hand-off, a board the working agent changed since the last good run ended, in
+// a turn typed by the user on host since that run (SPEC T19).
+func scrumDue(db *sql.DB, host string) bool {
 	events, ended := scrumCursor(db, host)
 	var said int
 	db.QueryRow(`select count(*) `+hostEvents+` and e.speaker = 'user'`, events, host).Scan(&said)
 	if said == 0 {
 		return false
-	}
-	if trigger == "session-start" {
-		return true
 	}
 	var changed int
 	db.QueryRow(`select count(*) from task where max(created_at, coalesce(closed_at, ''), coalesce(moved_at, ''), coalesce(started_at, ''),
@@ -90,18 +87,21 @@ func must[T any](v T, _ error) T { return v }
 
 // scrumJob is the scrum master's instructions; %s are the user's name, the board and the new conversation.
 const scrumJob = `You are the scrum master of a private board kept by TRACE for %s. You never talk to the user. Another agent works with
-the user; it adds what the user asks to be reminded of, starts and stops work, and closes things with the user's words.
+the user; it adds what was left for later, starts and stops work, and closes things with the user's words.
 You run the rest of the board from what was said: levels (epic, story, task, subtask; a parent is one level up),
 groups, kinds (story, bug, chore, spike, impediment), Fibonacci points (1, 2, 3, 5, 8, 13; none on a spike or an
 impediment) estimated against the stories done, the order of importance among siblings, and sprints when the user
-gives one date for a set of things. Add, with task add, work that was left for later and is not on the board yet.
+gives one date for a set of things. A new task comes in at level task, and only a story carries a kind and points:
+make it a story first (task level <id> story) when the work has that shape, or leave it a task.
+A sprint holds stories only. The working agent hands you work by adding it to the board in plain words: place
+and size what was handed to you, and keep the rest of the board in shape. You never add tasks; what was said is
+context for placing them.
 
-Most conversations put nothing on the board: a question answered or work finished in the conversation is no task.
 Make something an epic, a story or a sprint only when the work really has that shape. When in doubt, change nothing.
 
 Answer with one JSON object and nothing else:
-{"commands": [["task", "level", "3", "story"], ["task", "add", "-text", "<what, in the user's words>"]], "note": ""}
-Each command is a list of arguments to trace, from: task add, task level, task under, task kind, task points,
+{"commands": [["task", "level", "3", "story"], ["task", "points", "3", "2"]], "note": ""}
+Each command is a list of arguments to trace, from: task level, task under, task kind, task points,
 task order, task then, task sprint -at "<when>" -text "<goal>" <id>..., task sprint add|out <id>.
 "note" is at most one short line for the working agent to tell the user at a natural moment, in plain words,
 never naming the board, levels, points or ids; leave it empty unless the user should hear something.
@@ -133,7 +133,7 @@ func parseScrumReply(out string) (cmds [][]string, note string, err error) {
 }
 
 // scrumAllowed are the task subcommands the scrum master may run; sprint only to open one, or add and out (SPEC T20).
-var scrumAllowed = map[string]bool{"add": true, "level": true, "under": true, "kind": true, "points": true, "order": true, "then": true, "sprint": true}
+var scrumAllowed = map[string]bool{"level": true, "under": true, "kind": true, "points": true, "order": true, "then": true, "sprint": true}
 
 // scrumAllows says whether argv is a command the scrum master may give.
 func scrumAllows(argv []string) bool {
@@ -148,8 +148,7 @@ func word(argv []string, i int) string {
 	return ""
 }
 
-// scrumExec runs each allowed command in process, as the working agent's would run, an add always as -self; it
-// returns the ones that ran and the ones refused, by the list or by the command itself (SPEC T20).
+// scrumExec runs each allowed command in process, as the working agent's would run; it returns the ones that ran and the ones refused, by the list or by the command itself (SPEC T20).
 func scrumExec(db *sql.DB, cmds [][]string) (ran, refused [][]string) {
 	for _, argv := range cmds {
 		if !scrumAllows(argv) || scrumCommand(db, argv[1:]) != nil {
@@ -170,13 +169,9 @@ func scrumCommand(db *sql.DB, args []string) error {
 		return err
 	}
 	o.args = append([]string{name}, fs.Args()...)
-	o.self = o.self || name == "add"
 	t, err := taskFromFlags(o)
 	if err != nil {
 		return err
-	}
-	if name == "add" {
-		return taskAdd(db, t, io.Discard) // its echo and the alarm's wake are for a person's add
 	}
 	return taskCommands[name](db, o, t)
 }
