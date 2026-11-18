@@ -129,7 +129,7 @@ func ruleHook(in hookInput, role, host, dbPath string, checks bool, w io.Writer)
 	store := &lazyStore{path: dbPath}
 	defer store.close()
 	var parts []string
-	if text := dueTasks(in, store); text != "" {
+	if text := dueTasks(in, host, store); text != "" {
 		parts = append(parts, text)
 	}
 	if checks && in.Event == "PostToolUse" && anyCheckApplies(in, cfg.Checks) {

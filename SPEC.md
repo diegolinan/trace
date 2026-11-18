@@ -263,6 +263,34 @@ work really has that shape (Diego, 2026-11-17: "no toda charla deriva en un back
   ends it. With no sprint the board is kanban (T16). Tests: `TestSprintOpen`, `TestSprintRefusals`,
   `TestSprintLiftsWIP`, `TestSprintShown`, `TestSprintEndFires`, `TestSprintClose`.
 
+The scrum master (T19 to T22, draft). The board is run by its own agent, not by the agent working with the user
+(Diego, 2026-11-18: "crear un agente especializado en ser el scrummaster"). The working agent keeps only what must
+happen in the turn: adding what the user asks to be reminded of or to note (T1), with the time echoed back; task
+start and task stop; and closing, dropping and meeting with the user's words (T2, T6). Everything else on the board
+is the scrum master's: levels, groups, kinds, points, order, sprints, and adding work that was left for later
+without the user asking (-self).
+- **T19.** When it runs. TRACE starts the scrum master in the background, never holding the user's turn: after a
+  turn in which the board changed, and once at session start over what the sessions since its last run said. It
+  runs on the host the session runs on (`claude -p` for Claude Code, `codex exec` for Codex), with a model and an on
+  or off set in config.json (off by default until T22 passes). One run at a time per store; a run that fails is
+  recorded and the next one covers what it missed.
+- **T20.** What it sees and what it may do. It gets the board (`task list`, `task sizes`, the open sprint) and the
+  new events since its last run, verbatim from the store, from the sessions of the host it runs on only, so a
+  Claude Code session's words never go to Codex's vendor or the other way. It answers with board commands only, as
+  JSON lists of arguments, never through a shell, from a fixed list:
+  `task add -self`, `task level`, `task under`, `task kind`, `task points`, `task order`, `task then`, `task sprint`
+  and `task sprint add|out`. TRACE runs each one as the agent's would and refuses any other: it never closes, drops,
+  meets, or reads or writes outside the store. Most runs change nothing: a conversation puts nothing on the board
+  unless something was left for later or the work outlasts it.
+- **T21.** What reaches the user. The scrum master never talks to the user. It may leave at most one note per run
+  for the working agent ("quedó pendiente X", "el viernes vence Y"), which the prompt hook hands it on the next
+  typed prompt, and which the working agent tells the user in its own words at a natural moment, never naming the
+  board. Every run is recorded: when, the session that triggered it, the commands it gave, what TRACE refused, the
+  note. The start block of the working agent drops its board instructions and keeps T1, T2, T6 and T16.
+- **T22.** Proof before it is on by default. Real sessions replayed twice, once with the working agent running the
+  board alone and once with the scrum master, and compared by what was lost (left for later and never on the
+  board) and what was added that should not have been. The threshold is fixed with Diego before the run.
+
 Why T5 to T7: 25 of 93 real deferrals waited on another task, a third party, a decision of Diego's or an input not
 there yet, over the threshold of 1 in 5 fixed before the run. Conditions of done (Gherkin at close) were disputed in
 9 of 93, under the threshold of 1 in 10 by one item, and that count is a floor (ten turns often end before the

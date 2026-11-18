@@ -223,6 +223,7 @@ var commands = map[string]func(opts) error{
 	"rules":     cmdRules,
 	"task":      cmdTask,
 	"alarm":     cmdAlarm,
+	"scrum":     cmdScrum,
 }
 
 // runHook answers a host hook. Fail open: a hook error must never block or fail the host's turn.
