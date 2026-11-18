@@ -279,15 +279,17 @@ func addColumns(db *sql.DB) error {
 		{"alter table task add column fire_reason text", nil},   // why a fire failed (A2, A7)
 		// When the user was told (A8); tasks T4 announced before the alarm existed count as told (A2).
 		{"alter table task add column told_at text", fillToldAt},
-		{"alter table task add column holds integer not null default 0", nil}, // turns the stop hook held for this task (A8)
-		{"alter table task add column marker text", nil},                      // trace-alarm:<id>:<nonce> of the fire's message (A4, A9)
-		{"alter table task add column zone text", nil},                        // the UTC offset the time was said in (A10)
-		{"alter table task add column self integer not null default 0", nil}, // added with -self: no message asked for it (T1)
-		{"alter table task_condition add column done_when text", nil},        // a criterion of done, in words (T8)
+		{"alter table task add column holds integer not null default 0", nil},   // turns the stop hook held for this task (A8)
+		{"alter table task add column marker text", nil},                        // trace-alarm:<id>:<nonce> of the fire's message (A4, A9)
+		{"alter table task add column zone text", nil},                          // the UTC offset the time was said in (A10)
+		{"alter table task add column self integer not null default 0", nil},    // added with -self: no message asked for it (T1)
+		{"alter table task_condition add column done_when text", nil},           // a criterion of done, in words (T8)
 		{"alter table task add column level text not null default 'task'", nil}, // epic, story, task or subtask (T10)
-		{"alter table task add column parent_id integer", nil},                 // the open task one level up (T11)
-		{"alter table task add column moved_at text", nil},                     // the last move or level change (T11)
-		{"alter table task add column moved_session text", nil},                // the session that ran it (T11)
+		{"alter table task add column parent_id integer", nil},                  // the open task one level up (T11)
+		{"alter table task add column moved_at text", nil},                      // the last move or level change (T11)
+		{"alter table task add column moved_session text", nil},                 // the session that ran it (T11)
+		{"alter table task add column kind text", nil},                          // a story's kind; none is story (T14)
+		{"alter table task add column points integer", nil},                     // a story's points, 1 to 13 (T15)
 	} {
 		_, err := db.Exec(c.alter)
 		if err != nil && !strings.Contains(err.Error(), "duplicate column") {

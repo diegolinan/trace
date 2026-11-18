@@ -55,10 +55,9 @@ func toFire(db *sql.DB, now string) ([]dueTask, error) {
 	var due []dueTask
 	for rows.Next() {
 		var t dueTask
-		var level, parentLevel string
-		var parent int64
-		rows.Scan(&t.id, &t.added, &t.due, &t.zone, &t.text, &t.asked, &t.self, &level, &parentLevel, &parent)
-		t.tag = levelTag(level, parentLevel, parent)
+		var g taskTag
+		rows.Scan(append([]any{&t.id, &t.added, &t.due, &t.zone, &t.text, &t.asked, &t.self}, g.dest()...)...)
+		t.tag = g.String()
 		due = append(due, t)
 	}
 	rows.Close() // read whole before asking more: the store has one connection

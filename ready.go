@@ -143,12 +143,12 @@ func taskStart(db *sql.DB, args []string, w io.Writer) error {
 	if len(args) < 2 {
 		return usageError{errors.New("task start needs a task id")}
 	}
-	var id, parent int64
-	var level, parentLevel string
-	if err := db.QueryRow(`select t.id, `+tagSQL+` from task t left join task p on p.id = t.parent_id where t.id = ? and t.closed_at is null`, args[1]).Scan(&id, &level, &parentLevel, &parent); err != nil {
+	var id int64
+	var g taskTag
+	if err := db.QueryRow(`select t.id, `+tagSQL+` from task t left join task p on p.id = t.parent_id where t.id = ? and t.closed_at is null`, args[1]).Scan(append([]any{&id}, g.dest()...)...); err != nil {
 		return fmt.Errorf("task %s is not an open task", args[1])
 	}
-	name := tagged(id, levelTag(level, parentLevel, parent))
+	name := tagged(id, g.String())
 	waiting := waitingOn(db, id, 0)
 	if waiting == "" {
 		fmt.Fprintf(w, "%s is ready\n", name)

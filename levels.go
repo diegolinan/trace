@@ -41,16 +41,30 @@ func fitsUnder(level, parentLevel string) error {
 	return nil
 }
 
-// levelTag is how a task's level and parent are shown to the agent (SPEC T13): "story, in epic 3", "epic", or "" for
-// a task with no parent, the only kind there was before levels.
-func levelTag(level, parentLevel string, parent int64) string {
-	switch {
-	case parent != 0:
-		return fmt.Sprintf("%s, in %s %d", level, parentLevel, parent)
-	case level == "task":
+// taskTag is what shows a task's level, points and parent to the agent (SPEC T13, T15), scanned from tagSQL.
+type taskTag struct {
+	level, parentLevel string
+	parent             int64
+	points             int
+}
+
+// dest is where a row's tagSQL columns are scanned into.
+func (g *taskTag) dest() []any { return []any{&g.level, &g.parentLevel, &g.parent, &g.points} }
+
+// String is "story, 3 points, in epic 3", "epic, 8 points", "epic", or "" for a task with no parent, the only kind
+// there was before levels.
+func (g taskTag) String() string {
+	if g.parent == 0 && g.level == "task" {
 		return ""
 	}
-	return level
+	s := g.level
+	if g.points > 0 {
+		s += ", " + pointsText(g.points)
+	}
+	if g.parent != 0 {
+		s += fmt.Sprintf(", in %s %d", g.parentLevel, g.parent)
+	}
+	return s
 }
 
 // tagged is "task <id>" with its level tag in parentheses when it has one.
@@ -61,9 +75,10 @@ func tagged(id int64, tag string) string {
 	return fmt.Sprintf("task %d (%s)", id, tag)
 }
 
-// tagSQL selects a task t's level, its parent's level and its parent's id (0 for none); it needs "left join task p on
-// p.id = t.parent_id".
-const tagSQL = `t.level, coalesce(p.level, ''), coalesce(t.parent_id, 0)`
+// tagSQL selects a task t's taskTag: its level, its parent's level, its parent's id (0 for none) and its points, an
+// epic's being the sum of its stories' not dropped (SPEC T15); it needs "left join task p on p.id = t.parent_id".
+const tagSQL = `t.level, coalesce(p.level, ''), coalesce(t.parent_id, 0), coalesce(case when t.level = 'epic'
+	then (select sum(c.points) from task c where c.parent_id = t.id and coalesce(c.closed_how, '') != 'drop') else t.points end, 0)`
 
 // openLevel is an open task's level, or an error naming it as not open.
 func openLevel(db *sql.DB, id string) (string, error) {
@@ -142,13 +157,17 @@ func taskLevel(db *sql.DB, args []string, w io.Writer) error {
 	if len(args) < 3 {
 		return usageError{errors.New("task level needs a task id and a level")}
 	}
-	if _, err := openLevel(db, args[1]); err != nil {
+	_, kind, points, err := openSize(db, args[1])
+	if err != nil {
 		return fmt.Errorf("%v; nothing changed", err)
 	}
 	var parentLevel string
 	db.QueryRow(`select coalesce(p.level, '') from task t left join task p on p.id = t.parent_id where t.id = ?`, args[1]).Scan(&parentLevel)
 	if err := fitsUnder(args[2], parentLevel); err != nil {
 		return fmt.Errorf("%v; nothing changed", err)
+	}
+	if err := sized(args[2], kind, points); err != nil {
+		return fmt.Errorf("%v; nothing changed", err) // a kind or points only a story has (SPEC T14, T15)
 	}
 	var child string
 	db.QueryRow(`select level from task where parent_id = ? and closed_at is null`, args[1]).Scan(&child)

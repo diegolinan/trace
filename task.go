@@ -26,7 +26,7 @@ func cmdTask(o opts) error {
 		run = taskCommands[o.args[0]]
 	}
 	if run == nil {
-		return usageError{errors.New(`task needs add -text "<what>" [-at "<when>" [-zone UTC-3]] [-after <id>] [-needs "<what>"] [-then "<criterion>"] [-level epic|story|task|subtask] [-under <id>] [-self], then <id> "<criterion>", under <id> <parent|none>, level <id> <level>, done <id>, drop <id>, told <id>, met <id> <n>, start <id> or list`)}
+		return usageError{errors.New(`task needs add -text "<what>" [-at "<when>" [-zone UTC-3]] [-after <id>] [-needs "<what>"] [-then "<criterion>"] [-level epic|story|task|subtask] [-under <id>] [-kind story|bug|chore|spike|impediment] [-points 1|2|3|5|8|13] [-self], then <id> "<criterion>", under <id> <parent|none>, level <id> <level>, kind <id> <kind>, points <id> <n>, sizes, done <id>, drop <id>, told <id>, met <id> <n>, start <id> or list`)}
 	}
 	t, err := taskFromFlags(o)
 	if err != nil {
@@ -48,23 +48,29 @@ type taskCommand func(db *sql.DB, o opts, t newTask) error
 
 // taskCommands are the task subcommands by name.
 var taskCommands = map[string]taskCommand{
-	"add":   func(db *sql.DB, o opts, t newTask) error { return taskAddWake(db, o.dbPath, t) },
-	"list":  func(db *sql.DB, o opts, t newTask) error { return taskList(db, os.Stdout) },
-	"told":  func(db *sql.DB, o opts, t newTask) error { return taskTold(db, o.args, os.Stdout) },
-	"met":   func(db *sql.DB, o opts, t newTask) error { return taskMet(db, o.args, os.Stdout) },
-	"start": func(db *sql.DB, o opts, t newTask) error { return taskStart(db, o.args, os.Stdout) },
-	"then":  func(db *sql.DB, o opts, t newTask) error { return taskThen(db, o.args, os.Stdout) },
-	"under": func(db *sql.DB, o opts, t newTask) error { return taskUnder(db, o.args, os.Stdout) },
-	"level": func(db *sql.DB, o opts, t newTask) error { return taskLevel(db, o.args, os.Stdout) },
-	"done":  func(db *sql.DB, o opts, t newTask) error { return taskClose(db, o.args, os.Stdout) },
-	"drop":  func(db *sql.DB, o opts, t newTask) error { return taskClose(db, o.args, os.Stdout) },
+	"add":    func(db *sql.DB, o opts, t newTask) error { return taskAddWake(db, o.dbPath, t) },
+	"list":   func(db *sql.DB, o opts, t newTask) error { return taskList(db, os.Stdout) },
+	"told":   func(db *sql.DB, o opts, t newTask) error { return taskTold(db, o.args, os.Stdout) },
+	"met":    func(db *sql.DB, o opts, t newTask) error { return taskMet(db, o.args, os.Stdout) },
+	"start":  func(db *sql.DB, o opts, t newTask) error { return taskStart(db, o.args, os.Stdout) },
+	"then":   func(db *sql.DB, o opts, t newTask) error { return taskThen(db, o.args, os.Stdout) },
+	"under":  func(db *sql.DB, o opts, t newTask) error { return taskUnder(db, o.args, os.Stdout) },
+	"level":  func(db *sql.DB, o opts, t newTask) error { return taskLevel(db, o.args, os.Stdout) },
+	"kind":   func(db *sql.DB, o opts, t newTask) error { return taskKind(db, o.args, os.Stdout) },
+	"points": func(db *sql.DB, o opts, t newTask) error { return taskPoints(db, o.args, os.Stdout) },
+	"sizes":  func(db *sql.DB, o opts, t newTask) error { return taskSizes(db, os.Stdout) },
+	"done":   func(db *sql.DB, o opts, t newTask) error { return taskClose(db, o.args, os.Stdout) },
+	"drop":   func(db *sql.DB, o opts, t newTask) error { return taskClose(db, o.args, os.Stdout) },
 }
 
 // taskFromFlags reads task add's flags: -at in -zone, else in the computer's zone (SPEC A10). -zone without -at is
 // refused. Empty -at is no time.
 func taskFromFlags(o opts) (newTask, error) {
-	t := newTask{text: o.text, self: o.self, level: o.level, under: o.under}
+	t := newTask{text: o.text, self: o.self, level: o.level, under: o.under, kind: o.kind}
 	var err error
+	if t.points, err = readPoints(o.points); err != nil {
+		return t, fmt.Errorf("%v; nothing stored", err)
+	}
 	if t.conds, err = conditionsFromFlags(o.after, o.needs, o.then); err != nil {
 		return t, err
 	}
@@ -94,6 +100,8 @@ type newTask struct {
 	conds    []condition
 	level    string // -level, "" when not given (SPEC T10)
 	under    string // -under, "" for none (SPEC T11)
+	kind     string // -kind, "" for none (SPEC T14)
+	points   int    // -points, 0 for none (SPEC T15)
 }
 
 // taskAddWake adds the task, then starts the alarm when it is not running (SPEC A1). A start that fails is said and the
@@ -122,15 +130,18 @@ func taskAdd(db *sql.DB, t newTask, w io.Writer) error {
 	if err != nil {
 		return err
 	}
+	if err := sized(level, t.kind, t.points); err != nil {
+		return fmt.Errorf("%v; nothing stored", err)
+	}
 	at, zone := "", ""
 	if !t.due.IsZero() {
 		at = t.due.UTC().Format(time.RFC3339) // UTC, so times compare as text
 		_, off := t.due.Zone()
 		zone = offsetName(off) // the offset it was said in (SPEC A10)
 	}
-	res, err := db.Exec(`insert into task(text, due, zone, self, asked_event, created_at, added_session, level, parent_id)
-		values (?1, nullif(?2, ''), nullif(?6, ''), ?3, case when ?3 then null else `+newestTyped("?5")+` end, ?4, nullif(?5, ''), ?7, nullif(?8, 0))`,
-		redacted(t.text), at, t.self, clockNow().UTC().Format(time.RFC3339), callerSession(db), zone, level, parent)
+	res, err := db.Exec(`insert into task(text, due, zone, self, asked_event, created_at, added_session, level, parent_id, kind, points)
+		values (?1, nullif(?2, ''), nullif(?6, ''), ?3, case when ?3 then null else `+newestTyped("?5")+` end, ?4, nullif(?5, ''), ?7, nullif(?8, 0), nullif(nullif(?9, ''), 'story'), nullif(?10, 0))`,
+		redacted(t.text), at, t.self, clockNow().UTC().Format(time.RFC3339), callerSession(db), zone, level, parent, t.kind, t.points)
 	if err != nil {
 		return err
 	}
@@ -239,14 +250,15 @@ func openTaskRows(db *sql.DB, and string, limit int) (lines []string, more int, 
 	total := 0
 	var ids []int64
 	for rows.Next() {
-		var id, parent int64
-		var created, due, zone, text, asked, level, parentLevel string
+		var id int64
+		var created, due, zone, text, asked string
 		var self bool
-		rows.Scan(&id, &created, &due, &zone, &text, &asked, &self, &level, &parentLevel, &parent, &total)
+		var g taskTag
+		rows.Scan(append(append([]any{&id, &created, &due, &zone, &text, &asked, &self}, g.dest()...), &total)...)
 		c, _ := time.Parse(time.RFC3339, created)
-		lines = append(lines, fmt.Sprintf("- %s, %s ago%s: %s", tagged(id, levelTag(level, parentLevel, parent)), clockNow().Sub(c).Round(time.Minute), dueText(due, zone, ", due "), taskWords(text, asked, self)))
+		lines = append(lines, fmt.Sprintf("- %s, %s ago%s: %s", tagged(id, g.String()), clockNow().Sub(c).Round(time.Minute), dueText(due, zone, ", due "), taskWords(text, asked, self)))
 		ids = append(ids, id)
-		idParent = append(idParent, [2]int64{id, parent})
+		idParent = append(idParent, [2]int64{id, g.parent})
 	}
 	rows.Close() // read whole before asking more: the store has one connection
 	return withWaiting(db, lines, ids), total - len(lines), idParent, rows.Err()
@@ -282,6 +294,10 @@ func taskSection(db *sql.DB, w io.Writer, user string) error {
 		"(-under <id>, one level up), and regroup as the situation asks (task under <id> <parent|none>, task level <id> <level>), all on your own. "+
 		"A story gets its Given / When / Then criteria, agreed with the user in plain words. To the user, never name levels, ids or the board: "+
 		"talk about the things themselves, when something ends, when the subject changes or at the start, never in the middle of work. "+
+		"Give each story a kind from how the user talks (-kind story|bug|chore|spike|impediment, story by default; task kind <id> <kind>) "+
+		"and, unless it is a spike or an impediment, points you estimate on your own against the stories already done "+
+		"(-points 1|2|3|5|8|13; task points <id> <n>; task sizes lists the done ones); bound a spike by its time (-at) instead. "+
+		"At 13, propose to split it. To the user, never say kinds or points: say what the work is like, in your own words. "+
 		"Close a task only after asking %s: %s or %s.\n\n",
 		user, traceCmd("task add", ` -text "<what>" [-at "YYYY-MM-DD HH:MM"]`), user, offsetName(off), user, user,
 		traceCmd("task done", " <id>"), traceCmd("task drop", " <id>"))
@@ -331,11 +347,12 @@ func nameUntold(d *sql.DB, session string) ([]string, error) {
 	var lines []string
 	var ids []int64
 	for rows.Next() {
-		var id, parent int64
-		var due, zone, text, asked, level, parentLevel string
+		var id int64
+		var due, zone, text, asked string
 		var self bool
-		rows.Scan(&id, &due, &zone, &text, &asked, &self, &level, &parentLevel, &parent)
-		lines = append(lines, fmt.Sprintf("Reminder for %s: %s%s: %s", userName(), tagged(id, levelTag(level, parentLevel, parent)), dueText(due, zone, ", due "), taskWords(text, asked, self)))
+		var g taskTag
+		rows.Scan(append([]any{&id, &due, &zone, &text, &asked, &self}, g.dest()...)...)
+		lines = append(lines, fmt.Sprintf("Reminder for %s: %s%s: %s", userName(), tagged(id, g.String()), dueText(due, zone, ", due "), taskWords(text, asked, self)))
 		ids = append(ids, id)
 	}
 	rows.Close() // read whole before writing: the store has one connection

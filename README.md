@@ -161,6 +161,12 @@ trace task add -text "<what>"     a task the user asked to be reminded of, tied 
                                   [-then "<criterion>"]: how to tell it is done, Given / When / Then in words (repeats)
                                   [-level epic|story|task|subtask] [-under <id>]: its level (task by default) and the
                                   open task one level up it goes under; the agent picks both, the user never sees them
+                                  [-kind story|bug|chore|spike|impediment] [-points 1|2|3|5|8|13]: a story's kind
+                                  (story by default) and points (none on a spike or an impediment); an epic's points
+                                  are its stories'; the agent picks both and tells the user only what the work is like
+trace task kind <id> <kind>       change an open story's kind
+trace task points <id> <n>        change an open story's points
+trace task sizes                  the last 20 stories closed as done with points: points, kind, time from added to done
 trace task then <id> "<criterion>"  add a criterion of done to an open task later
 trace task under <id> <parent|none>  move an open task under another open task one level up, or out of its parent
 trace task level <id> <level>     change an open task's level, keeping its parent one level up and its children one down

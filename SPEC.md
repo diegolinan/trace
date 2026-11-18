@@ -218,6 +218,25 @@ already keep for the user: closing, dropping and meeting.
   its own; that a story gets its Given / When / Then criteria, agreed with the user in plain words; and that
   levels, ids and the board are never named to the user. Tests: `TestTaskListTree`,
   `TestLevelShownEverywhere`, `TestStartBlockTellsAboutLevels`.
+- **T14.** Kinds. A story has one kind: `story` (default), `bug` (something that does not work as it should; its
+  criteria say how to reproduce it: what was expected and what happens), `chore` (technical work with no direct value:
+  migrate, update, clean), `spike` (find out something in order to decide; its criterion is the question to answer)
+  or `impediment` (something that blocks other items; its criterion is what would unblock them). `task add -kind
+  <kind>` sets it and `trace task kind <id> <kind>` changes it on an open story. A kind on any level other than story,
+  and any other word, are refused and nothing is stored. The agent picks the kind from how the user talks ("no anda"
+  is a bug, "hay que investigar" a spike, "actualizá X" a chore) and never names it to the user. Tests:
+  `TestTaskKinds`, `TestTaskKindRefusals`.
+- **T15.** Points. A story, bug or chore can carry points: effort, as in Scrum, on the Fibonacci scale 1, 2, 3, 5, 8,
+  13. `task add -points <n>` sets them and `trace task points <id> <n>` changes them on an open task. Points on a
+  level other than story, on a spike or an impediment (a spike is bounded by its time, `-at`, instead), and any other
+  number, are refused and nothing is stored. An epic's points are the sum of its stories'. The agent estimates them
+  on its own, relative to stories already closed ("like X, which was a 3"), and never says points to the user: it
+  says what the work is like in words that fit the work and the moment (quick, a while, delicate, risky, easy,
+  involved), chosen by the agent with no fixed table (Diego, 2026-11-17: "sos un LLM. Te vas a dar cuenta solo"); if
+  the user says nothing, the estimate stands. At 13 the agent proposes splitting the story. `trace task sizes` prints the last 20 stories closed as done with points, each with
+  its points, kind and how long it took from added to done, for the agent to compare with. Points show with the
+  level (`story, 3 points, in epic 1`; `epic, 8 points`). Tests: `TestTaskPoints`, `TestTaskPointsRefusals`,
+  `TestEpicPointsSum`, `TestTaskSizes`, `TestStartBlockTellsAboutPoints`.
 
 Why T5 to T7: 25 of 93 real deferrals waited on another task, a third party, a decision of Diego's or an input not
 there yet, over the threshold of 1 in 5 fixed before the run. Conditions of done (Gherkin at close) were disputed in
