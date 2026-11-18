@@ -300,25 +300,37 @@ func taskSection(db *sql.DB, w io.Writer, user string) error {
 		"and task start <id> before working on a task, to see what it still waits on and what done means. "+
 		"Write how to tell a task is done as -then \"<criterion>\" (repeats), each one Given / When / Then in the user's language; "+
 		"task then <id> \"<criterion>\" adds one later; task met <id> <n> meets one when the user says so, and task done needs every criterion met. "+
-		"You are the scrum master of this board: you pick each task's level (-level epic|story|task|subtask, task by default) and group it "+
-		"(-under <id>, one level up), and regroup as the situation asks (task under <id> <parent|none>, task level <id> <level>), all on your own. "+
-		"A story gets its Given / When / Then criteria, agreed with the user in plain words. To the user, never name levels, ids or the board: "+
-		"talk about the things themselves, when something ends, when the subject changes or at the start, never in the middle of work. "+
-		"Give each story a kind from how the user talks (-kind story|bug|chore|spike|impediment, story by default; task kind <id> <kind>) "+
-		"and, unless it is a spike or an impediment, points you estimate on your own against the stories already done "+
-		"(-points 1|2|3|5|8|13; task points <id> <n>; task sizes lists the done ones); bound a spike by its time (-at) instead. "+
-		"At 13, propose to split it. To the user, never say kinds or points: say what the work is like, in your own words. "+
-		"task start <id> also puts a ready task in progress, and task stop <id> puts it back to to do; keep one story in progress at a time. "+
-		"Keep the tasks under each parent in order of importance by what the user says matters (task order <id> <n>; a new one goes last), never naming the order. "+
-		"When the user gives one date for a set of things, open a sprint (task sprint -at \"<when>\" -text \"<goal, the user's words>\" <id>...; "+
-		"task sprint add|out <id>); its stories are not held to one in progress. When its review fires, go over each story left with the user "+
+		"task start <id> also puts a ready task in progress, and task stop <id> puts it back to to do. "+
+		"%s"+
+		"When a sprint's review fires, go over each story left with the user "+
 		"(done, back to the backlog with task sprint out <id>, or into the next sprint), then task sprint close. "+
 		"Most conversations put nothing on the board: a question answered or work finished in the conversation is no task; "+
 		"add one only for what is left for later or will outlast the conversation, and make it an epic, a story or a sprint only when the work has that shape. "+
 		"Close a task only after asking %s: %s or %s.\n\n",
-		user, traceCmd("task add", ` -text "<what>" [-at "YYYY-MM-DD HH:MM"]`), user, offsetName(off), user, user,
-		traceCmd("task done", " <id>"), traceCmd("task drop", " <id>"))
+		user, traceCmd("task add", ` -text "<what>" [-at "YYYY-MM-DD HH:MM"]`), user, offsetName(off), user, boardGuide(),
+		user, traceCmd("task done", " <id>"), traceCmd("task drop", " <id>"))
 	return nil
+}
+
+// boardGuide is what the working agent does with the board: all of it when it runs the board itself, or leaving it
+// to the scrum master when one is on (SPEC T21).
+func boardGuide() string {
+	if scrumOn() {
+		return "A scrum master agent runs the board in the background: leave levels, groups, kinds, points, order and sprints to it. " +
+			"When the prompt hook hands you its note, tell the user in your own words at a natural moment, never naming the board. "
+	}
+	return "You are the scrum master of this board: you pick each task's level (-level epic|story|task|subtask, task by default) and group it " +
+		"(-under <id>, one level up), and regroup as the situation asks (task under <id> <parent|none>, task level <id> <level>), all on your own. " +
+		"A story gets its Given / When / Then criteria, agreed with the user in plain words. To the user, never name levels, ids or the board: " +
+		"talk about the things themselves, when something ends, when the subject changes or at the start, never in the middle of work. " +
+		"Give each story a kind from how the user talks (-kind story|bug|chore|spike|impediment, story by default; task kind <id> <kind>) " +
+		"and, unless it is a spike or an impediment, points you estimate on your own against the stories already done " +
+		"(-points 1|2|3|5|8|13; task points <id> <n>; task sizes lists the done ones); bound a spike by its time (-at) instead. " +
+		"At 13, propose to split it. To the user, never say kinds or points: say what the work is like, in your own words. " +
+		"Keep one story in progress at a time. " +
+		"Keep the tasks under each parent in order of importance by what the user says matters (task order <id> <n>; a new one goes last), never naming the order. " +
+		"When the user gives one date for a set of things, open a sprint (task sprint -at \"<when>\" -text \"<goal, the user's words>\" <id>...; " +
+		"task sprint add|out <id>); its stories are not held to one in progress. "
 }
 
 // untold is openTasks' condition for the tasks fired and not told yet: late (SPEC A7).
@@ -327,7 +339,7 @@ const untold = " and t.announced_at is not null and t.told_at is null"
 // dueTasks fires on a typed prompt the open tasks whose time has come (SPEC T4), then names every fired task not told
 // yet that this session was not shown, one line each (SPEC A7). A store that does not exist yet has none and is not
 // created here.
-func dueTasks(in hookInput, store *lazyStore) string {
+func dueTasks(in hookInput, host string, store *lazyStore) string {
 	if in.Event != "UserPromptSubmit" {
 		return ""
 	}
@@ -342,6 +354,7 @@ func dueTasks(in hookInput, store *lazyStore) string {
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "trace: tasks:", err)
 	}
+	lines = append(lines, scrumNotes(d, host)...) // SPEC T21
 	return strings.Join(lines, "\n")
 }
 

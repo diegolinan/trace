@@ -40,7 +40,9 @@ func readHookInput(r io.Reader) hookInput {
 // outside scope, and a transcript anywhere else admit nothing. cwdIn tells the caller whether the cwd itself is in
 // scope: checks run commands there, so they need it.
 func admitted(in hookInput, host, projects string) (ok, cwdIn bool) {
-	if !filepath.IsAbs(in.Cwd) { // the host always sends one; a payload without it is not trusted with anything
+	// The host always sends a cwd; a payload without it is not trusted with anything. The scrum master's own session
+	// gets nothing, so it never triggers itself (SPEC T19).
+	if !filepath.IsAbs(in.Cwd) || os.Getenv(scrumChildVar) != "" {
 		return false, false
 	}
 	if inScope(in.Cwd, string(cfg.Scope)) {
@@ -79,6 +81,9 @@ func hook(in hookInput, flags []string, dbPath, host, projects string, run func(
 		return nil
 	}
 	role, mine := hookRole(in, host)
+	if mine {
+		scrumHook(in, flags, host)
+	}
 	// One dispatch for both hosts. What differs is only how output is written: Codex rejects plain stdout on Stop and
 	// ignores it on PreCompact (schema.rs, stop.rs, compact.rs, rust-v0.169.0), so it gets context only as JSON, and
 	// only on the events that carry it (contextOut).
