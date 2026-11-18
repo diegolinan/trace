@@ -35,8 +35,6 @@ type config struct {
 	Reinject *reinjectCfg `json:"reinject"`
 	// NotTypedByUser are periods when someone else typed in the user's terminal (SPEC I10).
 	NotTypedByUser []period `json:"not_typed_by_user"`
-	// ScrumMaster turns on the agent that runs the board in the background (scrum.go); absent, it is off.
-	ScrumMaster *scrumCfg `json:"scrum_master"`
 }
 
 // period is a span of UTC dates, both included, with a note saying why.

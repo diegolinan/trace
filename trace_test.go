@@ -74,8 +74,6 @@ func TestMain(m *testing.M) {
 	codexRun = func(string, ...string) (io.ReadWriteCloser, error) {
 		return nil, errors.New("tests start no real Codex")
 	}
-	// No test, nor a mutant of hostScrum's guard, starts a real paid scrum master run (SPEC T19).
-	scrumExe = map[string]string{claudeName: "trace-test-no-claude", codexName: "trace-test-no-codex"}
 	if args, ok := testMainArgs(); ok { // runTrace: this binary runs trace's main, in the profile runTrace made
 		os.Args = append([]string{"trace"}, args...)
 		main()

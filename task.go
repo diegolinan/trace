@@ -312,14 +312,8 @@ func taskSection(db *sql.DB, w io.Writer, user string) error {
 	return nil
 }
 
-// boardGuide is what the working agent does with the board: all of it when it runs the board itself, or leaving it
-// to the scrum master when one is on (SPEC T21).
+// boardGuide is what the working agent does with the board: it runs the board itself (SPEC T10 to T18).
 func boardGuide() string {
-	if scrumOn() {
-		return "A scrum master agent runs the board in the background. When something is left for later, add it at once in plain words, " +
-			"with -self when the user did not ask: that hands it to the scrum master; leave levels, groups, kinds, points, order and sprints to it. " +
-			"When the prompt hook hands you its note, tell the user in your own words at a natural moment, never naming the board. "
-	}
 	return "You are the scrum master of this board: you pick each task's level (-level epic|story|task|subtask, task by default) and group it " +
 		"(-under <id>, one level up), and regroup as the situation asks (task under <id> <parent|none>, task level <id> <level>), all on your own. " +
 		"A story gets its Given / When / Then criteria, agreed with the user in plain words. To the user, never name levels, ids or the board: " +
@@ -355,7 +349,6 @@ func dueTasks(in hookInput, host string, store *lazyStore) string {
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "trace: tasks:", err)
 	}
-	lines = append(lines, scrumNotes(d, host)...) // SPEC T21
 	return strings.Join(lines, "\n")
 }
 

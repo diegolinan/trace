@@ -170,22 +170,6 @@ create table if not exists task_condition (
   met_event integer,
   primary key (task_id, n)
 );
--- One scrum master run (SPEC T19 to T21): what started it, on which host, the last event id it read (events_to, the
--- cursor when ok), the commands it gave that ran and those refused, its note and when a prompt handed it, or its error.
-create table if not exists scrum_run (
-  id integer primary key,
-  trigger text not null,
-  host text not null,
-  started_at text not null,
-  ended_at text not null,
-  ok integer not null,
-  events_to integer,
-  commands text,
-  refused text,
-  note text,
-  note_handed_at text,
-  error text
-);
 -- A sprint (SPEC T18): a set of stories the user gave one date, its goal in the user's words, and the task that is its
 -- review, due at its end. At most one is open.
 create table if not exists sprint (
