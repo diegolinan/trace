@@ -26,7 +26,7 @@ func cmdTask(o opts) error {
 		run = taskCommands[o.args[0]]
 	}
 	if run == nil {
-		return usageError{errors.New(`task needs add -text "<what>" [-at "<when>" [-zone UTC-3]] [-after <id>] [-needs "<what>"] [-then "<criterion>"] [-level epic|story|task|subtask] [-under <id>] [-kind story|bug|chore|spike|impediment] [-points 1|2|3|5|8|13] [-self], then <id> "<criterion>", under <id> <parent|none>, level <id> <level>, kind <id> <kind>, points <id> <n>, sizes, stop <id>, order <id> <n>, done <id>, drop <id>, told <id>, met <id> <n>, start <id> or list`)}
+		return usageError{errors.New(`task needs add -text "<what>" [-at "<when>" [-zone UTC-3]] [-after <id>] [-needs "<what>"] [-then "<criterion>"] [-level epic|story|task|subtask] [-under <id>] [-kind story|bug|chore|spike|impediment] [-points 1|2|3|5|8|13] [-self], then <id> "<criterion>", under <id> <parent|none>, level <id> <level>, kind <id> <kind>, points <id> <n>, sizes, stop <id>, order <id> <n>, sprint -at "<when>" -text "<goal>" <id>..., sprint add|out <id>, sprint close, done <id>, drop <id>, told <id>, met <id> <n>, start <id> or list`)}
 	}
 	t, err := taskFromFlags(o)
 	if err != nil {
@@ -58,6 +58,7 @@ var taskCommands = map[string]taskCommand{
 	"level":  func(db *sql.DB, o opts, t newTask) error { return taskLevel(db, o.args, os.Stdout) },
 	"kind":   func(db *sql.DB, o opts, t newTask) error { return taskKind(db, o.args, os.Stdout) },
 	"points": func(db *sql.DB, o opts, t newTask) error { return taskPoints(db, o.args, os.Stdout) },
+	"sprint": func(db *sql.DB, o opts, t newTask) error { return taskSprint(db, o.dbPath, o.args, t, os.Stdout) },
 	"order":  func(db *sql.DB, o opts, t newTask) error { return taskOrder(db, o.args, os.Stdout) },
 	"stop":   func(db *sql.DB, o opts, t newTask) error { return taskStop(db, o.args, os.Stdout) },
 	"sizes":  func(db *sql.DB, o opts, t newTask) error { return taskSizes(db, os.Stdout) },
@@ -287,6 +288,7 @@ func taskSection(db *sql.DB, w io.Writer, user string) error {
 	}
 	// Every late task, past the five above (SPEC A7). Its error is left out: a store an older binary last migrated has
 	// no told_at, and the rest of the block still holds.
+	sprintSection(db, w)
 	if late, _ := openTasks(db, untold); len(late) > 0 {
 		fmt.Fprintf(w, "### Late: their time came and %s has not been told (in order)\n%s\n", user, strings.Join(late, "\n"))
 	}
@@ -308,6 +310,9 @@ func taskSection(db *sql.DB, w io.Writer, user string) error {
 		"At 13, propose to split it. To the user, never say kinds or points: say what the work is like, in your own words. "+
 		"task start <id> also puts a ready task in progress, and task stop <id> puts it back to to do; keep one story in progress at a time. "+
 		"Keep the tasks under each parent in order of importance by what the user says matters (task order <id> <n>; a new one goes last), never naming the order. "+
+		"When the user gives one date for a set of things, open a sprint (task sprint -at \"<when>\" -text \"<goal, the user's words>\" <id>...; "+
+		"task sprint add|out <id>); its stories are not held to one in progress. When its review fires, go over each story left with the user "+
+		"(done, back to the backlog with task sprint out <id>, or into the next sprint), then task sprint close. "+
 		"Most conversations put nothing on the board: a question answered or work finished in the conversation is no task; "+
 		"add one only for what is left for later or will outlast the conversation, and make it an epic, a story or a sprint only when the work has that shape. "+
 		"Close a task only after asking %s: %s or %s.\n\n",

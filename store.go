@@ -170,6 +170,17 @@ create table if not exists task_condition (
   met_event integer,
   primary key (task_id, n)
 );
+-- A sprint (SPEC T18): a set of stories the user gave one date, its goal in the user's words, and the task that is its
+-- review, due at its end. At most one is open.
+create table if not exists sprint (
+  id integer primary key,
+  goal text not null,
+  review_task integer,
+  opened_at text not null,
+  opened_session text,
+  closed_at text,
+  closed_session text
+);
 create virtual table if not exists event_fts using fts5(text, content='event', content_rowid='id', tokenize='unicode61 remove_diacritics 2');
 create virtual table if not exists event_tri using fts5(text, content='event', content_rowid='id', tokenize='trigram');
 create trigger if not exists event_ai after insert on event begin
@@ -295,6 +306,7 @@ func addColumns(db *sql.DB) error {
 		{"alter table task add column stopped_at text", nil},                                // back to to do, the last time (T16)
 		{"alter table task add column stopped_session text", nil},                           // the session that stopped it (T16)
 		{"alter table task add column rank integer", fillWith("update task set rank = id")}, // the order among siblings (T17); before it, oldest first
+		{"alter table task add column sprint_id integer", nil},                              // the sprint a story is in (T18)
 	} {
 		_, err := db.Exec(c.alter)
 		if err != nil && !strings.Contains(err.Error(), "duplicate column") {

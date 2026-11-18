@@ -177,6 +177,11 @@ trace task start <id>             before working on a task: "ready" and now in p
                                   progress is refused (exit 1) without a sprint
 trace task stop <id>              put a task in progress back to to do
 trace task order <id> <n>         move an open task to place n among the open tasks under the same parent
+trace task sprint -at "<when>" -text "<goal>" <id>...
+                                  open a sprint of open stories until a date, its review added as a task due then;
+                                  one at a time; its stories are not held to one in progress
+trace task sprint add|out <id>    put an open story into the open sprint, or back to the backlog
+trace task sprint close           close the open sprint and its review; refused while a story in it is open
 trace task done|drop <id>         close an open task, with the message that closed it; done refuses while a
                                   criterion is unmet, and both refuse while a task under it is open
 trace task told <id>              the user was told of a fired task: its session's Stop hook stops holding the turn
