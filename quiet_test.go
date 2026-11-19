@@ -43,4 +43,17 @@ func TestResumeSaysWhoWasLeftOut(t *testing.T) {
 	if code != 0 || !strings.Contains(out, "No earlier Claude Code session in this folder.") || !strings.Contains(out, "just-now") || !strings.Contains(out, "-not x") {
 		t.Errorf("exit %d\n%s%s", code, out, errOut)
 	}
+	// SPEC S5: with -not x the session shows, and with no branch recorded the line names none
+	out, _, _ = runTrace(t, root, "", map[string]string{"_DIR": work}, "resume", "-codex=", "-not", "x")
+	if !strings.Contains(out, "NONCE_JUST_NOW") || strings.Contains(out, "branch") {
+		t.Errorf("-not x: %s", out)
+	}
+	// and a recorded branch is named
+	db, _ = openDB(filepath.Join(root, "trace", "trace.db"))
+	db.Exec(`update session set branch_first = 'feature-x', branch_last = 'feature-x' where id = 'just-now'`)
+	db.Close()
+	out, _, _ = runTrace(t, root, "", map[string]string{"_DIR": work}, "resume", "-codex=", "-not", "x")
+	if !strings.Contains(out, ", branch feature-x, ") {
+		t.Errorf("a recorded branch is not named: %s", out)
+	}
 }

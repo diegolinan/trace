@@ -125,8 +125,12 @@ func writeHeader(db *sql.DB, w io.Writer, s shownSession, user, role, host strin
 	fmt.Fprintf(w, framing, user)
 	var names string
 	db.QueryRow("select coalesce(' (named ' || group_concat(name, ', then ') || ')', '') from (select name from session_name where session_id = ? order by first_seen, rowid)", s.id).Scan(&names)
-	fmt.Fprintf(w, "Session %s%s, branch %s, %s to %s local, %s active, %d compaction(s); ended %s ago.\n\n",
-		short(s.id), names, s.branch, local(s.start), local(s.end), time.Duration(s.active)*time.Second, s.comps, ago(s.end))
+	branch := ""
+	if s.branch != "" { // a session outside a repository has none (SPEC S5)
+		branch = ", branch " + s.branch
+	}
+	fmt.Fprintf(w, "Session %s%s%s, %s to %s local, %s active, %d compaction(s); ended %s ago.\n\n",
+		short(s.id), names, branch, local(s.start), local(s.end), time.Duration(s.active)*time.Second, s.comps, ago(s.end))
 }
 
 // blockWriter writes the start block's sections; after the first error it writes nothing more and keeps that error.

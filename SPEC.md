@@ -66,6 +66,8 @@ folder. TRACE behaves the same with it or without it.
   ... session in this folder. The newest one, <id>, wrote in the last two minutes, so it was taken as the session
   asking; run it again with `-not x` to see it." A newcomer on 2026-11-19 ran resume right after a test session and
   was told only "No earlier session". Test: `TestResumeSaysWhoWasLeftOut`.
+- **S5.** The block's session line names the branch only when the host recorded one; a session outside a
+  repository shows no "branch" at all, never "branch ,". Test: `TestResumeSaysWhoWasLeftOut` (its session has none).
 
 ## R. Restore
 
