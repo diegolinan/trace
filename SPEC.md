@@ -43,6 +43,10 @@ folder. TRACE behaves the same with it or without it.
   `TestNoSecretInTheStore`, which looks in every text column of every table, and `TestOldRowsRedacted`.
 - **P2.** An event's `redacted` field names every kind of secret removed from it, from its text and from its tool
   input alike, each kind once, in the order `redact` checks them. Test: `TestRedactedNamesEveryKind`.
+- **P3.** With a `scope`, the raw copy of Claude Code's prompt log (`raw/.claude/history.jsonl.gz`) holds only the
+  lines whose project is in scope, as the store does. Without a scope it is the whole file, as before. A copy made
+  before this rule is left as it is. Found by a newcomer's install on 2026-11-19: the machine's whole prompt log was
+  copied into a home scoped to one folder. Test: `TestScopedPromptLogCopy`.
 
 ## S. Start block without hooks
 
@@ -54,6 +58,14 @@ folder. TRACE behaves the same with it or without it.
   space. A path without one is left as is. On Windows the path is the 8.3 short form, which has no space and runs in
   PowerShell, cmd and bash alike. When the volume has no short names, the path is quoted, and the PowerShell form
   (`& "..."`) is given beside it. On Unix it is quoted. Test: `TestShellPath`.
+- **S3.** `trace resume` with no `-host` answers for the agent the home was installed for. A Codex-only memory
+  (`"claude": false` in config.json, which `install -host codex` writes or requires) is `codex`, so the line an older
+  `AGENTS.md` block runs keeps working. Any other home is `claude-code`. Before 2026-11-19 the default was always
+  `codex`, and a newcomer with Claude Code was told "No earlier Codex session". Test: `TestResumeDefaultsToTheHomesAgent`.
+- **S4.** When `trace resume` finds no earlier session because S1 left out the only one, it says so: "No earlier
+  ... session in this folder. The newest one, <id>, wrote in the last two minutes, so it was taken as the session
+  asking; run it again with `-not x` to see it." A newcomer on 2026-11-19 ran resume right after a test session and
+  was told only "No earlier session". Test: `TestResumeSaysWhoWasLeftOut`.
 
 ## R. Restore
 
@@ -101,6 +113,11 @@ folder. TRACE behaves the same with it or without it.
 - **I12.** A Claude Code prompt the user sent by accepting a suggestion the model wrote (`promptSource`
   `suggestion_accepted`) is stored with kind `suggestion`. The start block shows it as one, and it never counts as a
   refusal or rule the user stated. Test: `TestAcceptedSuggestionIsNotTheUsersWords`.
+- **I13.** Claude Code's folder is `$CLAUDE_CONFIG_DIR` when it is set, else `~/.claude`, for everything TRACE reads
+  or writes there: the transcripts (`projects/`), the prompt log (`history.jsonl`), the settings file and the live
+  sessions. Install and import never disagree on it, so a separate Claude Code profile is stored, and nothing from
+  the default profile is read for it. Found by a newcomer's install on 2026-11-19: the hooks went to the profile, the
+  import read `~/.claude`. Test: `TestClaudeConfigDirIsReadToo`.
 
 ## E. Wrong input says so
 
@@ -109,6 +126,15 @@ folder. TRACE behaves the same with it or without it.
   Claude Code (a Codex-only user). Test: `TestWrongSourcePathsFail`.
 - **E2.** A search whose words are all punctuation is "search needs words", as an empty one is. Test:
   `TestSearchNeedsRealWords`.
+- **E3.** `trace version` (also `-version` and `--version`) prints `trace <version>` and exits 0, with no home and
+  even when config.json is broken. The version is the release tag the release build stamps in; else the module
+  version Go records (`go install ...@v0.3.36`); else `dev`, with the commit Go records when there is one. Found
+  by a newcomer on 2026-11-19: nothing told which version was installed. Tests: `TestVersionCommand`,
+  `TestVersionString`.
+- **E4.** The import a command runs first, to read what is new (search, resume, task), prints no "files N, events
+  added N" line; `trace import`, `restore` and `install` still print it. `trace stats` prints an empty value as
+  `-`, never Go's `<nil>`. A newcomer on 2026-11-19 saw the import line before every answer and `<nil>` in stats.
+  Test: `TestQuietSideImportAndStats`.
 
 ## T. Tasks
 

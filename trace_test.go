@@ -585,8 +585,8 @@ func TestRestorePromptLogAnyScope(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		// the copy sits where archive puts <home>/<folder>/history.jsonl: raw/<folder>/ (raw/.claude/ for the real one)
-		if err := runImport(db2, raw, filepath.Join(raw, filepath.Base(dir), "history.jsonl.gz"), "", "", scope, "restore"); err != nil {
+		// the copy sits at raw/.claude/history.jsonl.gz, whichever folder the prompt log was read from (SPEC I13)
+		if err := runImport(db2, raw, filepath.Join(raw, ".claude", "history.jsonl.gz"), "", "", scope, "restore"); err != nil {
 			t.Fatal(err)
 		}
 		// The store was imported with scope acme; the empty scope admits every project's prompts, so it may bring

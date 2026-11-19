@@ -22,7 +22,7 @@ func tkRoot(t *testing.T, lines string) string {
 // tkWrite writes a transcript into the profile's Claude Code projects folder.
 func tkWrite(t *testing.T, root, name, lines string) {
 	t.Helper()
-	dir := filepath.Join(root, "user", ".claude", "projects", "C--work-acme")
+	dir := filepath.Join(root, "claude", "projects", "C--work-acme") // runTrace sets CLAUDE_CONFIG_DIR to root/claude (SPEC I13)
 	os.MkdirAll(dir, 0o755)
 	if err := os.WriteFile(filepath.Join(dir, name), []byte(lines), 0o644); err != nil {
 		t.Fatal(err)

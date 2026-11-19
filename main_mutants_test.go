@@ -171,7 +171,7 @@ func TestResumeSkipsLiveSession(t *testing.T) {
 		db.Exec(`insert into event(session_id, seq, ts, speaker, kind, text) values (?, ?, ?, 'assistant', 'reply', ?)`, s.id, i+1, s.end, s.text)
 	}
 	db.Close()
-	out, errOut, code := runTrace(t, root, "", map[string]string{"_DIR": work}, "resume")
+	out, errOut, code := runTrace(t, root, "", map[string]string{"_DIR": work}, "resume", "-host", "codex") // Codex sessions (SPEC S3)
 	if code != 0 || !strings.Contains(out, "NONCE_OLD_SESSION") || strings.Contains(out, "NONCE_LIVE_SESSION") {
 		t.Fatalf("exit %d\n%s\n%s", code, out, errOut)
 	}
@@ -193,8 +193,17 @@ func TestResumeWaitsForRunningImport(t *testing.T) {
 	release := time.AfterFunc(2*time.Second, func() { lock.Close() })
 	defer func() { release.Stop(); lock.Close() }()
 	_, errOut, code := runTrace(t, root, "", map[string]string{"_DIR": work}, "resume")
-	if code != 0 || strings.Contains(errOut, "another import is running; skipped") || !strings.Contains(errOut, "events added") {
+	if code != 0 || strings.Contains(errOut, "another import is running; skipped") {
 		t.Fatalf("exit %d\n%s", code, errOut)
+	}
+	// resume's import is quiet (SPEC E4): its run in the store shows it waited and ran
+	db, err := openDB(dbPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	if n := count(t, db, "select count(*) from ingest_run where trigger = 'resume' and ended_at is not null"); n != 1 {
+		t.Fatalf("resume's import runs: %d, want 1\n%s", n, errOut)
 	}
 }
 

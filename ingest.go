@@ -224,7 +224,7 @@ func (im *importer) record(tx *sql.Tx, f *os.File, st os.FileInfo, row transcrip
 	archived, archBytes := "", row.archBytes
 	if (s.end > s.from || s.restart) && im.archiveDir != "" { // a rewrite sets the old copy aside before a whole new line (SPEC I7)
 		archived = archivePath(im.archiveDir, f.Name())
-		if err := archive(archived, f.Name(), s, archBytes); err != nil {
+		if err := archive(archived, f.Name(), s, archBytes, im.keepLine(f.Name())); err != nil {
 			return err
 		}
 		a, err := os.Stat(archived)
@@ -637,7 +637,7 @@ func (im *importer) insertEvent(tx *sql.Tx, uuid, sid string, seq int, ts, branc
 // concatenated members as one stream). It first cuts the copy back to size, the length recorded with the
 // last committed import, so a member left half-written by a killed run is dropped instead of breaking every
 // later read.
-func archive(dst, path string, s span, size int64) error {
+func archive(dst, path string, s span, size int64, keep func([]byte) bool) error {
 	if err := os.MkdirAll(filepath.Dir(dst), 0o755); err != nil {
 		return err
 	}
@@ -649,13 +649,16 @@ func archive(dst, path string, s span, size int64) error {
 	if s.from == 0 { // a read from the start, as every rewrite is, starts the copy over
 		size = 0
 	}
-	return appendMember(dst, path, s.from, s.end, size)
+	return appendMember(dst, path, s.from, s.end, size, keep)
 }
 
 // archivePath is where path's raw copy goes: the same place under archiveDir as under the projects folder, a
 // subagent's (<project>/<sid>/subagents/[workflows/<wf>/]agent-x.jsonl) beside its parent's, and ~/.claude/history.jsonl
-// at .claude/history.jsonl.gz.
+// at .claude/history.jsonl.gz, whichever Claude Code folder it was read from (SPEC I13; restore reads it there).
 func archivePath(archiveDir, path string) string {
+	if filepath.Base(path) == "history.jsonl" { // a transcript is <session id>.jsonl, never this name
+		return filepath.Join(archiveDir, ".claude", "history.jsonl.gz")
+	}
 	projectsDir := filepath.Dir(filepath.Dir(path)) // <projects>/<project>/<sid>.jsonl
 	for d := filepath.Dir(path); filepath.Dir(d) != d; d = filepath.Dir(d) {
 		if filepath.Base(d) == "subagents" {
@@ -677,7 +680,7 @@ func keepReplaced(dst string) error {
 }
 
 // appendMember cuts dst back to size, then appends path's bytes from from to end as one gzip member.
-func appendMember(dst, path string, from, end, size int64) error {
+func appendMember(dst, path string, from, end, size int64, keep func([]byte) bool) error {
 	out, err := os.OpenFile(dst, os.O_CREATE|os.O_WRONLY, 0o644)
 	if err != nil {
 		return err
@@ -696,7 +699,7 @@ func appendMember(dst, path string, from, end, size int64) error {
 	defer src.Close()
 	src.Seek(from, io.SeekStart)
 	zw := gzip.NewWriter(out)
-	if _, err := io.CopyN(zw, src, end-from); err != nil {
+	if err := copyLines(zw, io.LimitReader(src, end-from), keep); err != nil {
 		return err
 	}
 	return zw.Close()

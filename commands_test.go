@@ -14,7 +14,7 @@ func TestResumeCommand(t *testing.T) {
 	work := filepath.Join(root, "work")
 	os.MkdirAll(work, 0o755)
 	env := map[string]string{"_DIR": work}
-	out, errOut, code := runTrace(t, root, "", env, "resume")
+	out, errOut, code := runTrace(t, root, "", env, "resume", "-host", "codex") // the sessions below are Codex's; the default follows the home (SPEC S3)
 	if code != 0 || !strings.Contains(out, "No earlier Codex session in this folder.") {
 		t.Fatalf("empty store: exit %d\n%s\n%s", code, out, errOut)
 	}
@@ -25,7 +25,7 @@ func TestResumeCommand(t *testing.T) {
 	db.Exec(`insert into session(id, host, role, cwd, started_at, ended_at) values ('c1', 'codex', ?, ?, '2026-11-10T10:00:00Z', '2026-11-10T11:00:00Z')`, projectRole(work), work)
 	db.Exec(`insert into event(session_id, seq, ts, speaker, kind, text) values ('c1', 1, '2026-11-10T10:30:00Z', 'assistant', 'reply', 'NONCE_RESUME_CMD')`)
 	db.Close()
-	out, errOut, code = runTrace(t, root, "", env, "resume", "-not", "x")
+	out, errOut, code = runTrace(t, root, "", env, "resume", "-host", "codex", "-not", "x")
 	if code != 0 || !strings.Contains(out, "NONCE_RESUME_CMD") {
 		t.Fatalf("one session: exit %d\n%s\n%s", code, out, errOut)
 	}

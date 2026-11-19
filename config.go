@@ -93,6 +93,9 @@ type roleRule struct {
 // specified"), and Go 1.23+ does not follow junctions, so "data" names the real folder instead.
 func traceHome() string { return envOrHome("TRACE_HOME", ".trace") }
 
+// claudeDir is Claude Code's folder: $CLAUDE_CONFIG_DIR, else ~/.claude (SPEC I13).
+func claudeDir() string { return envOrHome("CLAUDE_CONFIG_DIR", ".claude") }
+
 // envOrHome is the folder the variable names, else that folder under the user's home.
 func envOrHome(variable, folder string) string {
 	if d := os.Getenv(variable); d != "" {

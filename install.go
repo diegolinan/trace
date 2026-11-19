@@ -34,13 +34,7 @@ func optionalHooks(c config) map[string]string {
 }
 
 // claudeSettings is Claude Code's user settings file; CLAUDE_CONFIG_DIR moves it.
-func claudeSettings() string {
-	if d := os.Getenv("CLAUDE_CONFIG_DIR"); d != "" {
-		return filepath.Join(d, "settings.json")
-	}
-	u, _ := os.UserHomeDir()
-	return filepath.Join(u, ".claude", "settings.json")
-}
+func claudeSettings() string { return filepath.Join(claudeDir(), "settings.json") }
 
 // isTraceCmd recognises a hook entry that runs a trace binary, wherever it was installed.
 func isTraceCmd(h any) bool {

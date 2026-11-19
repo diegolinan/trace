@@ -45,7 +45,7 @@ var claudeDial, processAlive = dialInbox, pidAlive
 // claudeLive lists the live sessions: the registry's entries whose process runs, one per session, the window used last
 // (a session can be open in two). No registry is no live session.
 func claudeLive() ([]liveTarget, error) {
-	dir := filepath.Join(envOrHome("CLAUDE_CONFIG_DIR", ".claude"), "sessions")
+	dir := filepath.Join(claudeDir(), "sessions")
 	names, _ := filepath.Glob(filepath.Join(dir, "*.json"))
 	latest := map[string]claudeEntry{}
 	for _, name := range names {

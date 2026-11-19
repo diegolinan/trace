@@ -18,6 +18,7 @@
 //	trace stats
 //	trace task add -text "<what>" [-at "YYYY-MM-DD HH:MM" [-zone UTC-3]] [-self] | done <id> | drop <id> | told <id> | list   the user's tasks
 //	trace alarm [-stop]     fires tasks at their time; started by the start hook and task add -at (-stop: stop it)
+//	trace version           the installed version (also -version, --version)
 package main
 
 import (
@@ -33,10 +34,14 @@ import (
 
 func main() {
 	if len(os.Args) < 2 {
-		fmt.Fprintln(os.Stderr, "usage: trace install -host claude-code|codex | uninstall -host ... | import | restore | hook | resume | search <words> | rules | stats | task add|done|drop|told|list | alarm [-stop]")
+		fmt.Fprintln(os.Stderr, "usage: trace install -host claude-code|codex | uninstall -host ... | import | restore | hook | resume | search <words> | rules | stats | task add|done|drop|told|list | alarm [-stop] | version")
 		os.Exit(2)
 	}
 	cmd := os.Args[1]
+	if isVersionArg(cmd) { // before the home and config.json, so it answers even when they are broken (SPEC E3)
+		fmt.Println(versionString(version, buildInfo()))
+		return
+	}
 	o, err := parseArgs(cmd, os.Args[2:])
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "trace:", err)
@@ -170,7 +175,6 @@ func (o *opts) resolveHome() error {
 
 // defaults fills each flag not given from config.json and the home.
 func (o *opts) defaults() {
-	userHome, _ := os.UserHomeDir()
 	data := dataDir(o.home, cfg)
 	def := func(name string, p *string, v string) {
 		if !o.given[name] {
@@ -179,8 +183,8 @@ func (o *opts) defaults() {
 	}
 	def("db", &o.dbPath, filepath.Join(data, "trace.db"))
 	if claudeOn(cfg) {
-		def("projects", &o.projects, filepath.Join(userHome, ".claude", "projects"))
-		def("history", &o.history, filepath.Join(userHome, ".claude", "history.jsonl"))
+		def("projects", &o.projects, filepath.Join(claudeDir(), "projects"))
+		def("history", &o.history, filepath.Join(claudeDir(), "history.jsonl"))
 	}
 	def("archive", &o.archive, filepath.Join(data, "raw"))
 	def("scope", &o.scope, string(cfg.Scope))
@@ -188,7 +192,7 @@ func (o *opts) defaults() {
 	case "hook":
 		def("host", &o.host, "claude-code") // the hooks installed before -host existed are Claude Code's
 	case "resume":
-		def("host", &o.host, "codex")
+		def("host", &o.host, map[bool]string{true: "claude-code", false: "codex"}[claudeOn(cfg)]) // SPEC S3
 	}
 }
 
@@ -340,6 +344,9 @@ func cmdResume(o opts) error {
 	}
 	if buf.Len() == 0 {
 		fmt.Printf("No earlier %s session in this folder.\n", hostName(o.host))
+		if skip != "" && o.notID == "" { // S1 left out the only one (SPEC S4)
+			fmt.Printf("The newest one, %s, wrote in the last two minutes, so it was taken as the session asking; run it again with `-not x` to see it.\n", skip)
+		}
 	}
 	fmt.Print(buf.String())
 	return nil
@@ -496,6 +503,9 @@ func fail(err error) {
 	os.Exit(1)
 }
 
+// quietImport are the triggers of a command's own first read, which prints no counts (SPEC E4).
+var quietImport = map[string]bool{"search": true, "resume": true, "task": true}
+
 func runImport(db *sql.DB, projects, history, codex, archive, scope, trigger string) error {
 	start := time.Now().UTC().Format(time.RFC3339)
 	res, err := db.Exec("insert into ingest_run(started_at, trigger) values (?, ?)", start, trigger)
@@ -521,7 +531,7 @@ func runImport(db *sql.DB, projects, history, codex, archive, scope, trigger str
 	msg := strings.Join(errs, "\n")
 	db.Exec("update ingest_run set ended_at = ?, files_seen = ?, events_added = ?, error = nullif(?, '') where id = ?",
 		time.Now().UTC().Format(time.RFC3339), len(files), im.added, msg, runID)
-	if trigger != "search" { // stderr: a SessionStart hook's stdout is the text injected into the session
+	if !quietImport[trigger] { // stderr: a SessionStart hook's stdout is the text injected into the session
 		fmt.Fprintf(os.Stderr, "files %d, events added %d, sessions touched %d\n", len(files), im.added, len(im.touched))
 	}
 	if msg != "" {
@@ -706,6 +716,9 @@ func stats(db *sql.DB) error {
 			rows.Scan(ptrs...)
 			var parts []string
 			for _, v := range vals {
+				if v == nil {
+					v = "-" // an empty max() or a null column, not Go's <nil> (SPEC E4)
+				}
 				parts = append(parts, fmt.Sprint(v))
 			}
 			fmt.Println(strings.Join(parts, "  "))
