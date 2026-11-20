@@ -222,7 +222,7 @@ func (rp *rowParser) user(r *row) {
 			case "text":
 				rp.add(typed(rp.asker, b.Text))
 			case "tool_result":
-				rp.p.events = append(rp.p.events, toolResult(r, b)...)
+				rp.p.events = append(rp.p.events, toolResult(r, b, rp.asker)...)
 			}
 		}
 	}
@@ -354,14 +354,19 @@ func typed(asker, s string) ev {
 	return ev{speaker: asker, kind: "prompt", text: s}
 }
 
-// toolResult turns one tool_result block into an answer, a refusal or a plain result.
-func toolResult(r *row, b block) []ev {
+// toolResult turns one tool_result block into an answer, a refusal or a plain result. In a program's session the
+// denial or answer is the program's, as its prompts are (SPEC I16).
+func toolResult(r *row, b block, asker string) []ev {
 	s, _ := asText(b.Content)
+	who := "user"
+	if asker == "program" {
+		who = asker
+	}
 	if r.ToolDenialKind == "user-rejected" {
-		return []ev{{speaker: "user", kind: "refusal", text: s, toolUse: b.ToolUseID, isError: boolp(true)}}
+		return []ev{{speaker: who, kind: "refusal", text: s, toolUse: b.ToolUseID, isError: boolp(true)}}
 	}
 	if t, ok := answers(r.ToolUseResult); ok {
-		return []ev{{speaker: "user", kind: "answer", text: t, toolUse: b.ToolUseID}}
+		return []ev{{speaker: who, kind: "answer", text: t, toolUse: b.ToolUseID}}
 	}
 	e := ev{speaker: "tool", kind: "tool_result", text: headTail(s), toolUse: b.ToolUseID, isError: boolp(b.IsError)}
 	if m := exitRe.FindStringSubmatch(s); m != nil {

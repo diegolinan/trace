@@ -89,7 +89,7 @@ The installer downloads into your system's temporary folder and deletes the down
 **4. Check that it works.** Two things make a test show nothing, so avoid them:
 
 - **Use a real project folder.** Sessions that ran in a temporary folder (`...\Temp\...` on Windows, `/tmp/...` on Linux, `/var/folders/...` on macOS) are stored but never shown in a start block: TRACE treats those folders as scratch. `trace resume` says so when it is the case.
-- **Use a normal interactive session.** Sessions started by a program (`claude -p`, the SDKs, an MCP client) are stored too, but their prompts count as the program's, not yours: the next start block does not quote them as your words, and `trace search` finds them only with `-all`.
+- **Use a normal interactive session.** Sessions started by a program (`claude -p`, the SDKs, an MCP client) are stored too, but their prompts count as the program's, not yours: the next start block shows their replies but never quotes their prompts as your words.
 
 Then:
 
@@ -110,7 +110,7 @@ trace uninstall -host claude-code     # removes this memory's hooks, and only th
 
 Then delete the binary. What stays:
 
-- the memory's folder (`~/.trace`, or `$TRACE_HOME`): `config.json`, `trace.db` with its `-shm`, `-wal`, `.lock` and `.alarm.lock` files, and `raw/`. Delete it if you want the data gone.
+- the memory's folder (`~/.trace`, or `$TRACE_HOME`): `config.json`, `trace.db` with its `.lock` and `.alarm.lock` files (and `-shm`, `-wal` if present), and `raw/`. Delete it if you want the data gone.
 - Claude Code's `settings.json` without TRACE's hooks; if TRACE created that file at install, it is now `{}`.
 - `settings.json.trace-backup` beside it: the file as it was just before the uninstall, so it still holds TRACE's hooks. Do not restore it after deleting the binary; delete it.
 
@@ -146,7 +146,7 @@ TRACE takes a different approach:
   - UserPromptSubmit and PostToolUse on every tool, only when `reinject` is configured: the rule card (below).
 - **Rule card (opt-in, experimental).** Two memory problems, one tool: across sessions, what happened and where the work stopped; within a session, which rules are in force. Agents stop attending to their instructions as context grows, long before it fills: in published measurements a rule fell below 50% compliance once the context was about 7 to 12 times its size. TRACE reads the size of the context from the host's own token counts in the transcript, and each time enough new context has entered (by default 7 times the card's size) it shows the agent a short card of the project's rules again. The card is built by code, never reworded: the instruction files whole when they fit (the ones Claude Code's transcript says it loaded: CLAUDE.md and what it imports, CLAUDE.local.md, auto memory's MEMORY.md, each read again from disk), otherwise only the text you mark between `<!-- trace:rules -->` and `<!-- /trace:rules -->`; then what the user refused or set as a rule in the last 14 days, verbatim. When a file changes, only the new lines are shown. Subagents get no card. Whether this lowers violations is not yet measured; the checks log and `trace stats` are there to measure it. `trace rules` shows the card the newest Claude Code session in the current folder gets (a Codex card depends on the session's rollout).
 - **Checks.** A rule the agent has in context still gets broken: agents stop attending to their instructions as a session grows. A rule a command can verify is better checked than repeated. Each check names the tools it follows (for example `Bash`), a pattern for the file or command (for example `npm publish`), and a command; a non-zero exit is a violation, and its output reaches the agent before its next step. Every run is logged, passes too, so `trace stats` shows how often each rule breaks.
-- **Search.** Word and trigram search over everything stored. By default it searches what you typed and the agent's replies; `-all` also searches program prompts, tool calls and results, and the rest.
+- **Search.** Word and trigram search over everything stored. By default it searches prompts (yours and a program's), the agent's replies and its tool calls, outside temporary folders; `-all` also searches tool results, thinking, and sessions kept out of recall.
 - **Secrets.** API keys, tokens and private keys are redacted before anything is stored. The raw copies are not redacted: they are byte copies of files already on the same disk.
 - **Raw copies you can rebuild from.** Each Claude Code transcript, its large tool results and the prompt log are copied into `raw/` as they are imported, so they outlive Claude Code's cleanup (30 days by default). `trace restore` reads them back into the store: into an empty `trace.db` it rebuilds the Claude Code memory; into an existing one it adds only what is missing. Measured on a real store: 1,063 raw copies, 127,040 events, the same count as the live store, in 7 minutes. Roles are worked out again from the folders as they are now, so a session whose folder moved can get another role. Codex sessions are not copied (Codex keeps its own), so they come back from `~/.codex` with `trace import`.
 - **Marks (experimental).** Code rules mark a typed message that approves, rejects, corrects or sets a standing rule. Today the markers cover Spanish (including voseo) and English. They were scored against blind labels of real messages.
@@ -155,7 +155,7 @@ TRACE takes a different approach:
 
 When you ask the agent to remind you of something, or to note something for later, it adds a task with `trace task add`, tied to the message where you asked. A task can have a time: TRACE then fires it at that time, even with nobody typing, by writing a reminder into a live session (see `trace alarm` under [Commands](#commands)). Open tasks show in each start block, and a due one is named on your next prompt until you are told.
 
-The start block also tells the agent how to keep these tasks as a board: what each waits on, how to tell it is done, epics, stories and sprints. The agent does that on its own and talks to you about the work itself, never about ids or levels. You never have to run a task command yourself; `trace task list` shows the board if you want to look.
+The agent learns all this from the start block, so the first session in a folder with no earlier session, which gets no block, does not know about the board yet. The start block also tells the agent how to keep these tasks as a board: what each waits on, how to tell it is done, epics, stories and sprints. The agent does that on its own and talks to you about the work itself, never about ids or levels. You never have to run a task command yourself; `trace task list` shows the board if you want to look.
 
 ## Install in detail
 

@@ -70,7 +70,9 @@ folder. TRACE behaves the same with it or without it.
   nothing and gives no such hint while sessions of this host and folder are stored but kept out of recall (I4: they
   ran in a temporary folder), it says how many, why, and that `trace search -all` finds them. A newcomer on
   2026-11-19 tried TRACE in `D:\Temp\...`, had two sessions stored, was told only "No earlier session", and `-not x`
-  showed nothing. Test: `TestResumeExplainsProgramSessions`.
+  showed nothing. (A third newcomer test the same day, with `claude -p` sessions in a real folder, got the same bare
+  "No earlier session" for another reason: those sessions had no folder stored, fixed by I15.) Test:
+  `TestResumeExplainsProgramSessions`.
 - **S5.** The block's session line names the branch only when the host recorded one; a session outside a
   repository shows no "branch" at all, never "branch ,". Test: `TestResumeSaysWhoWasLeftOut` (its session has none).
 
@@ -120,6 +122,16 @@ folder. TRACE behaves the same with it or without it.
 - **I12.** A Claude Code prompt the user sent by accepting a suggestion the model wrote (`promptSource`
   `suggestion_accepted`) is stored with kind `suggestion`. The start block shows it as one, and it never counts as a
   refusal or rule the user stated. Test: `TestAcceptedSuggestionIsNotTheUsersWords`.
+- **I16.** In a session a program started (I9), a denied tool call and an answer to a question are the program's,
+  like its prompts: they are never shown or counted as refusals or rules the user stated. A newcomer's
+  `claude -p` on 2026-11-19 had two permission denials shown as the user's last words. Test:
+  `TestProgramDenialIsNotTheUsers`.
+- **I15.** A Claude Code session is stored from its first row that is an event (has a uuid), so its folder, branch
+  and entrypoint come from a row that carries them. Rows before it that only carry a time, such as the
+  `queue-operation` rows a `claude -p` transcript now starts with, do not create it. A newcomer's `claude -p`
+  sessions on 2026-11-19 were stored with no folder and the project's role instead of `worker`, so no start block
+  and no explanation could find them. Sessions stored before this rule keep what they have. Test:
+  `TestSessionFromFirstEventRow`.
 - **I14.** A pin ("remember this" and the configured `pin_phrases`) marks only a prompt the user typed. A program's
   prompt (I9, I11) gets none: a newcomer's `claude -p "Remember this: ..."` on 2026-11-19 was pinned as the user's.
   Test: `TestProgramPromptIsNotPinned`.

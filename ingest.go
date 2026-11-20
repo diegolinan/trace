@@ -512,9 +512,10 @@ func (t *transcriptRead) note(r *row) {
 	}
 }
 
-// ensureSession stores the session at its first timed row, with the role its folder gives it.
+// ensureSession stores the session at its first event row (one with a uuid: SPEC I15), with the role its folder gives
+// it; a time-only row before it, such as claude -p's queue-operation, carries no folder or entrypoint.
 func (t *transcriptRead) ensureSession(r *row) error {
-	if t.ss.known || r.Timestamp == "" {
+	if t.ss.known || r.Timestamp == "" || r.UUID == "" {
 		return nil
 	}
 	wrole := t.role

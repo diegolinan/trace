@@ -65,3 +65,32 @@ func TestResumeExplainsProgramSessions(t *testing.T) {
 		t.Errorf("exit %d\n%s%s", code, out, errOut)
 	}
 }
+
+// SPEC I15: a transcript that starts with time-only rows (claude -p's queue-operation) still gets its session's folder
+// and, for a program, the worker role, from its first event row.
+func TestSessionFromFirstEventRow(t *testing.T) {
+	f := newMutFix(t)
+	queue := mutObj{"type": "queue-operation", "operation": "enqueue", "timestamp": mutAt(0), "sessionId": "q1", "content": "The codeword is X"}
+	f.write(t, "q1.jsonl", mutLines(queue, mutUser("u1", 1, "The codeword is X", "cwd", `D:\work\proj`, "entrypoint", "sdk-cli")))
+	f.importAll(t)
+	if got := mutStr(t, f.db, "select coalesce(cwd, '') || '|' || role from session where id = 'q1'"); got != `D:\work\proj|worker` {
+		t.Errorf("session = %q, want the event row's folder and the worker role", got)
+	}
+}
+
+// SPEC I16: a tool denial in a program's session is the program's; in a typed session it stays the user's.
+func TestProgramDenialIsNotTheUsers(t *testing.T) {
+	f := newMutFix(t)
+	deny := func(uuid, entry string) mutObj {
+		return mutObj{"type": "user", "uuid": uuid, "timestamp": mutAt(2), "entrypoint": entry, "toolDenialKind": "user-rejected",
+			"message": mutObj{"role": "user", "content": []mutObj{{"type": "tool_result", "tool_use_id": "t-" + uuid, "content": "Execute skill: schedule.", "is_error": true}}}}
+	}
+	f.write(t, "p1.jsonl", mutLines(mutUser("p1u", 0, "go", "entrypoint", "sdk-cli"), deny("p1d", "sdk-cli")))
+	f.write(t, "h1.jsonl", mutLines(mutUser("h1u", 0, "go", "entrypoint", "cli"), deny("h1d", "cli")))
+	f.importAll(t)
+	for id, want := range map[string]string{"p1": "program", "h1": "user"} {
+		if got := mutStr(t, f.db, "select speaker from event where session_id = ? and kind = 'refusal'", id); got != want {
+			t.Errorf("%s denial speaker = %q, want %q", id, got, want)
+		}
+	}
+}
