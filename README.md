@@ -355,6 +355,12 @@ After adding, changing or removing checks or `reinject`, run `trace install` aga
 
 ## Status
 
-- **Used daily on Windows.** CI runs the tests on Linux, macOS and Windows; the hooks have only been used for real on Windows.
+- **Used daily on Windows.** CI runs the tests on Linux, macOS and Windows.
+- **Checked on macOS** (15.1.1, Apple silicon, Claude Code 2.1.329, TRACE v0.3.42, 2026-11-20), on a machine that had never run TRACE:
+  - installed with the Quick start's commands;
+  - SessionStart, Stop and SessionEnd ran in two real sessions in a project folder;
+  - the second session answered a codeword given in the first from the start block alone, with no tool call.
+  - Not checked there yet: an interactive session's start block, a compaction, Codex.
+- **Linux:** only CI so far.
 - **Claude Code and Codex CLI/TUI.** Codex Desktop is not supported. Codex gets its block through `AGENTS.md` or through Codex hooks (see Install); hooks mode is checked on Windows with Codex 0.169.0 only.
 - **The marks are experimental** and not used by the hooks.
