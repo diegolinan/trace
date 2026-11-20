@@ -363,7 +363,9 @@ After adding, changing or removing checks or `reinject`, run `trace install` aga
   - a task's alarm started detached, fired 15 s after the task's time, and, with an interactive session open, delivered
     the reminder into it through Claude Code's inbox, where the agent announced it unprompted. With no session open it
     recorded "no live session qualifies".
-  - Not checked there yet: a compaction, Codex.
+  - a manual `/compact` of that session ran PreCompact and then SessionStart (compact). The summary kept the reminder's
+    text verbatim, its task number and its time.
+  - Not checked there yet: Codex.
 - **Linux:** only CI so far.
 - **Claude Code and Codex CLI/TUI.** Codex Desktop is not supported. Codex gets its block through `AGENTS.md` or through Codex hooks (see Install); hooks mode is checked on Windows with Codex 0.169.0 only.
 - **The marks are experimental** and not used by the hooks.
