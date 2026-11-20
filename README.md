@@ -359,8 +359,11 @@ After adding, changing or removing checks or `reinject`, run `trace install` aga
 - **Checked on macOS** (15.1.1, Apple silicon, Claude Code 2.1.329, TRACE v0.3.42, 2026-11-20), on a machine that had never run TRACE:
   - installed with the Quick start's commands;
   - SessionStart, Stop and SessionEnd ran in two real sessions in a project folder;
-  - the second session answered a codeword given in the first from the start block alone, with no tool call.
-  - Not checked there yet: an interactive session's start block, a compaction, Codex.
+  - the second session answered a codeword given in the first from the start block alone, with no tool call;
+  - a task's alarm started detached, fired 15 s after the task's time, and, with an interactive session open, delivered
+    the reminder into it through Claude Code's inbox, where the agent announced it unprompted. With no session open it
+    recorded "no live session qualifies".
+  - Not checked there yet: a compaction, Codex.
 - **Linux:** only CI so far.
 - **Claude Code and Codex CLI/TUI.** Codex Desktop is not supported. Codex gets its block through `AGENTS.md` or through Codex hooks (see Install); hooks mode is checked on Windows with Codex 0.169.0 only.
 - **The marks are experimental** and not used by the hooks.
