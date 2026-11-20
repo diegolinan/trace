@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"time"
@@ -48,8 +49,11 @@ type taskCommand func(db *sql.DB, o opts, t newTask) error
 
 // taskCommands are the task subcommands by name.
 var taskCommands = map[string]taskCommand{
-	"add":    func(db *sql.DB, o opts, t newTask) error { return taskAddWake(db, o.dbPath, t) },
-	"list":   func(db *sql.DB, o opts, t newTask) error { return taskList(db, os.Stdout) },
+	"add":  func(db *sql.DB, o opts, t newTask) error { return taskAddWake(db, o.dbPath, t) },
+	"list": func(db *sql.DB, o opts, t newTask) error { return taskList(db, os.Stdout) },
+	"board": func(db *sql.DB, o opts, t newTask) error {
+		return taskBoard(db, filepath.Join(filepath.Dir(o.dbPath), "board.html"), os.Stdout)
+	},
 	"told":   func(db *sql.DB, o opts, t newTask) error { return taskTold(db, o.args, os.Stdout) },
 	"met":    func(db *sql.DB, o opts, t newTask) error { return taskMet(db, o.args, os.Stdout) },
 	"start":  func(db *sql.DB, o opts, t newTask) error { return taskStart(db, o.args, os.Stdout) },

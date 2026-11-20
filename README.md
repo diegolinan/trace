@@ -155,7 +155,7 @@ TRACE takes a different approach:
 
 When you ask the agent to remind you of something, or to note something for later, it adds a task with `trace task add`, tied to the message where you asked. A task can have a time: TRACE then fires it at that time, even with nobody typing, by writing a reminder into a live session (see `trace alarm` under [Commands](#commands)). Open tasks show in each start block, and a due one is named on your next prompt until you are told.
 
-The agent learns all this from the start block, so the first session in a folder with no earlier session, which gets no block, does not know about the board yet. The start block also tells the agent how to keep these tasks as a board: what each waits on, how to tell it is done, epics, stories and sprints. The agent does that on its own and talks to you about the work itself, never about ids or levels. You never have to run a task command yourself; `trace task list` shows the board if you want to look.
+The agent learns all this from the start block, so the first session in a folder with no earlier session, which gets no block, does not know about the board yet. The start block also tells the agent how to keep these tasks as a board: what each waits on, how to tell it is done, epics, stories and sprints. The agent does that on its own and talks to you about the work itself, never about ids or levels. You never have to run a task command yourself; `trace task board` opens the board as a page in your browser, and `trace task list` prints it.
 
 ## Install in detail
 
@@ -272,6 +272,9 @@ trace task sprint close           close the open sprint and its review; refused 
 trace task done|drop <id>         close an open task, with the message that closed it; done refuses while a
                                   criterion is unmet, and both refuse while a task under it is open
 trace task told <id>              the user was told of a fired task: its session's Stop hook stops holding the turn
+trace task board                  the board as a page: writes board.html beside the store and opens it in the browser; in
+                                  progress, waiting, to do and closed in the last 14 days, each card with what it waits on and
+                                  its criteria; a snapshot, no server, no network
 trace task list                   the open tasks as a tree, each group in order of importance, with level and parent (the start block shows the first 5; a due one is
                                   announced on the next prompt, when UserPromptSubmit is installed, and named once
                                   in each later session until done or dropped)

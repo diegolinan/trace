@@ -329,6 +329,18 @@ T23 was a reminder from the hook, on a Claude Code session's second `git commit`
 
 Diego: "o sea que git es una dependencia", then "todo para joggearte la memoria?", then "si".
 
+- **T24. The board as a page.** `trace task board` writes `board.html` beside the store and opens it in the
+  browser. It is a snapshot: run it again to refresh. There is no server and no network, and nothing else leaves the
+  store.
+  - **Four columns:** in progress (T16), waiting (an unmet `-needs` or `-after`, T7), to do, and closed in the last 14
+    days with how each was closed.
+  - **Each card:** the task's words, the user's asking words or that an agent added it on its own (T1), its level, its
+    kind and points when set, the open task it is under, its time with offset (A10), what it waits on, and its
+    criteria of done (T8).
+  - **Escaping:** every text is HTML-escaped, so a task's words cannot run as markup.
+  - **Why:** Diego, 2026-11-20: "Deberíamos tener, para quien lo quiere ver y sabe, un tablero del board...". Test:
+    `TestTaskBoardPage`.
+
 Why T5 to T7: 25 of 93 real deferrals waited on another task, a third party, a decision of Diego's or an input not
 there yet, over the threshold of 1 in 5 fixed before the run. Conditions of done (Gherkin at close) were disputed in
 9 of 93, under the threshold of 1 in 10 by one item, and that count is a floor (ten turns often end before the
