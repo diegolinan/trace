@@ -105,11 +105,6 @@ create table if not exists card (
   first_seen text,
   text text
 );
--- Each session's git commit commands, counted by the PostToolUse hook (SPEC T23).
-create table if not exists commit_count (
-  session_id text primary key,
-  commits integer not null
-);
 create table if not exists injection (
   id integer primary key,
   session_id text not null,
