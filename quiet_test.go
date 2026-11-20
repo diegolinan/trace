@@ -21,7 +21,7 @@ func TestQuietSideImportAndStats(t *testing.T) {
 		t.Errorf("trace import did not report:\n%s", errOut)
 	}
 	out, errOut, code := runTrace(t, root, "", nil, "stats")
-	if code != 0 || strings.Contains(out, "<nil>") || !strings.Contains(out, "hook output that never reached the session\n0  -") {
+	if code != 0 || strings.Contains(out, "<nil>") || !strings.Contains(out, "hook output that never reached the session\ncount  last\n0  -") {
 		t.Errorf("stats: exit %d\n%s%s", code, out, errOut)
 	}
 }
@@ -37,6 +37,7 @@ func TestResumeSaysWhoWasLeftOut(t *testing.T) {
 	}
 	now := time.Now().UTC().Format(time.RFC3339)
 	db.Exec(`insert into session(id, host, role, cwd, started_at, ended_at) values ('just-now', 'claude-code', ?, ?, ?, ?)`, projectRole(work), work, now, now)
+	db.Exec(`insert into event(session_id, seq, ts, speaker, kind, text) values ('just-now', 0, ?, 'user', 'prompt', 'fix the login test')`, now)
 	db.Exec(`insert into event(session_id, seq, ts, speaker, kind, text) values ('just-now', 1, ?, 'assistant', 'reply', 'NONCE_JUST_NOW')`, now)
 	db.Close()
 	out, errOut, code := runTrace(t, root, "", map[string]string{"_DIR": work}, "resume", "-codex=")

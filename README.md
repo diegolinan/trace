@@ -46,14 +46,14 @@ Everything else said or done: `trace search <words>` (-all widens it). Search be
 
 ## Quick start
 
-**1. Before you install: decide what TRACE reads.** The first install imports every Claude Code transcript already on your machine (`~/.claude/projects`, or `$CLAUDE_CONFIG_DIR/projects`) and copies each one into the memory's folder. With a long history that can be gigabytes and several minutes, with no progress shown. To keep only some projects, create the memory's `config.json` first, with a `scope` (see [Configuration](#configuration)):
+**1. Before you install: decide what TRACE reads.** The first install imports every Claude Code transcript already on your machine, and Claude Code's prompt log: `projects/` and `history.jsonl` in `~/.claude`, or in `$CLAUDE_CONFIG_DIR` when you set it. It copies each one into the memory's folder. With a long history that can be gigabytes and several minutes, with no progress shown. To keep only some projects, create the memory's `config.json` first, with a `scope` (see [Configuration](#configuration)). The memory's folder is `~/.trace`, or `$TRACE_HOME` if you set it (step 2); these commands use whichever applies:
 
 ```sh
-mkdir -p ~/.trace && echo '{"scope": "my-repo"}' > ~/.trace/config.json
+h="${TRACE_HOME:-$HOME/.trace}"; mkdir -p "$h" && echo '{"scope": "my-repo"}' > "$h/config.json"
 ```
 
 ```powershell
-New-Item -ItemType Directory -Force ~\.trace | Out-Null; [IO.File]::WriteAllText("$HOME\.trace\config.json", '{"scope": "my-repo"}')
+$h = if ($env:TRACE_HOME) { $env:TRACE_HOME } else { "$HOME\.trace" }; New-Item -ItemType Directory -Force $h | Out-Null; [IO.File]::WriteAllText("$h\config.json", '{"scope": "my-repo"}')
 ```
 
 A scope of `my-repo` keeps the sessions that ran in any folder whose path contains `my-repo`. A list works too: `{"scope": ["my-repo", "other-repo"]}`. Without a `config.json`, TRACE keeps every project.
@@ -86,7 +86,12 @@ The installer downloads into your system's temporary folder and deletes the down
 
 **3. Restart Claude Code.** Open sessions read their hooks when they start, so they do not see TRACE until you reopen them.
 
-**4. Check that it works.**
+**4. Check that it works.** Two things make a test show nothing, so avoid them:
+
+- **Use a real project folder.** Sessions that ran in a temporary folder (`...\Temp\...` on Windows, `/tmp/...` on Linux, `/var/folders/...` on macOS) are stored but never shown in a start block: TRACE treats those folders as scratch. `trace resume` says so when it is the case.
+- **Use a normal interactive session.** Sessions started by a program (`claude -p`, the SDKs, an MCP client) are stored too, but their prompts count as the program's, not yours: the next start block does not quote them as your words, and `trace search` finds them only with `-all`.
+
+Then:
 
 ```sh
 trace version                         # the installed version
@@ -94,9 +99,7 @@ trace search <a word you typed>       # after one session: your own words come b
 trace stats                           # under "last runs", the events column grows as sessions are stored
 ```
 
-Then end that session and start another in the same folder: it begins with the block above.
-
-Sessions started by a program (`claude -p`, the SDKs, an MCP client) are stored too, but their prompts count as the program's, not yours: the next start block does not quote them as your words, and `trace search` finds them only with `-all`. Test TRACE with a normal interactive session.
+Then end that session and start another in the same folder: it begins with the block above. `trace resume` prints the same block in a terminal; right after a session it may leave that session out, taking it for the one asking, and it says so.
 
 **5. Uninstall.**
 
@@ -105,7 +108,11 @@ trace alarm -stop                     # stop the task alarm, if one runs, so the
 trace uninstall -host claude-code     # removes this memory's hooks, and only those
 ```
 
-Then delete the binary. What stays: the memory's folder (`~/.trace`: `config.json`, `trace.db` with its `-shm`, `-wal` and `.lock` files, and `raw/`), and the settings file as it was before the uninstall, saved as `settings.json.trace-backup` next to Claude Code's `settings.json`. Delete them if you want the data gone.
+Then delete the binary. What stays:
+
+- the memory's folder (`~/.trace`, or `$TRACE_HOME`): `config.json`, `trace.db` with its `-shm`, `-wal`, `.lock` and `.alarm.lock` files, and `raw/`. Delete it if you want the data gone.
+- Claude Code's `settings.json` without TRACE's hooks; if TRACE created that file at install, it is now `{}`.
+- `settings.json.trace-backup` beside it: the file as it was just before the uninstall, so it still holds TRACE's hooks. Do not restore it after deleting the binary; delete it.
 
 ## Why
 
@@ -226,7 +233,10 @@ trace import                      read what is new in every transcript in scope;
 trace restore                     rebuild the store from the raw copies (a lost or broken trace.db, or transcripts the host deleted); skips what is stored
 trace hook                        for host hooks; never fails the host's turn (a Stop for a task not told holds it)
 trace resume                      where the last session in this folder stopped, for agents without hooks
-                                  [-host codex|claude-code]
+                                  [-host codex|claude-code]: default, the agent this memory was installed for
+                                  [-not <id>]: the session asking, left out; by default the one that ran
+                                  `trace resume` or, failing that, the newest that wrote in the last two minutes;
+                                  any value that is no session id (-not x) leaves none out
 trace search <words>              [-n 10] [-who user|assistant|subagent] [-all] [-since 2026-11-01]
 trace rules                       the rule card a session in this folder would get, and why
 trace stats                       counts, last runs, checks, rule cards, hook output that never reached the session,

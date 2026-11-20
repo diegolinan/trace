@@ -66,6 +66,11 @@ folder. TRACE behaves the same with it or without it.
   ... session in this folder. The newest one, <id>, wrote in the last two minutes, so it was taken as the session
   asking; run it again with `-not x` to see it." A newcomer on 2026-11-19 ran resume right after a test session and
   was told only "No earlier session". Test: `TestResumeSaysWhoWasLeftOut`.
+- **S6.** S4's hint to run again with `-not x` is given only when that run would show something. When resume shows
+  nothing and gives no such hint while sessions of this host and folder are stored but kept out of recall (I4: they
+  ran in a temporary folder), it says how many, why, and that `trace search -all` finds them. A newcomer on
+  2026-11-19 tried TRACE in `D:\Temp\...`, had two sessions stored, was told only "No earlier session", and `-not x`
+  showed nothing. Test: `TestResumeExplainsProgramSessions`.
 - **S5.** The block's session line names the branch only when the host recorded one; a session outside a
   repository shows no "branch" at all, never "branch ,". Test: `TestResumeSaysWhoWasLeftOut` (its session has none).
 
@@ -115,6 +120,9 @@ folder. TRACE behaves the same with it or without it.
 - **I12.** A Claude Code prompt the user sent by accepting a suggestion the model wrote (`promptSource`
   `suggestion_accepted`) is stored with kind `suggestion`. The start block shows it as one, and it never counts as a
   refusal or rule the user stated. Test: `TestAcceptedSuggestionIsNotTheUsersWords`.
+- **I14.** A pin ("remember this" and the configured `pin_phrases`) marks only a prompt the user typed. A program's
+  prompt (I9, I11) gets none: a newcomer's `claude -p "Remember this: ..."` on 2026-11-19 was pinned as the user's.
+  Test: `TestProgramPromptIsNotPinned`.
 - **I13.** Claude Code's folder is `$CLAUDE_CONFIG_DIR` when it is set, else `~/.claude`, for everything TRACE reads
   or writes there: the transcripts (`projects/`), the prompt log (`history.jsonl`), the settings file and the live
   sessions. Install and import never disagree on it, so a separate Claude Code profile is stored, and nothing from
@@ -133,10 +141,14 @@ folder. TRACE behaves the same with it or without it.
   version Go records (`go install ...@v0.3.36`); else `dev`, with the commit Go records when there is one. Found
   by a newcomer on 2026-11-19: nothing told which version was installed. Tests: `TestVersionCommand`,
   `TestVersionString`.
-- **E4.** The import a command runs first, to read what is new (search, resume, task), prints no "files N, events
-  added N" line; `trace import`, `restore` and `install` still print it. `trace stats` prints an empty value as
-  `-`, never Go's `<nil>`. A newcomer on 2026-11-19 saw the import line before every answer and `<nil>` in stats.
-  Test: `TestQuietSideImportAndStats`.
+- **E4.** Only an import the user asked for prints the "files N, events added N" line: `trace import` (with no
+  `-trigger`), `restore` and `install`. The import a command runs first (search, resume, task) and the hooks' imports
+  print none; a hook's stderr ends up in the host's transcript. `trace stats` prints an empty value as `-`, never Go's
+  `<nil>`, and each table starts with a line naming its columns. A newcomer on 2026-11-19 saw the import line before
+  every answer, in the transcript after each hook, `<nil>` in stats, and stats columns with no names. Test:
+  `TestQuietSideImportAndStats`.
+- **E5.** Flag help names the folders TRACE really reads: `$CLAUDE_CONFIG_DIR` or `~/.claude` (I13). Test:
+  `TestFlagHelpNamesClaudeConfigDir`.
 
 ## T. Tasks
 

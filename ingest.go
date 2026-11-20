@@ -625,6 +625,9 @@ func (im *importer) insertEvent(tx *sql.Tx, uuid, sid string, seq int, ts, branc
 	id, _ := res.LastInsertId()
 	im.touched[sid] = struct{}{}
 	for _, a := range anchors(text, e.kind, e.toolName) {
+		if a.typ == "pin" && e.speaker != "user" {
+			continue // only the user's own words are pinned (SPEC I14)
+		}
 		if _, err := tx.Exec("insert into anchor(event_id, type, value) values (?, ?, ?)", id, a.typ, a.value); err != nil {
 			return err
 		}

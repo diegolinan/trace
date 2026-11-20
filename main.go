@@ -129,8 +129,8 @@ func (o *opts) flagSet(onErr flag.ErrorHandling) *flag.FlagSet {
 	fs := flag.NewFlagSet(o.cmd, onErr)
 	fs.StringVar(&o.home, "home", "", "TRACE home: config.json and, unless config moves it, the data (default $TRACE_HOME, else ~/.trace)")
 	fs.StringVar(&o.dbPath, "db", "", "database file (default <data>/trace.db)")
-	fs.StringVar(&o.projects, "projects", "", "Claude Code transcripts folder (empty: none; default ~/.claude/projects unless config says claude: false)")
-	fs.StringVar(&o.history, "history", "", "Claude Code prompt log (empty: none; default ~/.claude/history.jsonl unless config says claude: false)")
+	fs.StringVar(&o.projects, "projects", "", "Claude Code transcripts folder (empty: none; default $CLAUDE_CONFIG_DIR/projects, else ~/.claude/projects, unless config says claude: false)")
+	fs.StringVar(&o.history, "history", "", "Claude Code prompt log (empty: none; default $CLAUDE_CONFIG_DIR/history.jsonl, else ~/.claude/history.jsonl, unless config says claude: false)")
 	fs.StringVar(&o.codexDir, "codex", codexHome(), "Codex home, for its session rollouts (empty: no Codex)")
 	fs.StringVar(&o.host, "host", "", "install, uninstall (required), hook (default claude-code), resume (default codex): claude-code or codex")
 	fs.StringVar(&o.notID, "not", "", "resume: a session id to leave out (default: the session written to in the last two minutes)")
@@ -344,12 +344,27 @@ func cmdResume(o opts) error {
 	}
 	if buf.Len() == 0 {
 		fmt.Printf("No earlier %s session in this folder.\n", hostName(o.host))
-		if skip != "" && o.notID == "" { // S1 left out the only one (SPEC S4)
-			fmt.Printf("The newest one, %s, wrote in the last two minutes, so it was taken as the session asking; run it again with `-not x` to see it.\n", skip)
-		}
+		explainEmptyResume(db, o, role, skip, cwd)
 	}
 	fmt.Print(buf.String())
 	return nil
+}
+
+// explainEmptyResume says why resume showed nothing: S1 left out the one session that has something to show (SPEC
+// S4), or the stored sessions are kept out of recall because they ran in a temporary folder (S6, I4).
+func explainEmptyResume(db *sql.DB, o opts, role, skip, cwd string) {
+	if skip != "" && o.notID == "" {
+		var again strings.Builder
+		if resumeBlock(db, "x", "startup", role, o.host, cwd, &again) == nil && again.Len() > 0 {
+			fmt.Printf("The newest one, %s, wrote in the last two minutes, so it was taken as the session asking; run it again with `-not x` to see it.\n", skip)
+			return
+		}
+	}
+	var kept int
+	db.QueryRow("select count(*) from session where host = ? and role = ? and excluded is not null", o.host, role).Scan(&kept)
+	if kept > 0 {
+		fmt.Printf("%d sessions here are stored but kept out of this block: they ran in a temporary folder (like ...\\Temp\\... or /tmp/...), which TRACE treats as scratch. Try TRACE in a real project folder; `trace search -all <words>` finds what is in these.\n", kept)
+	}
 }
 
 // cmdImport waits for a running import: the hook that fired last must still read the newest bytes.
@@ -503,8 +518,9 @@ func fail(err error) {
 	os.Exit(1)
 }
 
-// quietImport are the triggers of a command's own first read, which prints no counts (SPEC E4).
-var quietImport = map[string]bool{"search": true, "resume": true, "task": true}
+// reportedImport are the imports the user asked for, the only ones that print their counts (SPEC E4): a command's own
+// first read stays quiet, and so does a hook's, whose stderr ends up in the host's transcript.
+var reportedImport = map[string]bool{"manual": true, "restore": true, "install": true}
 
 func runImport(db *sql.DB, projects, history, codex, archive, scope, trigger string) error {
 	start := time.Now().UTC().Format(time.RFC3339)
@@ -531,7 +547,7 @@ func runImport(db *sql.DB, projects, history, codex, archive, scope, trigger str
 	msg := strings.Join(errs, "\n")
 	db.Exec("update ingest_run set ended_at = ?, files_seen = ?, events_added = ?, error = nullif(?, '') where id = ?",
 		time.Now().UTC().Format(time.RFC3339), len(files), im.added, msg, runID)
-	if !quietImport[trigger] { // stderr: a SessionStart hook's stdout is the text injected into the session
+	if reportedImport[trigger] { // stderr: a SessionStart hook's stdout is the text injected into the session
 		fmt.Fprintf(os.Stderr, "files %d, events added %d, sessions touched %d\n", len(files), im.added, len(im.touched))
 	}
 	if msg != "" {
@@ -707,6 +723,7 @@ func stats(db *sql.DB) error {
 		defer rows.Close()
 		fmt.Println("--", title)
 		cols, _ := rows.Columns()
+		fmt.Println(strings.Join(cols, "  ")) // each table names its columns (SPEC E4)
 		for rows.Next() {
 			vals := make([]any, len(cols))
 			ptrs := make([]any, len(cols))
@@ -724,19 +741,19 @@ func stats(db *sql.DB) error {
 			fmt.Println(strings.Join(parts, "  "))
 		}
 	}
-	q("sessions by host and role", "select host, role, count(*), sum(excluded is not null), min(started_at), max(ended_at) from session group by 1, 2 order by 3 desc")
-	q("events by speaker and kind", "select speaker, kind, count(*), sum(length(text)) from event group by 1, 2 order by 3 desc")
-	q("anchors by type", "select type, count(*), count(distinct value) from anchor group by 1 order by 2 desc")
-	q("redacted events", "select redacted, count(*) from event where redacted is not null group by 1")
+	q("sessions by host and role", "select host, role, count(*) sessions, sum(excluded is not null) excluded, min(started_at) first, max(ended_at) last from session group by 1, 2 order by 3 desc")
+	q("events by speaker and kind", "select speaker, kind, count(*) events, sum(length(text)) characters from event group by 1, 2 order by 3 desc")
+	q("anchors by type", "select type, count(*) anchors, count(distinct value) distinct_values from anchor group by 1 order by 2 desc")
+	q("redacted events", "select redacted, count(*) events from event where redacted is not null group by 1")
 	q("rows no rule stores (a new format shows up here)", "select signature, count, last_seen from unmapped order by count desc limit 15")
-	q("files skipped", "select host, skipped, count(*) from source_file where skipped is not null group by 1, 2")
-	q("last runs", "select started_at, ended_at, trigger, files_seen, events_added, error is not null from ingest_run order by id desc limit 15")
+	q("files skipped", "select host, skipped, count(*) files from source_file where skipped is not null group by 1, 2")
+	q("last runs", "select started_at started, ended_at ended, trigger, files_seen files, events_added events, error is not null error from ingest_run order by id desc limit 15")
 	// Claude Code swaps hook output over 10,000 characters for a 2 KB preview, and the agent never sees the rest.
-	q("hook output that never reached the session", "select count(*), max(ts) from event where kind = 'injected' and ltrim(text) like '<persisted-output>%'")
-	q("checks, last 14 days: runs, failures, last failure", "select name, count(*), sum(ok = 0), max(case when ok = 0 then ts end) from check_run where ts >= strftime('%Y-%m-%dT%H:%M:%SZ', 'now', '-14 days') group by 1 order by 1")
-	q("rule card, last 14 days: reason, times, sessions, characters injected", "select reason, count(*), count(distinct session_id), sum(chars) from injection where ts >= strftime('%Y-%m-%dT%H:%M:%SZ', 'now', '-14 days') group by 1 order by 1")
+	q("hook output that never reached the session", "select count(*) count, max(ts) last from event where kind = 'injected' and ltrim(text) like '<persisted-output>%'")
+	q("checks, last 14 days: runs, failures, last failure", "select name, count(*) runs, sum(ok = 0) failures, max(case when ok = 0 then ts end) last_failure from check_run where ts >= strftime('%Y-%m-%dT%H:%M:%SZ', 'now', '-14 days') group by 1 order by 1")
+	q("rule card, last 14 days: reason, times, sessions, characters injected", "select reason, count(*) times, count(distinct session_id) sessions, sum(chars) characters from injection where ts >= strftime('%Y-%m-%dT%H:%M:%SZ', 'now', '-14 days') group by 1 order by 1")
 	// A failure a deliverer gave starts with its name (SPEC A2), so an update that breaks one shows up here (A7).
-	q("alarm, each deliverer's last failure", "select substr(fire_reason, 1, instr(fire_reason, ':') - 1), max(announced_at), fire_reason from task where fire_state = 'failed' and instr(fire_reason, ':') > 0 group by 1 order by 1")
+	q("alarm, each deliverer's last failure", "select substr(fire_reason, 1, instr(fire_reason, ':') - 1) deliverer, max(announced_at) last, fire_reason reason from task where fire_state = 'failed' and instr(fire_reason, ':') > 0 group by 1 order by 1")
 	q("files with errors", "select path, last_error from source_file where last_error is not null")
 	return nil
 }

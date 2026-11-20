@@ -1,0 +1,67 @@
+package main
+
+import (
+	"os"
+	"path/filepath"
+	"strings"
+	"testing"
+	"time"
+)
+
+// SPEC I14: "remember this" pins a typed prompt, never a program's.
+func TestProgramPromptIsNotPinned(t *testing.T) {
+	f := newMutFix(t)
+	f.write(t, "typed.jsonl", mutLine(mutUser("typed", 0, "remember this: tabs, not spaces", "entrypoint", "cli")))
+	f.write(t, "script.jsonl", mutLine(mutUser("script", 1, "Remember this: the codeword is X", "entrypoint", "sdk-cli")))
+	f.importAll(t)
+	for id, want := range map[string]int{"typed": 1, "script": 0} {
+		if got := count(t, f.db, "select count(*) from anchor a join event e on e.id = a.event_id where a.type = 'pin' and e.session_id = ?", id); got != want {
+			t.Errorf("%s: %d pins, want %d", id, got, want)
+		}
+	}
+}
+
+// SPEC E4: a hook's import (-trigger) is quiet too; stats tables start with their column names.
+func TestHookImportQuietAndStatsHeaders(t *testing.T) {
+	root := t.TempDir()
+	if _, errOut, _ := runTrace(t, root, "", nil, "import", "-codex=", "-trigger", "startup"); strings.Contains(errOut, "events added") {
+		t.Errorf("a hook's import printed the line:\n%s", errOut)
+	}
+	out, _, _ := runTrace(t, root, "", nil, "stats")
+	if !strings.Contains(out, "-- last runs\nstarted  ended  trigger  files  events  error\n") {
+		t.Errorf("last runs has no column names:\n%s", out)
+	}
+}
+
+// SPEC E5: the flag help names CLAUDE_CONFIG_DIR, not only ~/.claude.
+func TestFlagHelpNamesClaudeConfigDir(t *testing.T) {
+	_, errOut, _ := runTrace(t, t.TempDir(), "", nil, "import", "-h")
+	for _, flag := range []string{"-projects", "-history"} {
+		i := strings.Index(errOut, "  "+flag)
+		if i < 0 || !strings.Contains(errOut[i:i+300], "CLAUDE_CONFIG_DIR") {
+			t.Errorf("%s help does not name CLAUDE_CONFIG_DIR:\n%s", flag, errOut)
+		}
+	}
+}
+
+// SPEC S6: program-only sessions are named as such, with search -all, and no -not x hint that would show nothing.
+func TestResumeExplainsProgramSessions(t *testing.T) {
+	root := t.TempDir()
+	work := filepath.Join(root, "work")
+	os.MkdirAll(work, 0o755)
+	db, err := openDB(filepath.Join(root, "trace", "trace.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now().UTC().Format(time.RFC3339)
+	for _, id := range []string{"p-one", "p-two"} { // sessions I4 keeps out of recall, as a newcomer's in D:\Temp were
+		db.Exec(`insert into session(id, host, role, cwd, started_at, ended_at, excluded) values (?, 'claude-code', ?, ?, ?, ?, 'temp')`, id, projectRole(work), work, now, now)
+		db.Exec(`insert into event(session_id, seq, ts, speaker, kind, text) values (?, 1, ?, 'user', 'prompt', 'Remember this')`, id, now)
+		db.Exec(`insert into event(session_id, seq, ts, speaker, kind, text) values (?, 2, ?, 'assistant', 'reply', 'OK')`, id, now)
+	}
+	db.Close()
+	out, errOut, code := runTrace(t, root, "", map[string]string{"_DIR": work}, "resume", "-codex=")
+	if code != 0 || !strings.Contains(out, "2 sessions here are stored but kept out of this block") || !strings.Contains(out, "trace search -all") || strings.Contains(out, "-not x") {
+		t.Errorf("exit %d\n%s%s", code, out, errOut)
+	}
+}

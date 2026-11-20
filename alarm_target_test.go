@@ -188,6 +188,7 @@ func TestUntoldTaskShowsLateAndFailureIsReported(t *testing.T) {
 	db.Close()
 	out, _, code := runTrace(t, t.TempDir(), "", nil, "stats", "-db", dbPath)
 	want := "-- alarm, each deliverer's last failure\n" +
+		"deliverer  last  reason\n" + // each table names its columns (SPEC E4)
 		"fa  2026-11-14 09:00:00 +0000 UTC  fa: the inbox key does not match\n" + // the driver reads a time as one
 		"fb  2026-11-13 09:00:00 +0000 UTC  fb: daemon not running; no live session qualifies\n"
 	if code != 0 || !strings.Contains(out, want) {
