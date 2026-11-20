@@ -283,7 +283,7 @@ func (o opts) installClaude() error {
 	if o.cmd == "install" && !claudeOn(cfg) {
 		fmt.Println("note: this home's config.json says claude: false, so Claude Code will see this memory but its own sessions are not imported")
 	}
-	if err := install(claudeSettings(), exe, o.home, optionalHooks(cfg), o.migrate, os.Stdout); err != nil || o.cmd != "install" {
+	if err := install(claudeSettings(), exe, o.home, claudeHooks(cfg), o.migrate, os.Stdout); err != nil || o.cmd != "install" {
 		return err
 	}
 	return o.firstImport(o.projects, o.history, o.scope)

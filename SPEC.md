@@ -322,6 +322,22 @@ at once and handing over, it caught more but added too much in 13 of 77 conversa
 picked as the more useful board in 54% and 49% of conversations (60% needed)
 (`system/research/2026-11-16_trace-tasks/README.md`, "Test 6" and "Test 6b"). The numbers T19 to T22 are not reused.
 
+- **T23. Work with steps goes on the board, by itself.** In a Claude Code session, the PostToolUse hook counts the
+  session's `git commit` commands: a Bash call whose command runs `git commit`, `git -C <dir> commit` included. From
+  the second one on, while no task on the board is in progress (T16), the hook shows the agent a short line at that
+  moment. The line says the session has made N commits with no task in progress: if the work has several steps or
+  will outlast the conversation, add it and run `trace task start <id>`; if it ends here, go on.
+  - A subagent's calls do not count.
+  - A task in progress anywhere on the board silences the line, since T16 holds one story in progress at a time.
+  - `install -host claude-code` always registers PostToolUse for Bash, besides the tools `checks` name. The rule card
+    already registers every tool.
+  - Codex installs are unchanged: their PostToolUse costs a shell start per call (Install), and Codex's shell tool
+    name is not verified.
+  - TRACE matches the command text only. It never runs git or reads a repository (G1).
+  - Diego, 2026-11-20, after B admitted using the board as a list and never marking work in progress: "Eso hay que
+    corregirlo pero no de palabra... tiene que ocurrir solo", then "cierra" to the second-commit trigger.
+  - Tests: `TestCommitNudge`, `TestClaudeHooksAlwaysWatchBash`.
+
 Why T5 to T7: 25 of 93 real deferrals waited on another task, a third party, a decision of Diego's or an input not
 there yet, over the threshold of 1 in 5 fixed before the run. Conditions of done (Gherkin at close) were disputed in
 9 of 93, under the threshold of 1 in 10 by one item, and that count is a floor (ten turns often end before the

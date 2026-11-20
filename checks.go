@@ -138,6 +138,9 @@ func ruleHook(in hookInput, role, host, dbPath string, checks bool, w io.Writer)
 			parts = append(parts, text)
 		}
 	}
+	if text := commitLine(in, host, store); text != "" {
+		parts = append(parts, text)
+	}
 	if text := dueCard(in, role, host, store); text != "" {
 		parts = append(parts, text)
 	}
