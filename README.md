@@ -20,7 +20,7 @@ Author: Diego Liñan. License: Apache 2.0 (`LICENSE`, `NOTICE`).
 
 In neuroscience, a *memory trace* is the physical mark a memory leaves, also called an engram. TRACE keeps that mark for an agent's sessions. When a session ends, is cleared, or loses its context to a compaction or a crash, the next one starts knowing what happened and where the work stopped.
 
-In short: TRACE copies every Claude Code (or Codex) session into one SQLite file on your machine, and when you start a new session in the same folder, it hands the agent your last words and its last replies, word for word. No model writes or summarizes anything, and nothing leaves your machine.
+In short: TRACE keeps a searchable record of your Claude Code and Codex sessions in a local SQLite database, and when you start a new session in the same folder, it hands the agent quoted excerpts of the last one: your last words and its last replies. Code stores the record and picks the excerpts; no model rewrites or summarizes them. The record stays on your machine; the excerpts become part of the new session's context, which your agent sends to its model provider like the rest of the conversation. Secrets are redacted and long tool outputs are clipped in the record (see [What it does](#what-it-does)).
 
 ## What a new session sees
 
@@ -121,10 +121,10 @@ A coding agent forgets between sessions. Claude Code's own answer is a model-wri
 - commit ids and paths;
 - what was decided and what was refused.
 
-Claude Code also deletes transcripts after 30 days.
+By default, Claude Code also deletes transcripts after 30 days (its `cleanupPeriodDays` setting).
 
 TRACE takes a different approach:
-- **It keeps the record.** Every transcript is copied verbatim into one local SQLite file, by code, with no model in the loop.
+- **It keeps the record, by code.** Every transcript is imported into one local SQLite file you can search: prompts and replies word for word, secrets redacted, long tool outputs clipped to their head and tail. For Claude Code, a byte-for-byte gzip copy of each transcript is kept beside it as well, which the store can be rebuilt from; Codex keeps its own files, so it gets no copy. No model is involved in storing or retrieving.
 - **It shows the facts.** Each new session sees the user's last words and the last four replies, quoted, not paraphrased.
 
 ## What it does
