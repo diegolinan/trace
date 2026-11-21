@@ -69,7 +69,7 @@ func TestCheckBadMatchPatternIsReported(t *testing.T) {
 func TestCheckTargetSkipsEmptyFields(t *testing.T) {
 	db := riDB(t, t.TempDir())
 	cs := []check{{Name: "commit", On: "Bash", Match: `^git commit`, Run: "lint"}}
-	fail := func(context.Context, string, string) (string, error) { return "broken\n", errors.New("exit status 1") }
+	fail := func(context.Context, string, string, ...string) (string, error) { return "broken\n", errors.New("exit status 1") }
 	in := hookInput{SessionID: "s", ToolName: "Bash", ToolInput: json.RawMessage(`{"file_path":"","command":"git commit -m x"}`), Cwd: "w"}
 	if got := runChecks(db, in, cs, fail); !strings.Contains(got, `"commit" failed`) {
 		t.Fatalf("the check did not apply to the command: %q", got)

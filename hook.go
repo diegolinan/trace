@@ -84,7 +84,7 @@ func hook(in hookInput, flags []string, dbPath, host, projects string, run func(
 	// ignores it on PreCompact (schema.rs, stop.rs, compact.rs, rust-v0.169.0), so it gets context only as JSON, and
 	// only on the events that carry it (contextOut).
 	switch {
-	case in.Event == "PostToolUse" || in.Event == "UserPromptSubmit" || in.Event == "SubagentStart":
+	case in.Event == "PostToolUse" || in.Event == "UserPromptSubmit" || in.Event == "SubagentStart" || in.Event == "PreToolUse":
 		if !mine {
 			return nil
 		}
@@ -95,11 +95,14 @@ func hook(in hookInput, flags []string, dbPath, host, projects string, run func(
 	return detachedHook(in, flags, dbPath, role, host, mine, w)
 }
 
-// contextHook answers the events that import nothing: a tool call or a prompt (an import runs at every Stop) and a
-// subagent's start (the parent's Stop covers it).
+// contextHook answers the events that import nothing: a tool call, before (SPEC C3, D11) or after it, or a prompt (an
+// import runs at every Stop) and a subagent's start (the parent's Stop covers it).
 func contextHook(in hookInput, role, host, dbPath string, cwdIn bool, w io.Writer) error {
-	if in.Event == "SubagentStart" {
+	switch in.Event {
+	case "SubagentStart":
 		return contextOut(w, "SubagentStart", fmt.Sprintf(helperLine, roleLabel(role, "your parent agent"), userName()))
+	case "PreToolUse":
+		return preToolHook(in, role, dbPath, cwdIn, w)
 	}
 	return ruleHook(in, role, host, dbPath, cwdIn, w)
 }

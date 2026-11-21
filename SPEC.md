@@ -548,8 +548,14 @@ The agent, which understands what the user meant, records each rule or decision 
   - "A rule is how you must work from now on, beyond the task at hand; a decision is a choice about the work that later sessions must keep."
   - "Do not record a hold for the moment, an approval or go for one step, a request for one task, a question, a complaint, an opinion, or a restatement of one already recorded."
   - "When he reverses or replaces one, record the new one with -replaces <id>; when he lifts one, trace rule drop <id>."
+  - "When it is about certain files or commands, add -about "<regexp>" (for example -about "publish\.sh|git push"): it then comes back right before such a tool call." (D11)
   - A subagent is told not to record.
 - **D10. Hosts.** Codex Desktop runs no hooks, so its sessions get no block and no nets; there, `trace rule list` is the way to see them.
+- **D11. A rule at the moment of the action.** `rule add -about "<regexp>"` ties a record to the files or commands it is about, for example `-about "publish\.sh|git push"`.
+  - **When:** before a Claude Code tool call whose file or command (as a check's `match` sees it) the regexp matches, without case, the agent gets each matching record in force again, verbatim, in the same line the block uses, under "What <user> said about what you are about to do:". Subagents too: the rule holds for them.
+  - **Kept:** a record that replaces another without `-about` keeps the replaced one's. `trace rule list` shows it.
+  - **Refused:** an `-about` that does not compile, with nothing stored.
+  - Found 2026-11-21 (Diego: "hagalas!!!"). Not measured: whether a rule shown at the action is broken less is open; the checks log is the baseline. Test: `TestRuleAboutAtTheAction`.
 
 ## C. Checks
 
@@ -560,6 +566,18 @@ The agent, which understands what the user meant, records each rule or decision 
   running check is stopped with every process it started, and the hook returns within a few seconds of the limit.
   Checks still waiting are reported as not run. Tests: `TestChecksShareOneLimit`, and on Unix
   `TestCheckKillsWhatItStarted`, which checks that a child the check started is gone.
+- **C3.** A check with `"before": true` runs before the tool call it matches instead of after it, on Claude Code's
+  PreToolUse. A non-zero exit stops the call: the tool does not run, and the agent gets the check's name and output
+  as the reason. A check that does not compile, or that the limit cuts, lets the call through and says so (a hook
+  never blocks by failing). Every run is logged with the checks after. Only Claude Code: TRACE installs no
+  PreToolUse on Codex. Found 2026-11-21: a check after the call reports a rule already broken (Diego: "hagalas!!!").
+  Test: `TestCheckBeforeStopsTheCall`.
+- **C4.** Every check gets `TRACE_TOOL` (the tool's name) and `TRACE_TARGET` (the file it writes or the command it
+  runs, as `match` sees it) in its environment, so a check before the call can look at what is about to happen.
+  Test: `TestCheckBeforeStopsTheCall`.
+- **C5.** Claude Code's PreToolUse is always installed, on the tools that change something (`Bash`, `Edit`,
+  `Write`, `MultiEdit`, `NotebookEdit`) and on those the checks before name (`*` when one names none), for C3 and
+  D11. Test: `TestInstallPreToolUse`.
 
 ## K. Does the rule card help
 
@@ -570,4 +588,33 @@ The agent, which understands what the user meant, records each rule or decision 
   context moves the same way in both arms; the card after a compaction is not printed either. Claude Code's own
   reload of its instruction files after a compaction happens in both arms. Diego, 2026-11-17: "dale, va así" (queue
   Q50). Tests: `TestAlternateDaysWithholdCard`, `TestAlternateDaysWithholdCompactCard`.
+- **K2. How much context TRACE takes.** Each hook call that writes something to the agent logs, in the store, when,
+  the session, the event (with the SessionStart source) and how many characters it wrote. `trace stats` shows, for
+  the last 5 sessions that got any: per event, the calls and characters; the total; and the characters since that
+  session's last compaction, which is what is still in its context (about 4 characters a token). Hook calls that write
+  nothing log nothing. Found 2026-11-21: codegraph's own measurement showed its tool cut tokens but left more text
+  resident; TRACE had no number for its own (Diego: "hagalas!!!"). Test: `TestStatsShowsTraceContext`.
+
+## Q. Search by time, and what was said around a hit
+
+Found 2026-11-21: "what did I tell you today at 11:30?" had no answer without words of the topic, since `-since`
+took only a day and a hit could not be opened (Diego: "hagalas!!!").
+
+- **Q1.** `-since` and `-until` each take a day (`2026-11-21`), a day and a time (`2026-11-21 11:30`), RFC 3339,
+  or a span back from now (`90m`, `3h`, `2d`). A day or a time is read in `-zone` (default the computer's zone).
+  `-since` keeps what was said from the start of that day or minute; `-until` keeps what was said up to the end of
+  it; a span or an RFC 3339 time is one instant for both. Any other value is refused with the forms it takes, exit 2.
+  Test: `TestSearchTimeWindow`.
+- **Q2.** With `-since` or `-until` and no words, search lists what was said in that window, oldest first, at most
+  `-n`, with the same filters (`-who`, `-all`) and the same line per hit, the text cut to 300 characters. Without
+  words and without a window it is still "search needs words". Test: `TestSearchTimeWindow`.
+- **Q3.** `trace show <session>#<seq>` (the session as search prints it, 8 characters or more, and the number after
+  `#`; `<session> #<seq>` too) prints that event and the 3 before and after it in the same session (`-n` changes the
+  3), oldest first, in the default kinds unless `-all`; the hit itself is always printed. Each text is cut to 2,000
+  characters. A session prefix that matches none or several sessions is refused, naming them, exit 1. Search's last
+  line names the command. Test: `TestShowAroundAHit`.
+- **Q4.** Search ranks by how well a hit matches, weighed by its age: the match score is divided by 1 + its age in
+  days / 90, so a hit 90 days old needs twice the match of one from today to rank above it, and of two equal matches
+  the newer comes first. Idea from Stanford's Generative Agents (recency in retrieval). Not measured on Diego's
+  searches: there is no set of searches with known right answers yet. Test: `TestSearchPrefersRecent`.
 

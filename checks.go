@@ -20,7 +20,8 @@ type check struct {
 	Name  string `json:"name"`
 	On    string `json:"on"`    // tool-name regexp, as in Claude Code's hook matchers; empty: every tool
 	Match string `json:"match"` // regexp on the tool's file path or command; empty: any
-	Run   string `json:"run"`   // shell command
+	Run    string `json:"run"`    // shell command
+	Before bool   `json:"before"` // run before the tool call and stop it on failure (SPEC C3), not after
 }
 
 // applies says whether the check follows this tool call: On matches the tool's name (empty: every tool) and Match
@@ -68,43 +69,72 @@ func toolTarget(raw json.RawMessage) string {
 
 // runChecks runs every check that matches this tool call, logs each run, and returns the text the agent sees:
 // empty when all passed. A check whose patterns do not compile is reported, never skipped silently.
-func runChecks(db *sql.DB, in hookInput, cs []check, shell func(ctx context.Context, dir, cmd string) (string, error)) string {
+func runChecks(db *sql.DB, in hookInput, cs []check, shell shellFunc) string {
+	failed, notes := checkFindings(db, in, cs, shell)
+	// Claude Code swaps hook text over 10,000 characters for a file path and a preview the agent may never open.
+	return clip(strings.Join(append(notes, failed...), "\n\n"), 9000)
+}
+
+// checkFindings runs every check that matches this tool call and logs each run: failed are the checks that failed,
+// notes those that could not judge (misconfigured, or out of time), which never stop a call (SPEC C3).
+func checkFindings(db *sql.DB, in hookInput, cs []check, shell shellFunc) (failed, notes []string) {
 	target := toolTarget(in.ToolInput)
 	ctx, cancel := context.WithTimeout(context.Background(), checkLimit)
 	defer cancel()
-	var out []string
 	for _, c := range cs {
 		applies, err := c.applies(in.ToolName, target)
 		if err != nil {
-			out = append(out, fmt.Sprintf("TRACE check %q is misconfigured: %v", c.Name, err))
+			notes = append(notes, fmt.Sprintf("TRACE check %q is misconfigured: %v", c.Name, err))
 			continue
 		}
 		if !applies {
 			continue
 		}
 		if ctx.Err() != nil {
-			out = append(out, fmt.Sprintf("TRACE check %q was not run: the checks' %s for this tool call ran out.", c.Name, checkLimit))
+			notes = append(notes, fmt.Sprintf("TRACE check %q was not run: the checks' %s for this tool call ran out.", c.Name, checkLimit))
 			continue
 		}
-		text, err := shell(ctx, in.Cwd, c.Run)
-		ok := err == nil
-		if db != nil {
-			db.Exec("insert into check_run(ts, session_id, name, tool, target, ok, output) values (?, ?, ?, ?, ?, ?, ?)",
-				time.Now().UTC().Format(time.RFC3339), in.SessionID, c.Name, in.ToolName, redacted(target), ok, redacted(clip(text, 4000)))
-		}
-		if !ok {
-			out = append(out, fmt.Sprintf("TRACE check %q failed after %s (%v). Fix this before going on:\n%s", c.Name, in.ToolName, err, clip(strings.TrimSpace(text), 2000)))
+		if text, cut := runCheck(ctx, db, in, c, target, shell); cut {
+			notes = append(notes, fmt.Sprintf("TRACE check %q was not run: the checks' %s for this tool call ran out.", c.Name, checkLimit))
+		} else if text != "" {
+			failed = append(failed, text)
 		}
 	}
-	// Claude Code swaps hook text over 10,000 characters for a file path and a preview the agent may never open.
-	return clip(strings.Join(out, "\n\n"), 9000)
+	return failed, notes
+}
+
+// runCheck runs one check and logs it: the failure text, or "" when it passed; cut when a check before the call was
+// stopped by the limit, which gives no verdict, so the call goes on.
+func runCheck(ctx context.Context, db *sql.DB, in hookInput, c check, target string, shell shellFunc) (failure string, cut bool) {
+	text, err := shell(ctx, in.Cwd, c.Run, "TRACE_TOOL="+in.ToolName, "TRACE_TARGET="+target) // SPEC C4
+	if db != nil {
+		db.Exec("insert into check_run(ts, session_id, name, tool, target, ok, output) values (?, ?, ?, ?, ?, ?, ?)",
+			time.Now().UTC().Format(time.RFC3339), in.SessionID, c.Name, in.ToolName, redacted(target), err == nil, redacted(clip(text, 4000)))
+	}
+	switch {
+	case err == nil:
+		return "", false
+	case c.Before && ctx.Err() != nil:
+		return "", true
+	}
+	return checkFailure(c, in.ToolName, err, text), false
+}
+
+// checkFailure is what the agent reads about a failed check: after the call, fix it; before, the call did not run.
+func checkFailure(c check, tool string, err error, text string) string {
+	how := fmt.Sprintf("failed after %s (%v). Fix this before going on", tool, err)
+	if c.Before {
+		how = fmt.Sprintf("failed, so %s did not run (%v). Do what it asks, or ask the user", tool, err)
+	}
+	return fmt.Sprintf("TRACE check %q %s:\n%s", c.Name, how, clip(strings.TrimSpace(text), 2000))
 }
 
 // runShell runs one check command in dir with the platform's shell, until ctx ends. Then shellCommand's Cancel
 // ends every process the command started; WaitDelay stops the wait for a pipe a stray child still holds.
-func runShell(ctx context.Context, dir, command string) (string, error) {
+func runShell(ctx context.Context, dir, command string, env ...string) (string, error) {
 	cmd := shellCommand(ctx, command)
 	cmd.Dir = dir
+	cmd.Env = append(os.Environ(), env...)
 	cmd.WaitDelay = 2 * time.Second
 	b, err := cmd.CombinedOutput()
 	return string(b), err
@@ -132,9 +162,9 @@ func ruleHook(in hookInput, role, host, dbPath string, checks bool, w io.Writer)
 	if text := dueTasks(in, host, store); text != "" {
 		parts = append(parts, text)
 	}
-	if checks && in.Event == "PostToolUse" && anyCheckApplies(in, cfg.Checks) {
+	if after := checksWhen(cfg.Checks, false); checks && in.Event == "PostToolUse" && anyCheckApplies(in, after) {
 		// In the session's own folder (SPEC G6), not a repository root above it.
-		if text := runChecks(store.open(), in, cfg.Checks, runShell); text != "" {
+		if text := runChecks(store.open(), in, after, runShell); text != "" {
 			parts = append(parts, text)
 		}
 	}

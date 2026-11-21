@@ -16,18 +16,19 @@ import (
 var hookEvents = []struct {
 	name    string
 	timeout int
-}{{"SessionStart", 30}, {"Stop", 10}, {"PreCompact", 10}, {"SessionEnd", 5}, {"SubagentStart", 5}, {"PostToolUse", 60}, {"UserPromptSubmit", 10}}
+}{{"SessionStart", 30}, {"Stop", 10}, {"PreCompact", 10}, {"SessionEnd", 5}, {"SubagentStart", 5}, {"PostToolUse", 60}, {"UserPromptSubmit", 10}, {"PreToolUse", 60}}
 
 // optional are the events installed only when config.json asks for them, with their matcher ("" for none): checks
 // need PostToolUse on their tools; the rule card needs every tool call and every prompt, since most context enters
 // between prompts.
-var optional = map[string]bool{"PostToolUse": true, "UserPromptSubmit": true}
+var optional = map[string]bool{"PostToolUse": true, "UserPromptSubmit": true, "PreToolUse": true}
 
 func optionalHooks(c config) map[string]string {
-	m := map[string]string{"UserPromptSubmit": ""} // always: the net that asks about rules not recorded (SPEC D6)
+	// always: the net that asks about rules not recorded (SPEC D6), and the checks before and rules at the action (C5)
+	m := map[string]string{"UserPromptSubmit": "", "PreToolUse": preMatcher(c.Checks)}
 	if c.Reinject != nil {
 		m["PostToolUse"], m["UserPromptSubmit"] = "*", ""
-	} else if mt := checkMatcher(c.Checks); mt != "" {
+	} else if mt := checkMatcher(checksWhen(c.Checks, false)); mt != "" {
 		m["PostToolUse"] = mt
 	}
 	return m

@@ -20,7 +20,7 @@ func TestChecks(t *testing.T) {
 		{Name: "bad", On: "(", Run: "x"},
 	}
 	var ran []string
-	shell := func(_ context.Context, dir, cmd string) (string, error) {
+	shell := func(_ context.Context, dir, cmd string, _ ...string) (string, error) {
 		ran = append(ran, dir+" "+cmd)
 		if strings.Contains(dir, "dirty") {
 			return "new.md has no inbound link\n", errors.New("exit status 1")

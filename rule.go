@@ -55,6 +55,9 @@ func ruleAdd(db *sql.DB, o opts, w io.Writer) error {
 	if err != nil {
 		return err
 	}
+	if _, err := regexp.Compile(o.about); err != nil {
+		return usageError{fmt.Errorf("-about %q is not a regexp (%v); nothing stored", o.about, err)}
+	}
 	if o.replaces != "" && !ruleInForce(db, o.replaces) {
 		return fmt.Errorf("rule %s is not in force; nothing stored", o.replaces)
 	}
@@ -62,7 +65,8 @@ func ruleAdd(db *sql.DB, o opts, w io.Writer) error {
 		return fmt.Errorf("that message is already recorded in force (trace rule list); nothing stored")
 	}
 	now := clockNow().UTC().Format(time.RFC3339)
-	res, err := db.Exec(`insert into rule(event_id, quote, decision, session_id, added_at) values (?, ?, ?, nullif(?, ''), ?)`, ev, said, o.decision, session, now)
+	res, err := db.Exec(`insert into rule(event_id, quote, decision, session_id, added_at, about)
+		values (?, ?, ?, nullif(?, ''), ?, coalesce(nullif(?, ''), (select about from rule where id = ?)))`, ev, said, o.decision, session, now, o.about, o.replaces)
 	if err != nil {
 		return err
 	}
@@ -164,7 +168,7 @@ func ruleList(db *sql.DB, o opts, w io.Writer) error {
 	if o.all {
 		where = "1"
 	}
-	rows, err := db.Query(`select r.id, e.ts, r.decision, r.quote, coalesce(r.replaced_by, 0), coalesce(r.out_at, '')
+	rows, err := db.Query(`select r.id, e.ts, r.decision, r.quote, coalesce(r.replaced_by, 0), coalesce(r.out_at, ''), coalesce(r.about, '')
 		from rule r join event e on e.id = r.event_id where ` + ruleUsersSQL + ` and ` + where + ` order by r.out_at is not null, r.id desc`)
 	if err != nil {
 		return err
@@ -172,10 +176,13 @@ func ruleList(db *sql.DB, o opts, w io.Writer) error {
 	defer rows.Close()
 	for rows.Next() {
 		var id, by int64
-		var at, quote, out string
+		var at, quote, out, about string
 		var decision bool
-		rows.Scan(&id, &at, &decision, &quote, &by, &out)
-		fmt.Fprintf(w, "#%d %s %s: %q%s\n", id, local(at), ruleKind(decision), quote, ruleOut(by, out))
+		rows.Scan(&id, &at, &decision, &quote, &by, &out, &about)
+		if about != "" {
+			about = " (about: " + about + ")"
+		}
+		fmt.Fprintf(w, "#%d %s %s: %q%s%s\n", id, local(at), ruleKind(decision), quote, about, ruleOut(by, out))
 	}
 	return rows.Err()
 }
@@ -205,7 +212,8 @@ func ruleOut(by int64, out string) string {
 const ruleInstruction = "When %[1]s gives you a rule or a decision, record it with %[2]s, then tell %[1]s in one line what you recorded. " +
 	"A rule is how you must work from now on, beyond the task at hand; a decision is a choice about the work that later sessions must keep. " +
 	"Do not record a hold for the moment, an approval or go for one step, a request for one task, a question, a complaint, an opinion, " +
-	"or a restatement of one already recorded. When %[1]s reverses or replaces one, record the new one with -replaces <id>; when %[1]s lifts one, %[3]s.\n"
+	"or a restatement of one already recorded. When %[1]s reverses or replaces one, record the new one with -replaces <id>; when %[1]s lifts one, %[3]s. " +
+	"When it is about certain files or commands, add -about \"<regexp>\" (for example -about \"publish\\.sh|git push\"): it then comes back right before such a tool call.\n"
 
 // ruleRecord is a record in force as the block shows it.
 type ruleRecord struct {
@@ -213,7 +221,7 @@ type ruleRecord struct {
 	added, said, quote, sid string
 	seq                     int
 	decision                bool
-	cwd, role               string
+	cwd, role, about        string
 }
 
 // ruleSection writes the records in force for a session of role in cwd, with the instruction, when there are any. It
@@ -242,7 +250,7 @@ func writeRuleInstruction(w io.Writer, user string) {
 // ruleRecords are the records in force whose message is still the user's, from sessions in scope (SPEC D4): with roles,
 // of the same role; without, in cwd, inside it or above it; any host. Newest first.
 func ruleRecords(db *sql.DB, role, cwd string) ([]ruleRecord, error) {
-	rows, err := db.Query(`select r.id, r.added_at, e.ts, r.quote, r.decision, e.session_id, e.seq, coalesce(s.cwd, ''), coalesce(s.role, '')
+	rows, err := db.Query(`select r.id, r.added_at, e.ts, r.quote, r.decision, e.session_id, e.seq, coalesce(s.cwd, ''), coalesce(s.role, ''), coalesce(r.about, '')
 		from rule r join event e on e.id = r.event_id left join session s on s.id = e.session_id
 		where r.out_at is null and ` + ruleUsersSQL + ` order by r.added_at desc, r.id desc`)
 	if err != nil {
@@ -252,7 +260,7 @@ func ruleRecords(db *sql.DB, role, cwd string) ([]ruleRecord, error) {
 	var out []ruleRecord
 	for rows.Next() {
 		var r ruleRecord
-		rows.Scan(&r.id, &r.added, &r.said, &r.quote, &r.decision, &r.sid, &r.seq, &r.cwd, &r.role)
+		rows.Scan(&r.id, &r.added, &r.said, &r.quote, &r.decision, &r.sid, &r.seq, &r.cwd, &r.role, &r.about)
 		if ruleInScope(r, role, cwd) {
 			out = append(out, r)
 		}

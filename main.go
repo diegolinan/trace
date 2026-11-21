@@ -13,7 +13,9 @@
 //	trace hook              for host hooks: starts a detached import and returns at once, exit 0 (a Stop that holds the
 //	                        turn for a task not told exits 2)
 //	trace resume            where the last session in this folder stopped, for agents without hooks (-host codex)
-//	trace search <words>    [-n 10] [-who user|assistant|subagent] [-all] [-since 2026-11-01]
+//	trace search <words>    [-n 10] [-who user|assistant|subagent] [-all] [-since 2026-11-01 [11:30] | 3h] [-until ...] [-zone UTC-3]
+//	                        (no words with -since or -until: what was said in that window, oldest first)
+//	trace show <session>#<seq> [-n 3] [-all]   a search hit with what was said around it
 //	trace rules             the rule card a session in this folder gets (re-injection, opt-in)
 //	trace stats
 //	trace task add -text "<what>" [-at "YYYY-MM-DD HH:MM" [-zone UTC-3]] [-self] | done <id> | drop <id> | told <id> | list   the user's tasks
@@ -34,7 +36,7 @@ import (
 
 func main() {
 	if len(os.Args) < 2 {
-		fmt.Fprintln(os.Stderr, "usage: trace install -host claude-code|codex | uninstall -host ... | import | restore | hook | resume | search <words> | rules | stats | task add|done|drop|told|list | alarm [-stop] | version")
+		fmt.Fprintln(os.Stderr, "usage: trace install -host claude-code|codex | uninstall -host ... | import | restore | hook | resume | search <words> | show <session>#<seq> | rules | stats | task add|done|drop|told|list | alarm [-stop] | version")
 		os.Exit(2)
 	}
 	cmd := os.Args[1]
@@ -65,13 +67,13 @@ func main() {
 
 // opts are one command's settings: its flags, with what config.json and the defaults fill in for the flags not given.
 type opts struct {
-	cmd, home, dbPath, projects, history, codexDir, host, notID, archive, scope, trigger, who, since, mode string
-	text, at, zone, level, under, kind, points, quote, replaces                                            string
-	n                                                                                                      int
-	all, migrate, stop, self, decision                                                                     bool
-	after, needs, then                                                                                     listFlag
-	given                                                                                                  map[string]bool
-	args                                                                                                   []string
+	cmd, home, dbPath, projects, history, codexDir, host, notID, archive, scope, trigger, who, since, until, mode string
+	text, at, zone, level, under, kind, points, quote, replaces, about                                            string
+	n                                                                                                             int
+	all, migrate, stop, self, decision                                                                            bool
+	after, needs, then                                                                                            listFlag
+	given                                                                                                         map[string]bool
+	args                                                                                                          []string
 }
 
 // usageError is a command line trace cannot run: it ends with exit 2, every other error with 1 (exitCode); a hook
@@ -140,11 +142,12 @@ func (o *opts) flagSet(onErr flag.ErrorHandling) *flag.FlagSet {
 	fs.IntVar(&o.n, "n", 10, "hits")
 	fs.StringVar(&o.who, "who", "", "only this speaker")
 	fs.BoolVar(&o.all, "all", false, "also search thinking, tool results, summaries, injected text and excluded sessions")
-	fs.StringVar(&o.since, "since", "", "only events on or after this date (YYYY-MM-DD)")
+	fs.StringVar(&o.since, "since", "", "search: only what was said from this day (YYYY-MM-DD), minute (YYYY-MM-DD HH:MM, in -zone), RFC 3339 time or span back (90m, 3h, 2d)")
+	fs.StringVar(&o.until, "until", "", "search: only what was said up to the end of this day, minute, time or span back, as -since")
 	fs.StringVar(&o.mode, "mode", "", "install -host codex (required): agents (a block in AGENTS.md) or hooks (Codex hooks in CODEX_HOME/hooks.json)")
 	fs.StringVar(&o.text, "text", "", "task add: what the task is")
 	fs.StringVar(&o.at, "at", "", "task add: when, as YYYY-MM-DD HH:MM in -zone (default the computer's zone) or RFC 3339")
-	fs.StringVar(&o.zone, "zone", "", "task add: the zone -at is in, as an offset (UTC-3) or a zone name (America/Los_Angeles); default the computer's")
+	fs.StringVar(&o.zone, "zone", "", "task add -at, search -since/-until: the zone they are in, as an offset (UTC-3) or a zone name (America/Los_Angeles); default the computer's")
 	fs.BoolVar(&o.stop, "stop", false, "alarm: stop the running alarm and wait for it to exit")
 	fs.Var(&o.after, "after", "task add: a task this one waits on (repeatable)")
 	fs.Var(&o.needs, "needs", "task add: something else this one waits on, in words (repeatable)")
@@ -157,6 +160,7 @@ func (o *opts) flagSet(onErr flag.ErrorHandling) *flag.FlagSet {
 	fs.StringVar(&o.quote, "quote", "", "rule add: the user's words that set the rule, at least 3, as he typed them (SPEC D1)")
 	fs.BoolVar(&o.decision, "decision", false, "rule add: a decision about the work, not a rule of how to work (SPEC D1)")
 	fs.StringVar(&o.replaces, "replaces", "", "rule add: the record this one replaces (SPEC D2)")
+	fs.StringVar(&o.about, "about", "", "rule add: a regexp of the files or commands the record is about; it comes back before such a tool call (SPEC D11)")
 	fs.BoolVar(&o.migrate, "migrate", false, "install, uninstall: take over TRACE hooks that name no home (installed before -home existed)")
 	fs.String("repo", "", "ignored: kept so hooks written for an older TRACE still run (SPEC G5)")
 	return fs
@@ -226,6 +230,7 @@ var commands = map[string]func(opts) error{
 	"import":    cmdImport,
 	"restore":   cmdRestore,
 	"search":    cmdSearch,
+	"show":      cmdShow,
 	"stats":     cmdStats,
 	"rules":     cmdRules,
 	"task":      cmdTask,
@@ -237,7 +242,11 @@ var commands = map[string]func(opts) error{
 func runHook(o opts) {
 	failOpen(func() {
 		run := func(db *sql.DB, trigger string) error { return o.importFn(trigger)(db) }
-		err := hook(readHookInput(os.Stdin), os.Args[2:], o.dbPath, o.host, o.projects, run, os.Stdout)
+		in := readHookInput(os.Stdin)
+		var out strings.Builder
+		err := hook(in, os.Args[2:], o.dbPath, o.host, o.projects, run, &out)
+		os.Stdout.WriteString(out.String())
+		logHookOut(o.dbPath, in, out.String())
 		if h := (holdTurn{}); errors.As(err, &h) {
 			fmt.Fprintln(os.Stderr, h.reason)
 			os.Exit(2) // the one exit 2 a hook gives: a Claude Code Stop that keeps the turn going (SPEC A8)
@@ -246,6 +255,25 @@ func runHook(o opts) {
 			fmt.Fprintln(os.Stderr, "trace hook:", err)
 		}
 	})
+}
+
+// logHookOut records how many characters a hook call wrote to the agent (SPEC K2); a call that wrote nothing logs
+// nothing, and a store that cannot be opened loses the row, never the output.
+func logHookOut(dbPath string, in hookInput, out string) {
+	if out == "" || in.SessionID == "" {
+		return
+	}
+	db, err := openDB(dbPath)
+	if err != nil {
+		return
+	}
+	defer db.Close()
+	event := in.Event
+	if in.Source != "" {
+		event += ":" + in.Source
+	}
+	db.Exec(`insert into hook_out(ts, session_id, event, chars) values (?, ?, ?, ?)`,
+		time.Now().UTC().Format(storedTS), in.SessionID, event, len([]rune(out)))
 }
 
 // failOpen runs f and turns a panic into a line on stderr. A panic exits 2, which both hosts read as "block" on
@@ -399,7 +427,28 @@ func cmdSearch(o opts) error {
 		return err
 	}
 	defer db.Close()
-	return search(db, strings.Join(o.args, " "), o.n, o.who, o.since, o.all)
+	since, until, err := searchWindow(o, time.Now())
+	if err != nil {
+		return err
+	}
+	return search(db, strings.Join(o.args, " "), o.n, o.who, since, until, o.all)
+}
+
+// cmdShow opens a search hit with what was said around it (SPEC Q3), after reading what is new.
+func cmdShow(o opts) error {
+	if err := importNow(o.dbPath, o.importFn("show")); err != nil {
+		fmt.Fprintln(os.Stderr, "trace: import before show failed, showing what is stored:", err)
+	}
+	db, err := openReadOnly(o.dbPath)
+	if err != nil {
+		return err
+	}
+	defer db.Close()
+	n := 3
+	if o.given["n"] {
+		n = o.n
+	}
+	return show(db, strings.Join(o.args, ""), n, o.all)
 }
 
 func cmdStats(o opts) error {
@@ -636,11 +685,14 @@ func ftsQuery(q, op string) string {
 	return strings.Join(parts, " "+op+" ")
 }
 
-func search(db *sql.DB, q string, n int, who, since string, all bool) error {
+func search(db *sql.DB, q string, n int, who, since, until string, all bool) error {
+	filter, extra := searchFilter(who, since, until, all)
 	if ftsQuery(q, "AND") == "" { // empty, or punctuation alone (SPEC E2)
-		return fmt.Errorf("search needs words")
+		if since == "" && until == "" {
+			return fmt.Errorf("search needs words")
+		}
+		return windowList(db, n, filter, extra) // SPEC Q2
 	}
-	filter, extra := searchFilter(who, since, all)
 	for i, t := range searchTries(q) {
 		hits, err := searchTry(db, t, i, filter, append(append([]any{t.match}, extra...), n))
 		if err != nil || hits > 0 {
@@ -656,8 +708,8 @@ func search(db *sql.DB, q string, n int, who, since string, all bool) error {
 }
 
 // searchFilter is the where clause that narrows a search, and its arguments in order: by default only the kinds
-// worth reading and no excluded session; who, a speaker; since, a first day.
-func searchFilter(who, since string, all bool) (string, []any) {
+// worth reading and no excluded session; who, a speaker; since and until, UTC bounds (searchWindow).
+func searchFilter(who, since, until string, all bool) (string, []any) {
 	filter := ""
 	var args []any
 	if !all {
@@ -670,6 +722,10 @@ func searchFilter(who, since string, all bool) (string, []any) {
 	if since != "" {
 		filter += " and e.ts >= ?"
 		args = append(args, since)
+	}
+	if until != "" {
+		filter += " and e.ts < ?"
+		args = append(args, until)
 	}
 	return filter, args
 }
@@ -691,7 +747,7 @@ func searchTries(q string) []searchTryKind {
 func searchTry(db *sql.DB, t searchTryKind, i int, filter string, args []any) (hits int, err error) {
 	rows, err := db.Query(`select e.ts, s.role, e.speaker, e.kind, e.session_id, e.seq, snippet(`+t.table+`, 0, '»', '«', '…', 40)
 		from `+t.table+` f join event e on e.id = f.rowid join session s on s.id = e.session_id
-		where `+t.table+` match ?`+filter+` order by bm25(`+t.table+`) limit ?`, args...)
+		where `+t.table+` match ?`+filter+` order by bm25(`+t.table+`) / (1 + max(0, julianday('now') - julianday(e.ts)) / 90.0) limit ?`, args...) // bm25 is negative: older moves toward 0 (SPEC Q4)
 	if err != nil {
 		return hits, err // none: search reads the error, not the count
 	}
@@ -704,11 +760,10 @@ func searchTry(db *sql.DB, t searchTryKind, i int, filter string, args []any) (h
 			fmt.Printf("(no hit with every word; showing the %s)\n", map[int]string{1: "best partial matches", 2: "exact substring matches"}[i])
 		}
 		hits++
-		when := ts
-		if t, err := time.Parse(time.RFC3339Nano, ts); err == nil {
-			when = t.Local().Format("2006-01-02 15:04")
-		}
-		fmt.Printf("%s  %s/%s  %s  [%s #%d]\n  %s\n", when, speaker, kind, role, short(sid), seq, strings.Join(strings.Fields(snip), " "))
+		hitLine(ts, role, speaker, kind, sid, seq, strings.Join(strings.Fields(snip), " "))
+	}
+	if hits > 0 {
+		fmt.Println(showHint)
 	}
 	return hits, nil
 }
@@ -756,6 +811,12 @@ func stats(db *sql.DB) error {
 	q("hook output that never reached the session", "select count(*) count, max(ts) last from event where kind = 'injected' and ltrim(text) like '<persisted-output>%'")
 	q("checks, last 14 days: runs, failures, last failure", "select name, count(*) runs, sum(ok = 0) failures, max(case when ok = 0 then ts end) last_failure from check_run where ts >= strftime('%Y-%m-%dT%H:%M:%SZ', 'now', '-14 days') group by 1 order by 1")
 	q("rule card, last 14 days: reason, times, sessions, characters injected", "select reason, count(*) times, count(distinct session_id) sessions, sum(chars) characters from injection where ts >= strftime('%Y-%m-%dT%H:%M:%SZ', 'now', '-14 days') group by 1 order by 1")
+	// What TRACE itself put in the agent's context (SPEC K2): since the last compaction is what is still there.
+	const lastFive = `(select session_id from hook_out group by 1 order by max(ts) desc limit 5)`
+	q("context TRACE wrote, last 5 sessions, by event (about 4 characters a token)", "select substr(session_id, 1, 8) session, event, count(*) calls, sum(chars) characters from hook_out where session_id in "+lastFive+" group by session_id, event order by max(ts) desc, 4 desc")
+	q("context TRACE wrote, last 5 sessions", `select substr(h.session_id, 1, 8) session, count(*) calls, sum(h.chars) characters,
+		sum(case when h.ts >= coalesce((select max(c.ts) from hook_out c where c.session_id = h.session_id and c.event = 'SessionStart:compact'), '') then h.chars else 0 end) since_last_compaction
+		from hook_out h where h.session_id in `+lastFive+` group by h.session_id order by max(h.ts) desc`)
 	// A failure a deliverer gave starts with its name (SPEC A2), so an update that breaks one shows up here (A7).
 	q("alarm, each deliverer's last failure", "select substr(fire_reason, 1, instr(fire_reason, ':') - 1) deliverer, max(announced_at) last, fire_reason reason from task where fire_state = 'failed' and instr(fire_reason, ':') > 0 group by 1 order by 1")
 	q("files with errors", "select path, last_error from source_file where last_error is not null")

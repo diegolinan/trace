@@ -194,7 +194,7 @@ Each memory is one folder, its home: `config.json`, `trace.db` and the raw copie
 
 ### What `trace install -host claude-code` changes
 
-1. It adds five hooks to Claude Code's user settings (`~/.claude/settings.json`, or `$CLAUDE_CONFIG_DIR/settings.json`): SessionStart, Stop, PreCompact, SessionEnd and SubagentStart. PostToolUse is added when `checks` are configured, limited to the tools they name; with `reinject`, PostToolUse on every tool and UserPromptSubmit (each call takes about 0.1 s). Each one runs this binary with `hook -home <home>`.
+1. It adds seven hooks to Claude Code's user settings (`~/.claude/settings.json`, or `$CLAUDE_CONFIG_DIR/settings.json`): SessionStart, Stop, PreCompact, SessionEnd, SubagentStart, UserPromptSubmit (the net for rules not recorded) and PreToolUse on the tools that change something (`Bash`, `Edit`, `Write`, `MultiEdit`, `NotebookEdit`, plus those the checks before the call name), for checks before the call and rules recorded with `-about`. PostToolUse is added when checks after the call are configured, limited to the tools they name; with `reinject`, PostToolUse on every tool (each call takes about 0.1 s). Each one runs this binary with `hook -home <home>`.
    - Other settings and hooks are kept.
    - One TRACE home per settings file. If the file already runs TRACE with another home, nothing is written; uninstall that one first.
    - Hooks from an install made before `-home` existed are taken over only with `-migrate`.
@@ -255,14 +255,21 @@ trace resume                      where the last session in this folder stopped,
                                   [-not <id>]: the session asking, left out; by default the one that ran
                                   `trace resume` or, failing that, the newest that wrote in the last two minutes;
                                   any value that is no session id (-not x) leaves none out
-trace search <words>              [-n 10] [-who user|assistant|subagent] [-all] [-since 2026-11-01]
+trace search <words>              [-n 10] [-who user|assistant|subagent] [-all]
+                                  [-since <when>] [-until <when>]: a day (2026-11-21), a minute (2026-11-21 11:30, in
+                                  -zone or the computer's zone), RFC 3339, or a span back from now (90m, 3h, 2d);
+                                  with no words, what was said in that window, oldest first ("what did I say at 11:30?")
+trace show <session>#<seq>        a search hit with the 3 events before and after it in its session [-n 3] [-all]
 trace rule add -quote "<words>"   record a rule of the user, tied to the newest message of theirs in this session that holds
-                                  those words (3 or more); -decision for a decision; -replaces <id> for one it replaces
+                                  those words (3 or more); -decision for a decision; -replaces <id> for one it replaces;
+                                  -about "<regexp>": the files or commands it is about; it comes back right before such
+                                  a tool call (Claude Code)
 trace rule drop <id>              the user lifted a rule: out of force, nothing replaces it
 trace rule list                   the rules and decisions in force, newest first; -all also those out of force
 trace rules                       the rule card a session in this folder would get, and why
 trace stats                       counts, last runs, checks, rule cards, hook output that never reached the session,
-                                  and each alarm deliverer's last failure
+                                  each alarm deliverer's last failure, and the context TRACE itself wrote to the agent in
+                                  the last 5 sessions: per event, in total, and since the last compaction (what is still there)
 trace task add -text "<what>"     a task the user asked to be reminded of, tied to the message that asked
                                   [-at "YYYY-MM-DD HH:MM" or RFC 3339 [-zone UTC-3 | America/Los_Angeles]] [-self];
                                   prints its id, the time with its UTC offset, the time now and how far away it is
@@ -363,13 +370,14 @@ A role names a folder by a file in it, so it survives moves and renames. The fil
 - `folder` is the fallback when the session's folder no longer exists. It is matched against the end of Claude Code's transcript folder name, without case.
 - When roles are configured, only those roles get the SessionStart block, the summary text, the helper line and the checks.
 
-A check runs after a tool call when `on` matches the tool's name (a regexp, as in Claude Code's hook matchers; empty: every tool) and `match` matches the file the tool wrote or the command it ran. `run` is a shell command, run in the folder the agent is in at that tool call, with a 45-second limit for all the checks of one call. A relative path in `run` is read from that folder, which changes when the agent changes directory, so name a script by its absolute path:
+A check runs after a tool call when `on` matches the tool's name (a regexp, as in Claude Code's hook matchers; empty: every tool) and `match` matches the file the tool wrote or the command it ran. `run` is a shell command, run in the folder the agent is in at that tool call, with a 45-second limit for all the checks of one call. A relative path in `run` is read from that folder, which changes when the agent changes directory, so name a script by its absolute path. With `"before": true` a check runs before the tool call instead (Claude Code only): a failure stops the call, and the agent reads why. Every check gets `TRACE_TOOL` and `TRACE_TARGET` (the file or command) in its environment, so a check before the call can look at what is about to happen:
 
 ```json
 {
   "checks": [
     { "name": "changelog", "on": "Bash", "match": "npm\\b.*\\bpublish", "run": "node scripts/check-changelog.mjs" },
-    { "name": "lint", "on": "Write|Edit", "match": "\\.go$", "run": "go vet ./..." }
+    { "name": "lint", "on": "Write|Edit", "match": "\\.go$", "run": "go vet ./..." },
+    { "name": "no force push", "on": "Bash", "match": "git push", "run": "node scripts/refuse-force.mjs", "before": true }
   ]
 }
 ```

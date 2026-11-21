@@ -121,7 +121,7 @@ func TestSearchReportsUnreadableStore(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer db.Close()
-	if err := search(db, "hello", 10, "", "", false); err == nil || !strings.Contains(err.Error(), "no such table") {
+	if err := search(db, "hello", 10, "", "", "", false); err == nil || !strings.Contains(err.Error(), "no such table") {
 		t.Fatalf("search on a store without tables: %v", err)
 	}
 }

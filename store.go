@@ -183,6 +183,13 @@ create table if not exists rule (
   out_session text,
   replaced_by integer
 );
+-- Each hook call that wrote to the agent: how many characters, for the context TRACE takes (SPEC K2).
+create table if not exists hook_out (
+  ts text not null,
+  session_id text not null,
+  event text not null,
+  chars integer not null
+);
 -- The newest typed message the net at a prompt last asked about, per session (SPEC D6).
 create table if not exists rule_ask (
   session_id text primary key,
@@ -324,7 +331,8 @@ func addColumns(db *sql.DB) error {
 		{"alter table task add column stopped_at text", nil},                                // back to to do, the last time (T16)
 		{"alter table task add column stopped_session text", nil},                           // the session that stopped it (T16)
 		{"alter table task add column rank integer", fillWith("update task set rank = id")}, // the order among siblings (T17); before it, oldest first
-		{"alter table task add column sprint_id integer", nil},                              // the sprint a story is in (T18)
+		{"alter table task add column sprint_id integer", nil},
+		{"alter table rule add column about text", nil}, // the files or commands a record is about, a regexp (D11)                              // the sprint a story is in (T18)
 	} {
 		_, err := db.Exec(c.alter)
 		if err != nil && !strings.Contains(err.Error(), "duplicate column") {

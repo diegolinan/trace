@@ -42,7 +42,7 @@ func TestInstallUninstall(t *testing.T) {
 		t.Fatal(err)
 	}
 	m := read()
-	if countTrace(m) != len(hookEvents)-1 || m["model"] != "opus" || !strings.Contains(mustJSON(m), "notify.sh") {
+	if countTrace(m) != len(hookEvents)-2 || m["model"] != "opus" || !strings.Contains(mustJSON(m), "notify.sh") {
 		t.Fatalf("after install: %s", mustJSON(m))
 	}
 	if _, err := os.Stat(path + ".trace-backup"); err != nil {
@@ -54,11 +54,11 @@ func TestInstallUninstall(t *testing.T) {
 		t.Fatal("second install changed the file")
 	}
 	install(path, `C:\b\trace.exe`, home, checksOnly, false, io.Discard) // moved binary: replaced, not added
-	if m = read(); countTrace(m) != len(hookEvents)-1 || !strings.Contains(mustJSON(m), `C:\\b\\trace.exe`) || !strings.Contains(mustJSON(m), `"matcher":"Bash"`) {
+	if m = read(); countTrace(m) != len(hookEvents)-2 || !strings.Contains(mustJSON(m), `C:\\b\\trace.exe`) || !strings.Contains(mustJSON(m), `"matcher":"Bash"`) {
 		t.Fatalf("after move: %s", mustJSON(m))
 	}
 	install(path, `C:\b\trace.exe`, home, nil, false, io.Discard) // no checks configured: no PostToolUse hook at all
-	if m = read(); countTrace(m) != len(hookEvents)-2 || m["hooks"].(map[string]any)["PostToolUse"] != nil {
+	if m = read(); countTrace(m) != len(hookEvents)-3 || m["hooks"].(map[string]any)["PostToolUse"] != nil {
 		t.Fatalf("without checks: %s", mustJSON(m))
 	}
 	// The rule card: every tool call and every prompt.
@@ -124,7 +124,7 @@ func TestInstallOwnership(t *testing.T) {
 	b, _ := os.ReadFile(path)
 	json.Unmarshal(b, &m)
 	own, old, foreign := traceHooks(m, "/mine")
-	if own != len(hookEvents)-2 || old != 0 || len(foreign) != 0 {
+	if own != len(hookEvents)-3 || old != 0 || len(foreign) != 0 {
 		t.Fatalf("after -migrate: own %d, legacy %d, foreign %v: %s", own, old, foreign, b)
 	}
 }
