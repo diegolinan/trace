@@ -24,7 +24,7 @@ var hookEvents = []struct {
 var optional = map[string]bool{"PostToolUse": true, "UserPromptSubmit": true}
 
 func optionalHooks(c config) map[string]string {
-	m := map[string]string{}
+	m := map[string]string{"UserPromptSubmit": ""} // always: the net that asks about rules not recorded (SPEC D6)
 	if c.Reinject != nil {
 		m["PostToolUse"], m["UserPromptSubmit"] = "*", ""
 	} else if mt := checkMatcher(c.Checks); mt != "" {

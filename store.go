@@ -170,6 +170,24 @@ create table if not exists task_condition (
   met_event integer,
   primary key (task_id, n)
 );
+-- A rule or decision of the user, recorded by the agent (SPEC D): the message that set it, the quote shown from it,
+-- and, once out of force, when and what replaced it (none: dropped).
+create table if not exists rule (
+  id integer primary key,
+  event_id integer not null,
+  quote text not null,
+  decision integer not null default 0,
+  session_id text,
+  added_at text not null,
+  out_at text,
+  out_session text,
+  replaced_by integer
+);
+-- The newest typed message the net at a prompt last asked about, per session (SPEC D6).
+create table if not exists rule_ask (
+  session_id text primary key,
+  at text not null
+);
 -- A sprint (SPEC T18): a set of stories the user gave one date, its goal in the user's words, and the task that is its
 -- review, due at its end. At most one is open.
 create table if not exists sprint (

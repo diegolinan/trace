@@ -68,7 +68,8 @@ func TestCodexHookCommand(t *testing.T) {
 }
 
 // The events follow the config as for Claude Code: checks add PostToolUse on their tools, reinject adds PostToolUse
-// on every tool and UserPromptSubmit; PreCompact is never registered for Codex.
+// on every tool; UserPromptSubmit is always there, for the net that asks about rules not recorded (SPEC D6);
+// PreCompact is never registered for Codex.
 func TestCodexHookEventsFollowConfig(t *testing.T) {
 	names := func(c config) string {
 		var s []string
@@ -78,10 +79,10 @@ func TestCodexHookEventsFollowConfig(t *testing.T) {
 		return strings.Join(s, " ")
 	}
 	base := "SessionStart: Stop: Interrupt: SessionEnd: SubagentStart:"
-	if got := names(config{}); got != base {
+	if got := names(config{}); got != base+" UserPromptSubmit:" {
 		t.Errorf("no options: %s", got)
 	}
-	if got := names(config{Checks: []check{{On: "Bash"}}}); got != base+" PostToolUse:Bash" {
+	if got := names(config{Checks: []check{{On: "Bash"}}}); got != base+" PostToolUse:Bash UserPromptSubmit:" {
 		t.Errorf("checks: %s", got)
 	}
 	if got := names(config{Reinject: &reinjectCfg{}}); got != base+" PostToolUse:* UserPromptSubmit:" {

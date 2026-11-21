@@ -31,11 +31,16 @@ func inFolder(path, folder string) bool {
 }
 
 func resumeBlock(db *sql.DB, sid, source, role, host, cwd string, w io.Writer) error {
+	user := userName()
+	// The recorded rules come first, even with no earlier session to resume (SPEC D4).
+	recorded, wrote, err := ruleSection(db, w, user, role, cwd)
+	if err != nil {
+		return err
+	}
 	s, err := lastSession(db, sid, source, role, host, cwd)
 	if err != nil || s == nil {
 		return err
 	}
-	user := userName()
 	writeHeader(db, w, *s, user, role, host)
 	b := blockWriter{db: db, w: w}
 	// The first prompts of the last compaction window usually state the task (callimachus, ai-memory hook.rs:1346);
@@ -55,8 +60,11 @@ func resumeBlock(db *sql.DB, sid, source, role, host, cwd string, w io.Writer) e
 	b.section("The last replies (verbatim, clipped, newest last)",
 		`select ts, 'reply', text from event where session_id = ? and speaker = 'assistant' and kind = 'reply' order by seq desc limit 4`,
 		600, s.id)
-	if b.err == nil {
+	if b.err == nil && !recorded { // the word-pattern section, until the store has its first record (SPEC D4)
 		b.err = refusals(db, w, user, host, role, cwd)
+	}
+	if !wrote {
+		writeRuleInstruction(w, user)
 	}
 	b.section("Pinned by "+user+" (\"remember this\"), any session",
 		`select e.ts, 'pin', e.text from anchor a join event e on e.id = a.event_id where a.type = 'pin' order by e.ts desc limit 5`,

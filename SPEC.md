@@ -499,6 +499,58 @@ reason (A9 matches the marker in every shape listed there).
 Not decided yet: repeating tasks, and with them times that follow the user (A10); a notification to the user's desktop or phone when no session is open; starting an agent
 (`claude -p`, `codex exec`) for tasks the agent should do alone; an MCP entry point for adding tasks.
 
+## D. The user's rules and decisions, recorded by the agent
+
+The agent, which understands what the user meant, records each rule or decision the user gives. TRACE ties the record to the user's own message and shows his words, never the agent's. This replaces picking them by word patterns. On 1300 real messages, with a blind judge from another vendor, the word patterns had a precision of 0.29 and a recall of about 0.04. Agents under the instruction of D9 reached 0.72 and about 0.56 (`system/research/2026-11-21_rules-block`). Diego, 2026-11-21: "vamos con b y las dos", then "yes!!!" to the changes a blind review of the design asked for.
+
+- **D1. Recording.** `trace rule add -quote "<his words>" [-decision] [-replaces <id>]` records a rule, or a decision with `-decision`.
+  - **The message:** the newest message the user typed in the session that runs the command (prompt, steering, refusal or answer; never a program's or an accepted suggestion, I9, I12, I16) whose text contains the quote.
+    - The quote must have at least 3 words.
+    - Accents and case do not count when matching.
+  - **What is stored:** the message's event id, the quote as matched in the message, the kind, the session and the time.
+  - **What is shown** is always the user's text: the quote, with the message clipped around it as context.
+  - **It refuses and stores nothing when:**
+    - the quote is missing or too short;
+    - no message matches;
+    - the message is already recorded in force;
+    - `-replaces` names an id that is not in force.
+
+    When no message matches, it prints the start of the user's last 3 messages.
+  - **On success** it prints `rule <id> recorded: "<quote>"`, and `replaces <id>` when it replaced one.
+- **D2. Out of force.**
+  - `-replaces <old>` puts the old one out of force, pointing to the new one.
+  - `trace rule drop <id>` puts one out of force with nothing replacing it: the user lifted it.
+  - Nothing is deleted.
+  - A record whose message later stops being the user's (I9, I10) is never shown.
+- **D3. Listing.** `trace rule list` prints the records in force, newest first: id, local time, kind and quote. `-all` adds those out of force, each with what replaced it or that it was dropped, and when.
+- **D4. In the start block and the card.** The block opens a section "What <user> set as rules and decisions (recorded; in force until replaced; what <user> says now wins)".
+  - **Which:**
+    - rules in force, newest first, up to 8;
+    - then decisions recorded in the last 14 days, up to 5.
+  - **Each** shows its id, its quote, and the end of the reply it answered.
+  - **Then** "and N more: trace rule list" when there are more.
+  - **Scope:** records from sessions of any host, in the session's folder, in a folder inside it or in a folder above it. With roles, of the same role.
+  - **Where:**
+    - The section comes before the rest of the block.
+    - It is shown even when there is no earlier session to resume.
+    - In the card it comes before the files, so the card's budget never cuts it.
+  - **Until a store has its first record**, the word-pattern section it replaces is shown instead.
+- **D5. A change reaches open sessions.** When a record is added or put out of force, the next card to a live session names it: "out of force: <id>" for one that left.
+- **D6. Net at the next prompt.** When the user has typed 10 or more messages in this session since the later of the last record made in it and the last time this net was shown, the prompt hook adds to the agent's context, without showing anything to the user:
+  - "Did <user> set a rule or decision in these messages that you have not recorded? Record it with trace rule add, or go on.";
+  - those messages, verbatim and clipped.
+
+  UserPromptSubmit is installed by default for this, not only with `reinject`. A subagent never gets the net.
+- **D7. Net at compaction.** The block printed after a compaction carries the same question with the user's messages since the last record in this session, whatever the reinject setting.
+- **D8.** Retired before it was built: a Rules view on the board page. A blind review of the design found that `trace rule list -all` already covers it (Diego: "si el revisor dice que está mal, sacala"). The number is not reused.
+- **D9. What the agent is told** (start block guidance and card):
+  - "When <user> gives you a rule or a decision, record it with trace rule add -quote "<his words>" [-decision], then tell him in one line what you recorded."
+  - "A rule is how you must work from now on, beyond the task at hand; a decision is a choice about the work that later sessions must keep."
+  - "Do not record a hold for the moment, an approval or go for one step, a request for one task, a question, a complaint, an opinion, or a restatement of one already recorded."
+  - "When he reverses or replaces one, record the new one with -replaces <id>; when he lifts one, trace rule drop <id>."
+  - A subagent is told not to record.
+- **D10. Hosts.** Codex Desktop runs no hooks, so its sessions get no block and no nets; there, `trace rule list` is the way to see them.
+
 ## C. Checks
 
 - **C1.** A check's `run` reaches the shell exactly as written, quotes included (`sh -c` on Unix; on Windows,

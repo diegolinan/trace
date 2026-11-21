@@ -33,9 +33,9 @@ func hostName(host string) string {
 }
 
 // resumeCall matches a tool call that runs trace resume (trace or trace.exe, quoted or not; the input is stored as
-// JSON, so a quote may come as \"), not a file named resume.go. taskAddCall matches one that runs trace task add.
+// JSON, so a quote may come as \"), not a file named resume.go. taskAddCall matches one that runs trace task add or trace rule add.
 var resumeCall = regexp.MustCompile(`(?i)trace(?:\.exe)?\\?["']?\s+resume\b`)
-var taskAddCall = regexp.MustCompile(`(?i)trace(?:\.exe)?\\?["']?\s+task\s+add\b`)
+var taskAddCall = regexp.MustCompile(`(?i)trace(?:\.exe)?\\?["']?\s+(?:task|rule)\s+add\b`)
 
 // liveSession is the session asking for `trace resume`, so the block shows the one before it (SPEC S1): among the
 // sessions of this host and role written to in the last two minutes, the one whose last stored event is that call

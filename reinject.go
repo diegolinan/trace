@@ -171,7 +171,7 @@ func ruleBlocks(text string) string {
 // qualifiers on 2026-10-30).
 func card(srcs []source, rules string, budget int) (text, note string) {
 	files, note := cardFiles(srcs, budget)
-	body := files + rules
+	body := rules + files // the user's rules first, so the budget cuts the files (SPEC D4)
 	if body == "" {
 		return "", note
 	}
@@ -390,7 +390,7 @@ func injectionDue(db *sql.DB, sid string, ctx int, text string, factor float64) 
 	case lastSha != sha(text):
 		var old string
 		db.QueryRow("select text from card where sha = ?", lastSha).Scan(&old)
-		if out = newLines(old, text); out != "" {
+		if out = cardChange(old, text); out != "" {
 			out = "## Rules changed since the last time trace showed them (new or changed lines only)\n" + out
 		}
 		return out, "change", nil
@@ -409,6 +409,24 @@ func recordInjection(db *sql.DB, sid string, ctx int, text, out, reason string, 
 		sid, now.UTC().Format(time.RFC3339), ctx, reason, sha(text), len(out))
 	return err
 }
+
+// cardChange is the card's new lines, then "out of force: #id" for each recorded rule that left it (SPEC D5).
+func cardChange(old, cur string) string {
+	out := newLines(old, cur)
+	in := map[string]bool{}
+	for _, m := range recordLine.FindAllStringSubmatch(cur, -1) {
+		in[m[1]] = true
+	}
+	for _, m := range recordLine.FindAllStringSubmatch(old, -1) {
+		if !in[m[1]] {
+			out = strings.TrimPrefix(out+"\nout of force: #"+m[1], "\n")
+		}
+	}
+	return out
+}
+
+// recordLine matches a recorded rule's line in a card and takes its id.
+var recordLine = regexp.MustCompile(`(?m)^- .*?#(\d+) (?:rule|decision): `)
 
 func newLines(old, cur string) string {
 	have := map[string]bool{}
@@ -429,7 +447,9 @@ func newLines(old, cur string) string {
 func sessionCard(db *sql.DB, cwd, transcript, role, host string) (string, string) {
 	var rules strings.Builder
 	if db != nil {
-		refusals(db, &rules, userName(), host, role, cwd)
+		if recorded, _, _ := ruleSection(db, &rules, userName(), role, cwd); !recorded {
+			refusals(db, &rules, userName(), host, role, cwd)
+		}
 	}
 	if host == "codex" {
 		return card(codexSources(db, transcript), rules.String(), reinjectBudget())

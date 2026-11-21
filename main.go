@@ -66,9 +66,9 @@ func main() {
 // opts are one command's settings: its flags, with what config.json and the defaults fill in for the flags not given.
 type opts struct {
 	cmd, home, dbPath, projects, history, codexDir, host, notID, archive, scope, trigger, who, since, mode string
-	text, at, zone, level, under, kind, points                                                             string
+	text, at, zone, level, under, kind, points, quote, replaces                                            string
 	n                                                                                                      int
-	all, migrate, stop, self                                                                               bool
+	all, migrate, stop, self, decision                                                                     bool
 	after, needs, then                                                                                     listFlag
 	given                                                                                                  map[string]bool
 	args                                                                                                   []string
@@ -94,7 +94,7 @@ func parseArgs(cmd string, args []string) (opts, error) {
 		onErr = flag.ContinueOnError
 	}
 	n := 0
-	if cmd == "task" {
+	if cmd == "task" || cmd == "rule" {
 		n = min(1, len(args)) // flag parsing stops at the first word, so the subcommand comes off first
 	}
 	sub := args[:n:n] // capped, so appending to it never writes over args
@@ -154,6 +154,9 @@ func (o *opts) flagSet(onErr flag.ErrorHandling) *flag.FlagSet {
 	fs.StringVar(&o.kind, "kind", "", "task add: a story's kind: story (default), bug, chore, spike or impediment (SPEC T14)")
 	fs.StringVar(&o.points, "points", "", "task add: a story's points: 1, 2, 3, 5, 8 or 13 (SPEC T15)")
 	fs.BoolVar(&o.self, "self", false, "task add: the agent adds it on its own; no message of the user asked for it")
+	fs.StringVar(&o.quote, "quote", "", "rule add: the user's words that set the rule, at least 3, as he typed them (SPEC D1)")
+	fs.BoolVar(&o.decision, "decision", false, "rule add: a decision about the work, not a rule of how to work (SPEC D1)")
+	fs.StringVar(&o.replaces, "replaces", "", "rule add: the record this one replaces (SPEC D2)")
 	fs.BoolVar(&o.migrate, "migrate", false, "install, uninstall: take over TRACE hooks that name no home (installed before -home existed)")
 	fs.String("repo", "", "ignored: kept so hooks written for an older TRACE still run (SPEC G5)")
 	return fs
@@ -226,6 +229,7 @@ var commands = map[string]func(opts) error{
 	"stats":     cmdStats,
 	"rules":     cmdRules,
 	"task":      cmdTask,
+	"rule":      cmdRule,
 	"alarm":     cmdAlarm,
 }
 

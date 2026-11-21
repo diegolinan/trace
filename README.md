@@ -139,10 +139,11 @@ TRACE takes a different approach:
 - **Identity.** A session is known by its id, never by its name. Every name a session is given is kept as a dated label. A session belongs to the folder it ran in; with roles configured, its role comes from a marker file in that folder or one above it, so moving or renaming a folder does not change it. TRACE does not use git: a `.git` is one more file in a folder (see `SPEC.md`).
 - **Hooks.**
   - Stop, PreCompact and SessionEnd: a detached import that returns at once.
-  - SessionStart: a block that says where the last session in the same folder, or in a folder inside it, stopped (with roles configured, the last session of the same role). It also lists, verbatim, what the user refused or set as a standing rule in the last 14 days, each with the end of the reply it answered, so the agent does not propose it again. These are found by code rules, with no network.
+  - SessionStart: a block that says where the last session in the same folder, or in a folder inside it, stopped (with roles configured, the last session of the same role). It opens with the rules and decisions the agent recorded (below), in your own words. Until the first one is recorded, it lists instead what code rules mark as a refusal or a standing rule in the last 14 days.
   - PreCompact: also fixed text that tells Claude Code's summarizer to keep quotes, ids and open work.
   - SubagentStart: tells helper agents that they are helpers, not the agent that started them.
   - PostToolUse, only when `checks` are configured: runs the project's checks after the tool calls they name, and shows a failure to the agent at once.
+  - UserPromptSubmit, always: after 10 of your messages with nothing recorded, it gives the agent those messages and asks whether it missed a rule or decision. It shows nothing to you.
   - UserPromptSubmit and PostToolUse on every tool, only when `reinject` is configured: the rule card (below).
 - **Rule card (opt-in, experimental).** Two memory problems, one tool: across sessions, what happened and where the work stopped; within a session, which rules are in force. Agents stop attending to their instructions as context grows, long before it fills: in published measurements a rule fell below 50% compliance once the context was about 7 to 12 times its size. TRACE reads the size of the context from the host's own token counts in the transcript, and each time enough new context has entered (by default 7 times the card's size) it shows the agent a short card of the project's rules again. The card is built by code, never reworded: the instruction files whole when they fit (the ones Claude Code's transcript says it loaded: CLAUDE.md and what it imports, CLAUDE.local.md, auto memory's MEMORY.md, each read again from disk), otherwise only the text you mark between `<!-- trace:rules -->` and `<!-- /trace:rules -->`; then what the user refused or set as a rule in the last 14 days, verbatim. When a file changes, only the new lines are shown. Subagents get no card. Whether this lowers violations is not yet measured; the checks log and `trace stats` are there to measure it. `trace rules` shows the card the newest Claude Code session in the current folder gets (a Codex card depends on the session's rollout).
 - **Checks.** A rule the agent has in context still gets broken: agents stop attending to their instructions as a session grows. A rule a command can verify is better checked than repeated. Each check names the tools it follows (for example `Bash`), a pattern for the file or command (for example `npm publish`), and a command; a non-zero exit is a violation, and its output reaches the agent before its next step. Every run is logged, passes too, so `trace stats` shows how often each rule breaks.
@@ -150,6 +151,23 @@ TRACE takes a different approach:
 - **Secrets.** API keys, tokens and private keys are redacted before anything is stored. The raw copies are not redacted: they are byte copies of files already on the same disk.
 - **Raw copies you can rebuild from.** Each Claude Code transcript, its large tool results and the prompt log are copied into `raw/` as they are imported, so they outlive Claude Code's cleanup (30 days by default). `trace restore` reads them back into the store: into an empty `trace.db` it rebuilds the Claude Code memory; into an existing one it adds only what is missing. Measured on a real store: 1,063 raw copies, 127,040 events, the same count as the live store, in 7 minutes. Roles are worked out again from the folders as they are now, so a session whose folder moved can get another role. Codex sessions are not copied (Codex keeps its own), so they come back from `~/.codex` with `trace import`.
 - **Marks (experimental).** Code rules mark a typed message that approves, rejects, corrects or sets a standing rule. Today the markers cover Spanish (including voseo) and English. They were scored against blind labels of real messages.
+
+## Rules and decisions
+
+When you give the agent a rule (how it must work from now on) or a decision (a choice later sessions must keep), it records it with `trace rule add -quote "<your words>"`. TRACE ties the record to your message and always shows your own words, never the agent's. It then tells you in one line what it recorded, so you can object.
+
+- **Where it shows:** each later session in the same folder, a folder inside it or one above it, in Claude Code or Codex, starts with the rules in force and the decisions of the last 14 days.
+- **Changing your mind:** when you change a rule, the agent records the new one in its place; when you lift one, it drops it. Nothing is deleted: `trace rule list -all` shows the whole history.
+- **When the agent forgets:** after 10 of your messages with nothing recorded, and after each compaction, TRACE shows the agent those messages and asks whether it missed one.
+
+Why not find them by word patterns, as TRACE did before? On 1300 real messages, a blind judge from another vendor counted:
+
+| | share of what it showed that was a rule | share of your rules it showed |
+|---|---|---|
+| word patterns | 29% | about 4% |
+| an agent recording | 72% | about 56% |
+
+Most rules carry no word like "always" or "never".
 
 ## The task board
 
@@ -238,6 +256,10 @@ trace resume                      where the last session in this folder stopped,
                                   `trace resume` or, failing that, the newest that wrote in the last two minutes;
                                   any value that is no session id (-not x) leaves none out
 trace search <words>              [-n 10] [-who user|assistant|subagent] [-all] [-since 2026-11-01]
+trace rule add -quote "<words>"   record a rule of the user, tied to the newest message of theirs in this session that holds
+                                  those words (3 or more); -decision for a decision; -replaces <id> for one it replaces
+trace rule drop <id>              the user lifted a rule: out of force, nothing replaces it
+trace rule list                   the rules and decisions in force, newest first; -all also those out of force
 trace rules                       the rule card a session in this folder would get, and why
 trace stats                       counts, last runs, checks, rule cards, hook output that never reached the session,
                                   and each alarm deliverer's last failure

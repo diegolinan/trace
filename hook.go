@@ -130,7 +130,7 @@ func detachedHook(in hookInput, flags []string, dbPath, role, host string, mine 
 	switch {
 	case in.Event == "PreCompact" && host != "codex": // Codex drops PreCompact stdout, and its hooks.json gets no PreCompact
 		fmt.Fprintf(w, compactSteer, userName())
-	case in.Event == "SessionStart" && cfg.Reinject != nil && !withheld(clockNow()):
+	case in.Event == "SessionStart":
 		return errors.Join(err, compactCard(in, dbPath, role, host, w))
 	case in.Event == "Stop":
 		return errors.Join(err, holdStop(in, dbPath, host, w))
@@ -167,13 +167,21 @@ func hookRole(in hookInput, host string) (role string, mine bool) {
 	return role, ours(role) && excluded == ""
 }
 
-// compactCard prints the rule card after a compaction: the host reloads the instruction files then, but not the
-// user's rules from conversation.
+// compactCard prints, after a compaction, the net that asks about rules not recorded (SPEC D7), then the rule card when
+// re-injection is on and the day is not withheld: the host reloads the instruction files then, but not the user's
+// rules from conversation.
 func compactCard(in hookInput, dbPath, role, host string, w io.Writer) error {
 	db, _ := openReadOnly(dbPath)
-	text, _ := sessionCard(db, in.Cwd, in.Transcript, role, host)
+	text := compactNet(db, in.SessionID)
+	if cfg.Reinject != nil && !withheld(clockNow()) {
+		card, _ := sessionCard(db, in.Cwd, in.Transcript, role, host)
+		text += card
+	}
 	if db != nil {
 		db.Close()
+	}
+	if text == "" {
+		return nil
 	}
 	if host == "codex" {
 		return contextOut(w, "SessionStart", text)
@@ -213,7 +221,7 @@ func contextOut(w io.Writer, event, text string) error {
 // helperLine reaches every subagent through SubagentStart (subagents get no SessionStart context). They load the
 // same role files and memory as their parent, so without it they take themselves for that agent.
 const helperLine = "You are a helper agent started by %[1]s, not %[1]s itself. The role files and memory you loaded describe %[1]s, not you. " +
-	"Do the task you were given and return the result. Do not commit, push, fast-forward main, write %[1]s's memory or message %[2]s or other agents unless the task says so."
+	"Do the task you were given and return the result. Do not commit, push, fast-forward main, write %[1]s's memory, record rules with trace rule add, or message %[2]s or other agents unless the task says so."
 
 // compactSteer is PreCompact stdout, which Claude Code appends to its summary prompt under "Additional
 // Instructions:" (2.1.322 strings). It steers the summary only, never reaches the model afterwards, and the user
