@@ -522,12 +522,12 @@ The agent, which understands what the user meant, records each rule or decision 
   - `trace rule drop <id>` puts one out of force with nothing replacing it: the user lifted it.
   - Nothing is deleted.
   - A record whose message later stops being the user's (I9, I10) is never shown.
-- **D3. Listing.** `trace rule list` prints the records in force, newest first: id, local time, kind and quote. `-all` adds those out of force, each with what replaced it or that it was dropped, and when.
+- **D3. Listing.** `trace rule list` prints the records in force, newest first: id, the local time the user said it, kind and quote. `-all` adds those out of force, each with what replaced it or that it was dropped, and when.
 - **D4. In the start block and the card.** The block opens a section "What <user> set as rules and decisions (recorded; in force until replaced; what <user> says now wins)".
   - **Which:**
     - rules in force, newest first, up to 8;
     - then decisions recorded in the last 14 days, up to 5.
-  - **Each** shows its id, its quote, and the end of the reply it answered.
+  - **Each** shows when the user said it (not when it was recorded), its id, its quote, and the end of the reply it answered.
   - **Then** "and N more: trace rule list" when there are more.
   - **Scope:** records from sessions of any host, in the session's folder, in a folder inside it or in a folder above it. With roles, of the same role.
   - **Where:**

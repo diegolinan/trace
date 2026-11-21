@@ -164,7 +164,7 @@ func ruleList(db *sql.DB, o opts, w io.Writer) error {
 	if o.all {
 		where = "1"
 	}
-	rows, err := db.Query(`select r.id, r.added_at, r.decision, r.quote, coalesce(r.replaced_by, 0), coalesce(r.out_at, '')
+	rows, err := db.Query(`select r.id, e.ts, r.decision, r.quote, coalesce(r.replaced_by, 0), coalesce(r.out_at, '')
 		from rule r join event e on e.id = r.event_id where ` + ruleUsersSQL + ` and ` + where + ` order by r.out_at is not null, r.id desc`)
 	if err != nil {
 		return err
@@ -209,11 +209,11 @@ const ruleInstruction = "When %[1]s gives you a rule or a decision, record it wi
 
 // ruleRecord is a record in force as the block shows it.
 type ruleRecord struct {
-	id                int64
-	added, quote, sid string
-	seq               int
-	decision          bool
-	cwd, role         string
+	id                      int64
+	added, said, quote, sid string
+	seq                     int
+	decision                bool
+	cwd, role               string
 }
 
 // ruleSection writes the records in force for a session of role in cwd, with the instruction, when there are any. It
@@ -242,7 +242,7 @@ func writeRuleInstruction(w io.Writer, user string) {
 // ruleRecords are the records in force whose message is still the user's, from sessions in scope (SPEC D4): with roles,
 // of the same role; without, in cwd, inside it or above it; any host. Newest first.
 func ruleRecords(db *sql.DB, role, cwd string) ([]ruleRecord, error) {
-	rows, err := db.Query(`select r.id, r.added_at, r.quote, r.decision, e.session_id, e.seq, coalesce(s.cwd, ''), coalesce(s.role, '')
+	rows, err := db.Query(`select r.id, r.added_at, e.ts, r.quote, r.decision, e.session_id, e.seq, coalesce(s.cwd, ''), coalesce(s.role, '')
 		from rule r join event e on e.id = r.event_id left join session s on s.id = e.session_id
 		where r.out_at is null and ` + ruleUsersSQL + ` order by r.added_at desc, r.id desc`)
 	if err != nil {
@@ -252,7 +252,7 @@ func ruleRecords(db *sql.DB, role, cwd string) ([]ruleRecord, error) {
 	var out []ruleRecord
 	for rows.Next() {
 		var r ruleRecord
-		rows.Scan(&r.id, &r.added, &r.quote, &r.decision, &r.sid, &r.seq, &r.cwd, &r.role)
+		rows.Scan(&r.id, &r.added, &r.said, &r.quote, &r.decision, &r.sid, &r.seq, &r.cwd, &r.role)
 		if ruleInScope(r, role, cwd) {
 			out = append(out, r)
 		}
@@ -291,7 +291,7 @@ func writeRules(db *sql.DB, w io.Writer, user string, recs []ruleRecord) {
 
 // ruleLine is a record as the block shows it: id, when, kind, the quote, and the end of the reply it answered.
 func ruleLine(db *sql.DB, r ruleRecord) string {
-	return refusalLine(db, lastingHit{sid: r.sid, seq: r.seq, ts: r.added, text: `"` + r.quote + `"`, label: fmt.Sprintf("#%d %s", r.id, ruleKind(r.decision))})
+	return refusalLine(db, lastingHit{sid: r.sid, seq: r.seq, ts: r.said, text: `"` + r.quote + `"`, label: fmt.Sprintf("#%d %s", r.id, ruleKind(r.decision))})
 }
 
 // ruleNetQuestion asks the agent about messages it may not have recorded from (SPEC D6, D7).

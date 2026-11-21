@@ -402,3 +402,23 @@ func TestRuleNetCompactionOneMessage(t *testing.T) {
 		t.Errorf("one message: %q", got)
 	}
 }
+
+// SPEC D3, D4: a record shows when the user said it, not when the agent recorded it.
+func TestRuleShowsWhenSaid(t *testing.T) {
+	rzNoRoles(t)
+	db := ruleBlockStore(t, t.TempDir(), 0, 0, 0)
+	ev := ruleEvent(t, db, "old", 1, "2026-11-10T08:01:00Z", "de aca en mas TDD siempre")
+	ruleRow(t, db, ev, "de aca en mas TDD", false, "2026-11-21T03:54:00Z", "")
+	said, recorded := local("2026-11-10T08:01:00Z"), local("2026-11-21T03:54:00Z")
+	got := rzBlock(t, db, "")
+	if !strings.Contains(got, said+" #1 rule") || strings.Contains(got, recorded) {
+		t.Errorf("block:\n%s", got)
+	}
+	var w strings.Builder
+	if err := ruleList(db, opts{}, &w); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(w.String(), said) || strings.Contains(w.String(), recorded) {
+		t.Errorf("list: %q", w.String())
+	}
+}
