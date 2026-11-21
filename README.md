@@ -272,9 +272,10 @@ trace task sprint close           close the open sprint and its review; refused 
 trace task done|drop <id>         close an open task, with the message that closed it; done refuses while a
                                   criterion is unmet, and both refuse while a task under it is open
 trace task told <id>              the user was told of a fired task: its session's Stop hook stops holding the turn
-trace task board                  the board as a page: writes board.html beside the store and opens it in the browser; in
-                                  progress, waiting, to do and closed in the last 14 days, each card with what it waits on and
-                                  its criteria; a snapshot, no server, no network
+trace task board                  the board as a page: writes board.html beside the store and opens it in the browser; four
+                                  columns (to do, waiting, in progress, closed in the last 14 days), with search and filters;
+                                  a card opens its criteria, what it waits on and the words that asked for it; a snapshot,
+                                  fonts inside, no server, no network
 trace task list                   the open tasks as a tree, each group in order of importance, with level and parent (the start block shows the first 5; a due one is
                                   announced on the next prompt, when UserPromptSubmit is installed, and named once
                                   in each later session until done or dropped)

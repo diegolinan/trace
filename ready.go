@@ -207,11 +207,23 @@ func criteriaText(db *sql.DB, task string) string {
 // waitingOn is "waiting on: ..." with a task's unmet conditions, at most limit (0: all) and how many more, or "" when
 // it waits on nothing (SPEC T7). -needs words are clipped to one line and quoted.
 func waitingOn(db *sql.DB, task int64, limit int) string {
+	parts := unmetConditions(db, task, conditionText)
+	if len(parts) == 0 {
+		return ""
+	}
+	if limit > 0 && len(parts) > limit {
+		parts = append(parts[:limit], fmt.Sprintf("and %d more", len(parts)-limit))
+	}
+	return "waiting on: " + strings.Join(parts, "; ")
+}
+
+// unmetConditions is each unmet condition of a task, in order, as show writes it (SPEC T7, T24).
+func unmetConditions(db *sql.DB, task int64, show func(n, after int64, needs, how string, waits bool) string) []string {
 	rows, err := db.Query(`select c.n, coalesce(c.after_id, 0), coalesce(c.needs, ''), coalesce(a.closed_how, ''),
 		exists (select 1 from task_condition x where x.task_id = c.after_id and x.met_at is null)
 		from task_condition c left join task a on a.id = c.after_id where c.task_id = ? and c.met_at is null and c.done_when is null order by c.n`, task)
 	if err != nil {
-		return ""
+		return nil
 	}
 	defer rows.Close()
 	var parts []string
@@ -220,15 +232,9 @@ func waitingOn(db *sql.DB, task int64, limit int) string {
 		var needs, how string
 		var waits bool
 		rows.Scan(&n, &after, &needs, &how, &waits)
-		parts = append(parts, conditionText(n, after, needs, how, waits))
+		parts = append(parts, show(n, after, needs, how, waits))
 	}
-	if len(parts) == 0 {
-		return ""
-	}
-	if limit > 0 && len(parts) > limit {
-		parts = append(parts[:limit], fmt.Sprintf("and %d more", len(parts)-limit))
-	}
-	return "waiting on: " + strings.Join(parts, "; ")
+	return parts
 }
 
 // conditionText is one unmet condition as shown: need n: "<words>", or after task <id> and its state.

@@ -2,3 +2,9 @@ TRACE (Transcript Recall And Continuity Engine)
 Copyright 2026 Diego Liñan
 
 This product is licensed under the Apache License, Version 2.0 (see LICENSE).
+
+The board page (trace task board) embeds these fonts:
+- Die Grotesk (fonts/die-grotesk-medium.woff2, fonts/die-grotesk-reading-regular.woff2), licensed by Diego Liñan,
+  who authorized their use in TRACE (2026-11-20).
+- Space Mono (fonts/space-mono-regular.woff2), by Colophon Foundry for Google, under the SIL Open Font License 1.1
+  (fonts/SPACE-MONO-OFL.txt).

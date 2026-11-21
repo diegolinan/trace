@@ -332,14 +332,40 @@ Diego: "o sea que git es una dependencia", then "todo para joggearte la memoria?
 - **T24. The board as a page.** `trace task board` writes `board.html` beside the store and opens it in the
   browser. It is a snapshot: run it again to refresh. There is no server and no network, and nothing else leaves the
   store.
-  - **Four columns:** in progress (T16), waiting (an unmet `-needs` or `-after`, T7), to do, and closed in the last 14
-    days with how each was closed.
-  - **Each card:** the task's words, the user's asking words or that an agent added it on its own (T1), its level, its
-    kind and points when set, the open task it is under, its time with offset (A10), what it waits on, and its
-    criteria of done (T8).
-  - **Escaping:** every text is HTML-escaped, so a task's words cannot run as markup.
-  - **Why:** Diego, 2026-11-20: "Deberíamos tener, para quien lo quiere ver y sabe, un tablero del board...". Test:
-    `TestTaskBoardPage`.
+  - **It reads as a snapshot:** the header gives the time it was made, with its offset, and says changes are made from
+    TRACE. Nothing on the page looks editable: no drag handles, create buttons or checkboxes.
+  - **Layout:** one grid of four columns by state, with no row per epic: to do, waiting (an unmet `-needs` or `-after`,
+    T7), in progress (T16), and closed in the last 14 days, newest first, each marked done or dropped. Each column
+    header gives its count. An epic is context on its stories' cards and a filter, never a card of its own.
+  - **Above the grid:**
+    - the open sprint's goal and review date, when there is one (T18);
+    - a search over the words, the asking words, the criteria and the conditions;
+    - an epic filter, with "No epic";
+    - one line of counts that also filter: in progress, waiting, no criteria, overdue and not told. A task can be in
+      more than one, so the counts are not summed.
+  - **A card:** its epic, then its id, kind and points; its words, cut at four lines; its due time; its criteria met
+    out of all, or "No criteria" for a story with none; the first condition it waits on and how many more; "Overdue,
+    not told" when its time passed and the user was not told (A8).
+  - **Opening a card shows its detail**, as a panel at the right:
+    - the path from its epic, its id, words, state, kind, points and time with offset (A10);
+    - every condition it waits on;
+    - its criteria of done (T8): how many are met, each marked met or open, literal; a story with none says so;
+    - the user's asking words, cleaned of pasted-content tags, or that an agent added it on its own (T1);
+    - its parent, its children and its sprint.
+  - **Escaping:** every text is HTML-escaped, so a task's words cannot run as markup. Only `**bold**` and `` `code` ``
+    are rendered, on the escaped text.
+  - **Style:** PAGE's style guide for Diego's site: paper and ink; cyan for in progress, yellow for waiting, pink for
+    overdue and not told, each only as a rule or a small label with its words, never a whole card. Square geometry,
+    no card shadows. Die Grotesk and Space Mono are embedded in the page (licenses in `NOTICE`). The scheme follows the
+    system until the user picks light or dark with a button in the header; the page remembers the pick in the browser.
+    The header, the filters and the column headers stay in view: only the cards scroll.
+  - **Phone:** one column at a time, picked by a row of state tabs with counts; it starts on in progress when that has
+    a card. A search or a count filter shows its results from every state.
+  - **Access:** cards are buttons, the detail is a dialog that Escape closes and that gives focus back, focus is
+    visible, and every marker carries words, not only color.
+  - **Why:** Diego, 2026-11-20: "Deberíamos tener, para quien lo quiere ver y sabe, un tablero del board...", then, on
+    the first version: "Apesta fuerte. En donde esta el gherkin?" and "Se ve como un choclo de cosas". The design is
+    PAGE's, at his request. Test: `TestTaskBoardPage`.
 
 Why T5 to T7: 25 of 93 real deferrals waited on another task, a third party, a decision of Diego's or an input not
 there yet, over the threshold of 1 in 5 fixed before the run. Conditions of done (Gherkin at close) were disputed in
