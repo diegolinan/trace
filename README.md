@@ -173,7 +173,7 @@ Most rules carry no word like "always" or "never".
 
 When you ask the agent to remind you of something, or to note something for later, it adds a task with `trace task add`, tied to the message where you asked. A task can have a time: TRACE then fires it at that time, even with nobody typing, by writing a reminder into a live session (see `trace alarm` under [Commands](#commands)). Open tasks show in each start block, and a due one is named on your next prompt until you are told.
 
-The agent learns all this from the start block, so the first session in a folder with no earlier session, which gets no block, does not know about the board yet. The start block also tells the agent how to keep these tasks as a board: what each waits on, how to tell it is done, epics, stories and sprints. The agent does that on its own and talks to you about the work itself, never about ids or levels. You never have to run a task command yourself; `trace task board` opens the board as a page in your browser, and `trace task list` prints it.
+The agent learns all this from the start block, which every session gets, the first one in a folder included. The start block also tells the agent how to keep these tasks as a board: what each waits on, how to tell it is done, epics, stories and sprints. The agent does that on its own and talks to you about the work itself, never about ids or levels. You never have to run a task command yourself; `trace task board` opens the board as a page in your browser, and `trace task list` prints it.
 
 ## Install in detail
 

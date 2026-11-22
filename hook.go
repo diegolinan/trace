@@ -202,10 +202,10 @@ func startBlock(in hookInput, dbPath, role, host string, w io.Writer) error {
 	}
 	defer db.Close()
 	if host != "codex" {
-		return resumeBlock(db, in.SessionID, in.Source, role, host, in.Cwd, w)
+		return hookBlock(db, in.SessionID, in.Source, role, host, in.Cwd, w)
 	}
 	var buf strings.Builder
-	if err := resumeBlock(db, in.SessionID, in.Source, role, host, in.Cwd, &buf); err != nil {
+	if err := hookBlock(db, in.SessionID, in.Source, role, host, in.Cwd, &buf); err != nil {
 		return err
 	}
 	return contextOut(w, "SessionStart", buf.String())

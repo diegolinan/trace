@@ -343,3 +343,23 @@ func TestDueTaskAnnouncedOnceAtNextPrompt(t *testing.T) {
 		t.Errorf("the next due task without the card: %q %v", w.String(), err)
 	}
 }
+
+// SPEC T3: the first session in a folder with no earlier session still gets the board's and the rules' instructions.
+func TestFirstSessionGetsBoardInstructions(t *testing.T) {
+	rzNoRoles(t)
+	db := rzDB(t)
+	var out strings.Builder
+	f := filepath.Join(t.TempDir(), "new-folder")
+	if err := hookBlock(db, "new", "startup", projectRole(f), "claude-code", f, &out); err != nil {
+		t.Fatal(err)
+	}
+	got := out.String()
+	for _, want := range []string{"task add", "scrum master", "rule add -quote"} {
+		if !strings.Contains(got, want) {
+			t.Errorf("first start block lacks %q:\n%s", want, got)
+		}
+	}
+	if strings.Contains(got, "## Where") {
+		t.Errorf("first start block names a session that never ran:\n%s", got)
+	}
+}

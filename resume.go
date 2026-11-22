@@ -31,6 +31,17 @@ func inFolder(path, folder string) bool {
 }
 
 func resumeBlock(db *sql.DB, sid, source, role, host, cwd string, w io.Writer) error {
+	return startText(db, sid, source, role, host, cwd, false, w)
+}
+
+// hookBlock is the SessionStart block: resumeBlock, and with no earlier session still how to record rules and use
+// the board, so a first session in a folder can use them from its first message (SPEC T3). trace resume keeps
+// the empty block, which it reads as "no earlier session".
+func hookBlock(db *sql.DB, sid, source, role, host, cwd string, w io.Writer) error {
+	return startText(db, sid, source, role, host, cwd, true, w)
+}
+
+func startText(db *sql.DB, sid, source, role, host, cwd string, first bool, w io.Writer) error {
 	user := userName()
 	// The recorded rules come first, even with no earlier session to resume (SPEC D4).
 	recorded, wrote, err := ruleSection(db, w, user, role, cwd)
@@ -38,8 +49,11 @@ func resumeBlock(db *sql.DB, sid, source, role, host, cwd string, w io.Writer) e
 		return err
 	}
 	s, err := lastSession(db, sid, source, role, host, cwd)
-	if err != nil || s == nil {
+	if err != nil {
 		return err
+	}
+	if s == nil {
+		return firstText(db, w, user, wrote, first)
 	}
 	writeHeader(db, w, *s, user, role, host)
 	b := blockWriter{db: db, w: w}
@@ -77,6 +91,18 @@ func resumeBlock(db *sql.DB, sid, source, role, host, cwd string, w io.Writer) e
 	}
 	fmt.Fprintf(w, "Everything else said or done: %s (-all widens it). Search before saying you cannot confirm something; if nothing comes up, search again in the other language and with synonyms.\n", traceCmd("search", " <words>"))
 	return nil
+}
+
+// firstText is what a block with no earlier session adds: nothing for trace resume; for the hook, how to record rules
+// (unless the rule section already said it) and how to use the board.
+func firstText(db *sql.DB, w io.Writer, user string, wrote, first bool) error {
+	if !first {
+		return nil
+	}
+	if !wrote {
+		writeRuleInstruction(w, user)
+	}
+	return taskSection(db, w, user)
 }
 
 // shownSession is the session a start block shows.

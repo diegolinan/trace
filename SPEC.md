@@ -191,7 +191,9 @@ sees a board, only an agent that remembers and asks.
 - **T3.** The start block lists the open tasks (at most 5, oldest first; with how many more there are) with the
   words that asked for them, and tells the agent: when the user asks to be reminded of something or to note it
   for later, run `trace task add`, and add `-self` to a task the agent adds on its own; close a task only after
-  asking the user. Test: `TestStartBlockShowsOpenTasks`.
+  asking the user. Test: `TestStartBlockShowsOpenTasks`. These instructions, and the one on recording rules, are in
+  every start block, also the first one in a folder with no earlier session, so the first session can use the board
+  from its first message (2026-11-22, Diego: "Dale! Si!"). Test: `TestFirstSessionGetsBoardInstructions`.
 - **T4.** On the first user prompt after a task's time, the prompt hook adds one line naming the task, its time
   and the words that asked for it. Each task is fired once (A2); an announced task stays open until closed, and
   until it is told or closed every other session is shown it once (A7). Test:
