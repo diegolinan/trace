@@ -443,8 +443,9 @@ func TestCrashedClaimIsRecordedFailed(t *testing.T) {
 }
 
 // SPEC A1: trace alarm -stop, which install runs before replacing the binary, asks the running alarm to exit and waits
-// for its lock; it says so when the alarm does not stop in time, and leaves no stop request behind either way, or
-// the next alarm would exit at once. Without a store there is no alarm: nothing is created, nothing is waited for.
+// for its lock; it says whether it stopped one or none was running, says so when the alarm does not stop in time, and
+// leaves no stop request behind either way, or the next alarm would exit at once. Without a store there is no alarm:
+// nothing is created, nothing is waited for.
 func TestAlarmStopWaitsForExit(t *testing.T) {
 	smKeepCfg(t)
 	oldHome := activeHome
@@ -457,17 +458,18 @@ func TestAlarmStopWaitsForExit(t *testing.T) {
 	if o, _ := parseArgs("alarm", []string{"-home", home}); o.stop {
 		t.Fatal("stop without -stop")
 	}
-	if err := cmdAlarm(o); err != nil || exists(o.dbPath) || exists(o.dbPath+".alarm.stop") || exists(o.dbPath+".alarm.lock") {
-		t.Fatalf("with no store: %v, or a store was made", err)
+	var err2 error
+	if said := alarmStdout(t, func() { err2 = cmdAlarm(o) }); err2 != nil || said != "no alarm was running\n" || exists(o.dbPath) || exists(o.dbPath+".alarm.stop") || exists(o.dbPath+".alarm.lock") {
+		t.Fatalf("with no store: %v, said %q, or a store was made", err2, said)
 	}
 	_, dbPath := alarmStore(t)
 	o = opts{dbPath: dbPath, stop: true}
-	if err := cmdAlarm(o); err != nil || exists(dbPath+".alarm.stop") {
-		t.Fatalf("stop with no alarm running: %v, stop file left: %v", err, exists(dbPath+".alarm.stop"))
+	if said := alarmStdout(t, func() { err2 = cmdAlarm(o) }); err2 != nil || said != "no alarm was running\n" || exists(dbPath+".alarm.stop") {
+		t.Fatalf("stop with no alarm running: %v, said %q, stop file left: %v", err2, said, exists(dbPath+".alarm.stop"))
 	}
 	held, _ := tryLock(dbPath + ".alarm.lock")
 	defer held.Close()
-	if err := stopAlarm(dbPath, 0); err == nil || !strings.Contains(err.Error(), "the alarm did not stop") || exists(dbPath+".alarm.stop") {
+	if _, err := stopAlarm(dbPath, 0); err == nil || !strings.Contains(err.Error(), "the alarm did not stop") || exists(dbPath+".alarm.stop") {
 		t.Fatalf("stop while the alarm keeps running: %v, stop file left: %v", err, exists(dbPath+".alarm.stop"))
 	}
 	alarmSleeper(t, 0, func(int) {})
@@ -478,8 +480,8 @@ func TestAlarmStopWaitsForExit(t *testing.T) {
 		time.Sleep(600 * time.Millisecond) // the alarm sees the request at its next wake and exits
 		held.Close()
 	}()
-	if err := cmdAlarm(opts{dbPath: dbPath, stop: true}); err != nil || exists(dbPath+".alarm.stop") {
-		t.Fatalf("stop did not wait for the alarm to exit: %v, stop file left: %v", err, exists(dbPath+".alarm.stop"))
+	if said := alarmStdout(t, func() { err2 = cmdAlarm(opts{dbPath: dbPath, stop: true}) }); err2 != nil || said != "stopped the running alarm\n" || exists(dbPath+".alarm.stop") {
+		t.Fatalf("stop did not wait for the alarm to exit: %v, said %q, stop file left: %v", err2, said, exists(dbPath+".alarm.stop"))
 	}
 }
 
@@ -559,17 +561,20 @@ func TestStartAlarmRunsAlarm(t *testing.T) {
 	}
 }
 
-// alarmStderr runs f and returns what it wrote to stderr.
-func alarmStderr(t *testing.T, f func()) string {
+// alarmStderr runs f and returns what it wrote to stderr; alarmStdout, to stdout.
+func alarmStderr(t *testing.T, f func()) string { return alarmCapture(t, &os.Stderr, f) }
+func alarmStdout(t *testing.T, f func()) string { return alarmCapture(t, &os.Stdout, f) }
+
+func alarmCapture(t *testing.T, std **os.File, f func()) string {
 	t.Helper()
 	r, w, err := os.Pipe()
 	if err != nil {
 		t.Fatal(err)
 	}
-	old := os.Stderr
-	os.Stderr = w
+	old := *std
+	*std = w
 	f()
-	os.Stderr = old
+	*std = old
 	w.Close()
 	b, _ := io.ReadAll(r)
 	r.Close()
@@ -674,12 +679,12 @@ func TestAlarmStoreErrorsAreReturned(t *testing.T) {
 	} else {
 		lock.Close()
 	}
-	if err := stopAlarm(filepath.Join(t.TempDir(), "gone", "trace.db"), 0); err == nil {
+	if _, err := stopAlarm(filepath.Join(t.TempDir(), "gone", "trace.db"), 0); err == nil {
 		t.Error("a stop that cannot write its request says nothing")
 	}
 	_, dbPath := alarmStore(t)
 	os.Mkdir(dbPath+".alarm.lock", 0o755)
-	if err := stopAlarm(dbPath, 0); err == nil || exists(dbPath+".alarm.stop") {
+	if _, err := stopAlarm(dbPath, 0); err == nil || exists(dbPath+".alarm.stop") {
 		t.Errorf("a stop that cannot take the lock: %v, request left: %v", err, exists(dbPath+".alarm.stop"))
 	}
 }

@@ -401,7 +401,8 @@ reason (A9 matches the marker in every shape listed there).
   it is not running, only where it can detach for real (outside the caller's job, process tree and sandbox); where it
   cannot, it is not started and the start hook is the backstop. It exits when its executable file has changed (size
   or time) or is gone. `trace alarm -stop` asks the running alarm to exit (a stop file it checks at every wake),
-  waits up to 45 seconds for its lock, and removes the request either way; the installers run it before replacing
+  waits up to 45 seconds for its lock, and removes the request either way; it prints `stopped the running alarm`,
+  or `no alarm was running` when none held the lock (then it waits for nothing); the installers run it before replacing
   the binary, which Windows refuses while the alarm runs it. Tests: `TestAlarmRunsOnce`,
   `TestAlarmSeesWallClockJump`, `TestAlarmTakesLockBackForLateTask`, `TestTaskAddStartsAlarm`,
   `TestTaskAddSaysWhenAlarmFails`, `TestStartAlarmRunsAlarm`, `TestStartAloneRefusedInsideJob` (Windows), `TestAlarmExitsWhenReplaced`, `TestAlarmStopsAtTickCap`,

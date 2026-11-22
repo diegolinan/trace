@@ -219,10 +219,17 @@ func fileStamp(path string) [2]int64 {
 // store there is no task and no alarm, and no store is made.
 func cmdAlarm(o opts) error {
 	if _, err := os.Stat(o.dbPath); err != nil {
+		if o.stop {
+			fmt.Println("no alarm was running")
+		}
 		return nil
 	}
 	if o.stop {
-		return stopAlarm(o.dbPath, 45*time.Second) // one wake (30 s) and a delivery
+		stopped, err := stopAlarm(o.dbPath, 45*time.Second) // one wake (30 s) and a delivery
+		if err == nil {
+			fmt.Println(map[bool]string{true: "stopped the running alarm", false: "no alarm was running"}[stopped])
+		}
+		return err
 	}
 	exe, _ := os.Executable() // unknown, it stamps as zeros: the alarm misses only its own replacement, and -stop still works
 	return runAlarm(o.dbPath, exe, math.MaxInt)
@@ -230,21 +237,27 @@ func cmdAlarm(o opts) error {
 
 // stopAlarm asks the running alarm to exit and waits up to wait for its lock. The installers run it before replacing
 // the binary, which Windows refuses while the alarm runs it. The request is removed when the wait ends, whatever the
-// outcome, so it never stops the next alarm.
-func stopAlarm(dbPath string, wait time.Duration) error {
+// outcome, so it never stops the next alarm. It says whether an alarm was running: a free lock means none was.
+func stopAlarm(dbPath string, wait time.Duration) (bool, error) {
+	if lock, err := tryLock(dbPath + ".alarm.lock"); err != nil || lock != nil {
+		if lock != nil {
+			lock.Close()
+		}
+		return false, err
+	}
 	stop := dbPath + ".alarm.stop"
 	if err := os.WriteFile(stop, nil, 0o644); err != nil {
-		return err
+		return false, err
 	}
 	lock, err := waitLock(dbPath+".alarm.lock", wait)
 	os.Remove(stop)
 	if err != nil {
-		return err
+		return false, err
 	}
 	if lock == nil {
-		return fmt.Errorf("the alarm did not stop within %s", wait)
+		return false, fmt.Errorf("the alarm did not stop within %s", wait)
 	}
-	return lock.Close()
+	return true, lock.Close()
 }
 
 // wakeAlarm starts the alarm when a task waits for its time and no alarm runs for the store (SPEC A1). It starts it
