@@ -31,79 +31,185 @@ func inFolder(path, folder string) bool {
 }
 
 func resumeBlock(db *sql.DB, sid, source, role, host, cwd string, w io.Writer) error {
-	return startText(db, sid, source, role, host, cwd, false, w)
+	return startText(db, sid, source, role, host, cwd, false, fitNone, w, w)
 }
 
 // hookBlock is the SessionStart block: resumeBlock, and with no earlier session still how to record rules and use
 // the board, so a first session in a folder can use them from its first message (SPEC T3). trace resume keeps
 // the empty block, which it reads as "no earlier session".
+// Claude Code's block is built again one step shorter while it is over its hook limit (SPEC B2, B3).
 func hookBlock(db *sql.DB, sid, source, role, host, cwd string, w io.Writer) error {
-	return startText(db, sid, source, role, host, cwd, true, w)
+	if host != "claude-code" {
+		return startText(db, sid, source, role, host, cwd, true, fitNone, w, w)
+	}
+	var body, tail strings.Builder
+	f := fitNone
+	for ; ; f++ {
+		body.Reset()
+		tail.Reset()
+		if err := startText(db, sid, source, role, host, cwd, true, f, &body, &tail); err != nil {
+			return err
+		}
+		if body.Len()+tail.Len() <= hookLimit || f == fitLast {
+			break
+		}
+	}
+	_, err := io.WriteString(w, fitted(body.String(), tail.String(), f))
+	return err
 }
 
-func startText(db *sql.DB, sid, source, role, host, cwd string, first bool, w io.Writer) error {
+// fit is how far the start block is shortened to fit Claude Code's hook limit, each step keeping the ones before it
+// (SPEC B2).
+type fit int
+
+const (
+	fitNone fit = iota
+	fitNoPins
+	fitFewTasks
+	fitFewWords
+	fitShortReplies
+	fitNoAnswering
+	fitFewLessons
+	fitShorterWords
+	fitFewRules
+	fitLast = fitFewRules
+)
+
+// fitSteps names each step for the closing line (SPEC B3).
+var fitSteps = [...]string{"", "no pins", "at most 3 open and 3 late tasks", "no first words, the last 4 words",
+	"replies clipped to 300 characters", "rules without the reply each answered", "the newest 2 lessons",
+	"words clipped to 200 and replies to 150 characters", "the newest 5 rules and 3 decisions"}
+
+// caps are what the block holds at a step; each list that loses items says how many more there are.
+type caps struct {
+	pins, firstWords, answering                         bool
+	tasks, late, words, wordClip, replyClip, lessons int
+	rules, decisions                                    int
+}
+
+func capsAt(f fit) caps {
+	c := caps{pins: true, firstWords: true, answering: true, tasks: 5, late: -1, words: 8, wordClip: 500, replyClip: 600,
+		lessons: 5, rules: 8, decisions: 5}
+	if f >= fitNoPins {
+		c.pins = false
+	}
+	if f >= fitFewTasks {
+		c.tasks, c.late = 3, 3
+	}
+	if f >= fitFewWords {
+		c.firstWords, c.words = false, 4
+	}
+	if f >= fitShortReplies {
+		c.replyClip = 300
+	}
+	if f >= fitNoAnswering {
+		c.answering = false
+	}
+	if f >= fitFewLessons {
+		c.lessons = 2
+	}
+	if f >= fitShorterWords {
+		c.wordClip, c.replyClip = 200, 150
+	}
+	if f >= fitFewRules {
+		c.rules, c.decisions = 5, 3
+	}
+	return c
+}
+
+// hookLimit is under Claude Code's 10,000 characters; bytes are never fewer than the characters it counts.
+const hookLimit = 9500
+
+// fitted is the block shortened to step f, then its tail (the board instruction and the search line) and the closing
+// line; when even the last step is over, the body is cut at a whole line (SPEC B3). A block that needed no step is
+// returned as it is.
+func fitted(body, tail string, f fit) string {
+	out := body + tail
+	if f == fitNone { // hookBlock stops at fitNone only when it fits
+		return out
+	}
+	line := func(end string) string {
+		return fmt.Sprintf("Shortened to fit Claude Code's 10,000-character hook limit: %s%s; run %s for the whole block.\n",
+			strings.Join(fitSteps[1:f+1], "; "), end, traceCmd("resume", " -host claude-code"))
+	}
+	if l := line(""); len(out)+len(l) <= hookLimit {
+		return out + l
+	}
+	l := line(", and the end of the data above")
+	cut := body[:max(0, min(len(body), hookLimit-len(tail)-len(l)))]
+	return cut[:strings.LastIndexByte(cut, '\n')+1] + tail + l
+}
+
+// startText writes the block to w, and its board instruction and search line to tail (w itself, but for the hook's
+// fit, SPEC B3).
+func startText(db *sql.DB, sid, source, role, host, cwd string, first bool, f fit, w, tail io.Writer) error {
 	user := userName()
 	// The recorded rules come first, even with no earlier session to resume (SPEC D4).
-	recorded, wrote, err := ruleSection(db, w, user, role, cwd)
+	c := capsAt(f)
+	recorded, wrote, err := rulesIn(db, w, user, role, cwd, c)
 	if err != nil {
 		return err
 	}
-	lessonBlock(db, w, user, role, cwd, wrote)
+	lessonBlock(db, w, user, role, cwd, wrote, c.lessons)
 	s, err := lastSession(db, sid, source, role, host, cwd)
 	if err != nil {
 		return err
 	}
 	if s == nil {
-		return firstText(db, w, user, wrote, first)
+		return firstText(db, w, user, wrote, first, f)
 	}
 	writeHeader(db, w, *s, user, role, host)
 	b := blockWriter{db: db, w: w}
 	// The first prompts of the last compaction window usually state the task (callimachus, ai-memory hook.rs:1346);
 	// the window, not the session, because one session can run for weeks. Only those older than the last 8.
 	const userSaid = `speaker = 'user' and kind in ('prompt','steering','answer','refusal','suggestion')`
-	b.section(user+"'s first words in that stretch, after its last compaction (verbatim)",
-		`select ts, kind, text from (select seq, ts, kind, text from event where session_id = ?1 and `+userSaid+`
+	if c.firstWords {
+		b.section(user+"'s first words in that stretch, after its last compaction (verbatim)",
+			`select ts, kind, text from (select seq, ts, kind, text from event where session_id = ?1 and `+userSaid+`
 			and compaction_no = (select max(compaction_no) from event where session_id = ?1)
 			and seq < (select min(seq) from (select seq from event where session_id = ?1 and `+userSaid+` order by seq desc limit 8))
 			order by seq limit 2) order by seq desc`,
-		500, s.id)
+			500, s.id)
+	}
 	b.section(user+"'s last words there (verbatim, newest last)",
 		`select ts, kind, text from event where session_id = ? and `+userSaid+` order by seq desc limit ?`,
-		500, s.id, 8)
+		c.wordClip, s.id, c.words)
 	// Several replies, not one plus tool calls: a last "ok, clear me" reply carries no state, and tool calls were mostly
 	// CI polling (2026-11-12: a /clear lost a published release and an answered question that sat two replies back).
 	b.section("The last replies (verbatim, clipped, newest last)",
 		`select ts, 'reply', text from event where session_id = ? and speaker = 'assistant' and kind = 'reply' order by seq desc limit 4`,
-		600, s.id)
+		c.replyClip, s.id)
 	if b.err == nil && !recorded { // the word-pattern section, until the store has its first record (SPEC D4)
 		b.err = refusals(db, w, user, host, role, cwd)
 	}
 	if !wrote {
 		writeInstructions(w, user)
 	}
-	b.section("Pinned by "+user+" (\"remember this\"), any session",
-		`select e.ts, 'pin', e.text from anchor a join event e on e.id = a.event_id where a.type = 'pin' order by e.ts desc limit 5`,
-		300)
+	if c.pins {
+		b.section("Pinned by "+user+" (\"remember this\"), any session",
+			`select e.ts, 'pin', e.text from anchor a join event e on e.id = a.event_id where a.type = 'pin' order by e.ts desc limit 5`,
+			300)
+	}
 	if b.err == nil {
-		b.err = taskSection(db, w, user)
+		b.err = fitTasks(db, w, tail, user, f)
 	}
 	if b.err != nil {
 		return b.err
 	}
-	fmt.Fprintf(w, "Everything else said or done: %s (-all widens it). Search before saying you cannot confirm something; if nothing comes up, search again in the other language and with synonyms.\n", traceCmd("search", " <words>"))
+	fmt.Fprintf(tail, "Everything else said or done: %s (-all widens it). Search before saying you cannot confirm something; if nothing comes up, search again in the other language and with synonyms.\n", traceCmd("search", " <words>"))
 	return nil
 }
 
 // firstText is what a block with no earlier session adds: nothing for trace resume; for the hook, how to record rules
 // (unless the rule section already said it) and how to use the board.
-func firstText(db *sql.DB, w io.Writer, user string, wrote, first bool) error {
+func firstText(db *sql.DB, w io.Writer, user string, wrote, first bool, f fit) error {
 	if !first {
 		return nil
 	}
 	if !wrote {
 		writeInstructions(w, user)
 	}
-	return taskSection(db, w, user)
+	return fitTasks(db, w, w, user, f)
 }
 
 // shownSession is the session a start block shows.
@@ -298,7 +404,7 @@ func typedLately(db *sql.DB, host, role string, byFolder bool) (*sql.Rows, error
 func refusalLine(db *sql.DB, h lastingHit) string {
 	var before string
 	db.QueryRow(`select text from event where session_id = ? and seq < ? and kind = 'reply' order by seq desc limit 1`, h.sid, h.seq).Scan(&before)
-	line := fmt.Sprintf("- %s %s: %s", local(h.ts), h.label, strings.Join(strings.Fields(clip(pasted.ReplaceAllString(h.text, "[pasted text]"), 250)), " "))
+	line := hitWords(h)
 	if before == "" {
 		return line
 	}
@@ -307,6 +413,11 @@ func refusalLine(db *sql.DB, h lastingHit) string {
 		tail = "…" + tail[len(tail)-150:]
 	}
 	return line + " (answering: " + strings.ToValidUTF8(tail, "") + ")"
+}
+
+// hitWords is a hit's when, label and words, without the reply it answered.
+func hitWords(h lastingHit) string {
+	return fmt.Sprintf("- %s %s: %s", local(h.ts), h.label, strings.Join(strings.Fields(clip(pasted.ReplaceAllString(h.text, "[pasted text]"), 250)), " "))
 }
 
 // clockNow is time.Now; tests pin it so fixtures do not age out of the 14-day window.

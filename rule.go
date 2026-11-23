@@ -253,6 +253,11 @@ type ruleRecord struct {
 // says whether the store has any record at all (until it does, the caller shows the word-pattern section instead) and
 // whether it wrote (SPEC D4).
 func ruleSection(db *sql.DB, w io.Writer, user, role, cwd string) (recorded, wrote bool, err error) {
+	return rulesIn(db, w, user, role, cwd, capsAt(fitNone))
+}
+
+// rulesIn is ruleSection with the caps of a step that fits the hook limit (SPEC B2).
+func rulesIn(db *sql.DB, w io.Writer, user, role, cwd string, c caps) (recorded, wrote bool, err error) {
 	var n int
 	db.QueryRow(`select count(*) from rule`).Scan(&n)
 	if n == 0 {
@@ -262,7 +267,7 @@ func ruleSection(db *sql.DB, w io.Writer, user, role, cwd string) (recorded, wro
 	if err != nil || len(recs) == 0 {
 		return true, false, err
 	}
-	writeRules(db, w, user, recs)
+	writeRules(db, w, user, recs, c)
 	writeRuleInstruction(w, user)
 	return true, true, nil
 }
@@ -300,21 +305,26 @@ func ruleInScope(r ruleRecord, role, cwd string) bool {
 	return cwd == "" || r.cwd == "" || inFolder(r.cwd, cwd) || inFolder(cwd, r.cwd)
 }
 
-// writeRules writes up to 8 rules, then up to 5 decisions of the last 14 days, and how many more are in force.
-func writeRules(db *sql.DB, w io.Writer, user string, recs []ruleRecord) {
+// writeRules writes up to 8 rules, then up to 5 decisions of the last 14 days (fewer to fit the hook limit), and how
+// many more are in force.
+func writeRules(db *sql.DB, w io.Writer, user string, recs []ruleRecord, c caps) {
 	since := clockNow().UTC().Add(-14 * 24 * time.Hour).Format(time.RFC3339)
 	var rules, decisions []ruleRecord
 	for _, r := range recs {
 		switch {
-		case !r.decision && len(rules) < 8:
+		case !r.decision && len(rules) < c.rules:
 			rules = append(rules, r)
-		case r.decision && r.added >= since && len(decisions) < 5:
+		case r.decision && r.added >= since && len(decisions) < c.decisions:
 			decisions = append(decisions, r)
 		}
 	}
 	fmt.Fprintf(w, "### What %[1]s set as rules and decisions (recorded; in force until replaced; what %[1]s says now wins)\n", user)
 	for _, r := range append(rules, decisions...) {
-		fmt.Fprintln(w, ruleLine(db, r))
+		if c.answering {
+			fmt.Fprintln(w, ruleLine(db, r))
+		} else {
+			fmt.Fprintln(w, hitWords(ruleHit(r)))
+		}
 	}
 	if more := len(recs) - len(rules) - len(decisions); more > 0 {
 		fmt.Fprintf(w, "and %d more: %s\n", more, traceCmd("rule", " list"))
@@ -323,8 +333,10 @@ func writeRules(db *sql.DB, w io.Writer, user string, recs []ruleRecord) {
 }
 
 // ruleLine is a record as the block shows it: id, when, kind, the quote, and the end of the reply it answered.
-func ruleLine(db *sql.DB, r ruleRecord) string {
-	return refusalLine(db, lastingHit{sid: r.sid, seq: r.seq, ts: r.said, text: `"` + r.quote + `"`, label: fmt.Sprintf("#%d %s", r.id, ruleKind(r.decision))})
+func ruleLine(db *sql.DB, r ruleRecord) string { return refusalLine(db, ruleHit(r)) }
+
+func ruleHit(r ruleRecord) lastingHit {
+	return lastingHit{sid: r.sid, seq: r.seq, ts: r.said, text: `"` + r.quote + `"`, label: fmt.Sprintf("#%d %s", r.id, ruleKind(r.decision))}
 }
 
 // ruleNetQuestion asks the agent about messages it may not have recorded from (SPEC D6, D7).

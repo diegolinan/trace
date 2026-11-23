@@ -66,6 +66,7 @@ var taskCommands = map[string]taskCommand{
 	"order":  func(db *sql.DB, o opts, t newTask) error { return taskOrder(db, o.args, os.Stdout) },
 	"stop":   func(db *sql.DB, o opts, t newTask) error { return taskStop(db, o.args, os.Stdout) },
 	"sizes":  func(db *sql.DB, o opts, t newTask) error { return taskSizes(db, os.Stdout) },
+	"help":   func(db *sql.DB, o opts, t newTask) error { return taskHelp(os.Stdout, userName()) },
 	"done":   func(db *sql.DB, o opts, t newTask) error { return taskClose(db, o.args, os.Stdout) },
 	"drop":   func(db *sql.DB, o opts, t newTask) error { return taskClose(db, o.args, os.Stdout) },
 }
@@ -279,13 +280,19 @@ func openTaskRows(db *sql.DB, and string) (lines []string, idParent [][2]int64, 
 
 // taskSection is the start block's list of open tasks, left out when there is none like any empty section, and what
 // the agent does with tasks, always, or the first task is never added (SPEC T3).
-func taskSection(db *sql.DB, w io.Writer, user string) error {
+func taskSection(db *sql.DB, w io.Writer, user string) error { return fitTasks(db, w, w, user, fitNone) }
+
+// fitTasks is taskSection with at most 5 open and every late task, or 3 of each from fitFewTasks on (SPEC B2), then
+// the short instruction, to tail, which the hook limit never cuts; the full guide is trace task help's (SPEC B1, B3).
+func fitTasks(db *sql.DB, w, tail io.Writer, user string, f fit) error {
 	lines, err := openTree(db)
 	if err != nil {
 		return err
 	}
-	if more := len(lines) - 5; more > 0 {
-		lines = append(lines[:5], fmt.Sprintf("…and %d more (%s)", more, traceCmd("task list", "")))
+	c := capsAt(f)
+	shown, late := c.tasks, c.late
+	if more := len(lines) - shown; more > 0 {
+		lines = append(lines[:shown], fmt.Sprintf("…and %d more (%s)", more, traceCmd("task list", "")))
 	}
 	if len(lines) > 0 {
 		fmt.Fprintf(w, "### Open tasks (most important first, as a tree)\n%s\n", strings.Join(lines, "\n"))
@@ -293,9 +300,27 @@ func taskSection(db *sql.DB, w io.Writer, user string) error {
 	// Every late task, past the five above (SPEC A7). Its error is left out: a store an older binary last migrated has
 	// no told_at, and the rest of the block still holds.
 	sprintSection(db, w)
-	if late, _ := openTasks(db, untold); len(late) > 0 {
-		fmt.Fprintf(w, "### Late: their time came and %s has not been told (in order)\n%s\n", user, strings.Join(late, "\n"))
+	if untoldLines, _ := openTasks(db, untold); len(untoldLines) > 0 {
+		if more := len(untoldLines) - late; late >= 0 && more > 0 {
+			untoldLines = append(untoldLines[:late], fmt.Sprintf("…and %d more (%s)", more, traceCmd("task list", "")))
+		}
+		fmt.Fprintf(w, "### Late: their time came and %s has not been told (in order)\n%s\n", user, strings.Join(untoldLines, "\n"))
 	}
+	_, off := clockNow().In(time.Local).Zone()
+	fmt.Fprintf(tail, "When %s asks to be reminded of something or to note it for later, run %s. Add -self to a task you add on your own, "+
+		"that %s did not ask for. -at is read in this computer's zone, %s now; when %s gives another zone, pass -zone with it "+
+		"(UTC-3, or a zone name), and tell the user the time the add echoes. "+
+		"Most conversations put nothing on the board: a question answered or work finished in the conversation is no task; "+
+		"add one only for what is left for later or will outlast the conversation. "+
+		"Before you plan work on the board (what a task waits on, when it is done, epics and stories, sprints), read %s. "+
+		"Close a task only after asking %s: %s or %s.\n\n",
+		user, traceCmd("task add", ` -text "<what>" [-at "YYYY-MM-DD HH:MM"]`), user, offsetName(off), user, traceCmd("task help", ""),
+		user, traceCmd("task done", " <id>"), traceCmd("task drop", " <id>"))
+	return nil
+}
+
+// taskHelp is the full guide to the board, printed by trace task help (SPEC B1).
+func taskHelp(w io.Writer, user string) error {
 	_, off := clockNow().In(time.Local).Zone()
 	fmt.Fprintf(w, "When %s asks to be reminded of something or to note it for later, run %s. Add -self to a task you add on your own, "+
 		"that %s did not ask for. -at is read in this computer's zone, %s now; when %s gives another zone, pass -zone with it "+

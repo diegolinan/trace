@@ -114,8 +114,10 @@ func TestSprintShown(t *testing.T) {
 	if err := taskSection(tkStore(t, root), &block, "Ana"); err != nil {
 		t.Fatal(err)
 	}
-	if b := block.String(); !strings.Contains(b, "task sprint -at") || !strings.Contains(b, "task sprint close") {
-		t.Errorf("start block does not tell about sprints:\n%s", b)
+	var help strings.Builder
+	taskHelp(&help, "Ana") // the guide is trace task help's (SPEC B1)
+	if b := help.String(); !strings.Contains(b, "task sprint -at") || !strings.Contains(b, "task sprint close") {
+		t.Errorf("task help does not tell about sprints:\n%s", b)
 	}
 	if b := block.String(); !strings.Contains(b, `### Sprint: "para el viernes", until `) || !strings.Contains(b, "1 of 2 stories done, 3 of 8 points; left: task 2") {
 		t.Errorf("start block:\n%s", b)

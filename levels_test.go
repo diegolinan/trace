@@ -196,10 +196,10 @@ func TestLevelShownEverywhere(t *testing.T) {
 	}
 }
 
-// SPEC T13: the start block tells the agent about levels and that they are never named to the user.
+// SPEC T13, B1: trace task help tells the agent about levels and that they are never named to the user.
 func TestStartBlockTellsAboutLevels(t *testing.T) {
 	var b strings.Builder
-	if err := taskSection(rzDB(t), &b, "the user"); err != nil {
+	if err := taskHelp(&b, "the user"); err != nil {
 		t.Fatal(err)
 	}
 	for _, want := range []string{"-level", "-under", "task under", "task level", "scrum master", "never name"} {

@@ -193,10 +193,10 @@ func TestTaskSizes(t *testing.T) {
 	}
 }
 
-// SPEC T15: the start block tells the agent about kinds and points, and that it never says them to the user.
+// SPEC T15, B1: trace task help tells the agent about kinds and points, and that it never says them to the user.
 func TestStartBlockTellsAboutPoints(t *testing.T) {
 	var b strings.Builder
-	if err := taskSection(rzDB(t), &b, "the user"); err != nil {
+	if err := taskHelp(&b, "the user"); err != nil {
 		t.Fatal(err)
 	}
 	for _, want := range []string{"-kind", "-points", "task kind", "task points", "task sizes", "split", "never say kinds or points"} {

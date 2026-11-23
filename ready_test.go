@@ -123,6 +123,9 @@ func TestWaitingOnShownEverywhere(t *testing.T) {
 	if err := taskSection(db, &block, "Ana"); err != nil {
 		t.Fatal(err)
 	}
+	if err := taskHelp(&block, "Ana"); err != nil { // the guide is trace task help's (SPEC B1)
+		t.Fatal(err)
+	}
 	for _, want := range []string{`waiting on: need 1: "a decision"`, "-after", "-needs", "task met", "task start"} {
 		if !strings.Contains(block.String(), want) {
 			t.Errorf("the start block lacks %q:\n%s", want, block.String())

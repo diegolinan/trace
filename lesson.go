@@ -175,11 +175,12 @@ func lessonLine(l lesson) string {
 	return fmt.Sprintf("- #%d %s: %q", l.id, day, l.text)
 }
 
-// lessonSection writes up to 5 fresh lessons in scope, and how many more are in force (SPEC L4).
-func lessonSection(db *sql.DB, w io.Writer, user, role, cwd string) {
+// lessonSection writes up to n (5, fewer to fit the hook limit) fresh lessons in scope, and how many more are in force
+// (SPEC L4, B2).
+func lessonSection(db *sql.DB, w io.Writer, user, role, cwd string, n int) {
 	all := lessonsInScope(db, role, cwd)
 	fresh := freshLessons(all)
-	shown := fresh[:min(5, len(fresh))]
+	shown := fresh[:min(n, len(fresh))]
 	if len(shown) == 0 {
 		return
 	}
@@ -224,11 +225,11 @@ func writeLessonInstruction(w io.Writer, user string) {
 
 // lessonBlock is what the start block shows right after the rule section, with or without it or an earlier session:
 // the lesson instruction when that section ended with the rule instruction (SPEC L6), then the lessons (L4).
-func lessonBlock(db *sql.DB, w io.Writer, user, role, cwd string, wroteRules bool) {
+func lessonBlock(db *sql.DB, w io.Writer, user, role, cwd string, wroteRules bool, n int) {
 	if wroteRules {
 		writeLessonInstruction(w, user)
 	}
-	lessonSection(db, w, user, role, cwd)
+	lessonSection(db, w, user, role, cwd, n)
 }
 
 // writeInstructions tells the agent how to record rules (SPEC D9), then lessons (L6).

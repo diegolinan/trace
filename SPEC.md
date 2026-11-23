@@ -81,6 +81,36 @@ folder. TRACE behaves the same with it or without it.
 - **R1.** `trace restore` brings back the prompt log's copy (`raw/.claude/history.jsonl.gz`) with any scope,
   the default empty one included. The prompt log is never read as a transcript. Test: `TestRestorePromptLogAnyScope`.
 
+## B. The start block fits Claude Code's hook limit
+
+Claude Code replaces a hook output over 10,000 characters with a file path and a 2 KB preview, which the agent
+seldom opens (measured 2026-11-23: a session whose block was 11,693 characters could not see its rules; one at 9,760
+could). TRACE's other hook outputs are already clipped to 9,500. The start block had no limit, and grows with every
+rule, lesson and task; a design review before this section found the first draft's cut order wrong (it cut the
+replies that hold state and kept the user's noisiest lines) and its ladder able to end still over the limit.
+
+- **B1.** The full guide to the board (T5 to T18: conditions, criteria, levels, kinds, points, order, sprints) is
+  printed by `trace task help`. The start block keeps T3's instructions, the line on the computer's zone (A10),
+  that most conversations put nothing on the board, and tells the agent to read `trace task help` before it plans
+  work on the board. Tests: `TestTaskHelpHasTheGuide`, `TestStartBlockNamesTaskHelp`.
+- **B2.** The SessionStart block of Claude Code is at most 9,500 bytes (bytes are never fewer than the characters
+  Claude Code counts). While it is over, it is built again shortened one step further, in this order: (1) no pins;
+  (2) at most 3 open tasks and 3 late ones, each with its "and N more"; (3) no first words after the last compaction,
+  and the user's last 4 words instead of 8; (4) the agent's replies clipped to 300 characters, all 4 kept (the
+  oldest one often holds the state); (5) the rules and decisions without the end of the reply each answered; (6) the
+  newest 2 lessons; (7) the user's words clipped to 200 characters and the replies to 150; (8) the newest 5 rules and
+  3 decisions, with "and N more: trace rule list". The instructions on recording rules and lessons, the header, the
+  board instruction and the search line are never cut by a step. Every maximum counted at once (13 long rules, 5
+  lessons, long words and replies, long tasks) is still about 11,700 bytes after step 8, so B3 is needed too. Tests:
+  `TestStartBlockFitsTheHookLimit`, `TestSmallStartBlockUnchanged`.
+- **B3.** A shortened block ends with one line: "Shortened to fit Claude Code's 10,000-character hook limit: <the
+  steps taken>; run trace resume -host claude-code for the whole block." If after step 8 it is still over, the data
+  before the board instruction is cut at the last whole line that leaves room for the board instruction, the search
+  line and the closing line, which then also says "and the end of the data above". The closing line counts inside
+  the 9,500. Test: `TestStartBlockFitsTheHookLimit`.
+- **B4.** `trace resume` prints the whole block, never shortened. Codex is not covered: its start context has a
+  limit of its own, in tokens (codexhooks.go).
+
 ## H. Hooks only where TRACE works
 
 Claude Code reads a project's hooks only from the folder a session starts in: not from a folder above it, and a linked
@@ -238,7 +268,7 @@ sees a board, only an agent that remembers and asks.
   (dropped)`. A task with a time still fires when it is waiting (A2), and its message says what it waits on, so the
   agent tells the user the time came and what is missing. `trace task start <id>` checks a task before work on it
   starts: it prints `task <id> is ready` and exits 0, or prints what it waits on and exits 3; it records nothing. An
-  unknown or closed task fails with exit 1. The start block tells the agent about `-after`, `-needs`, `task met` and
+  unknown or closed task fails with exit 1. `trace task help` (B1) tells the agent about `-after`, `-needs`, `task met` and
   `task start`. Tests: `TestWaitingOnShownEverywhere`, `TestAlarmMessageSaysWaitingOn`, `TestTaskStartChecks`.
 
 - **T8.** Conditions of done (Gherkin). `task add -then "<criterion>"` (repeats) and `trace task then <id>
@@ -253,7 +283,7 @@ sees a board, only an agent that remembers and asks.
 - **T9.** Closing with criteria. `task done <id>` refuses while a criterion of the task is unmet: it prints each
   unmet one as `then <n>: "<words>"`, exits 1 and changes nothing. `task drop` closes a task whatever its criteria.
   `task start` prints, after its verdict, the task's unmet criteria as `done when: then <n>: "<words>"; ...`, so
-  the agent knows what done means before it starts. The start block tells the agent about `-then`, `task then` and
+  the agent knows what done means before it starts. `trace task help` (B1) tells the agent about `-then`, `task then` and
   that `task done` needs every criterion met. Tests: `TestDoneRefusedUntilThenMet`, `TestTaskStartShowsDoneWhen`.
 
 Levels and parents are under the hood (T10 to T13). The user never hears of epics, stories, tasks, subtasks, ids
@@ -290,7 +320,7 @@ work really has that shape (Diego, 2026-11-17: "no toda charla deriva en un back
   is shown as before levels, with neither.
   Ready (T5) is not inherited: a child's conditions are its own, and an open parent never makes a child not ready.
   These lines are for the agent, not to be shown to the user. Criteria of done (T8) may be given at any level.
-  The start block tells the agent about `-level`, `-under`, `task under` and `task level`; that it is the
+  `trace task help` (B1) tells the agent about `-level`, `-under`, `task under` and `task level`; that it is the
   scrum master and picks levels and groups on
   its own; that a story gets its Given / When / Then criteria, agreed with the user in plain words; and that
   levels, ids and the board are never named to the user. Tests: `TestTaskListTree`,

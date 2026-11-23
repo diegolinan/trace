@@ -135,14 +135,21 @@ func TestSizesFromStart(t *testing.T) {
 	}
 }
 
-// SPEC T16 and the board's scope: the start block tells the agent about task start and task stop, and that most
-// conversations put nothing on the board.
+// SPEC T16, B1 and the board's scope: trace task help tells the agent about task start and task stop, and the start
+// block that most conversations put nothing on the board.
 func TestStartBlockSaysMostTalkIsNoTask(t *testing.T) {
 	var b strings.Builder
 	if err := taskSection(rzDB(t), &b, "the user"); err != nil {
 		t.Fatal(err)
 	}
+	var help strings.Builder
+	taskHelp(&help, "the user")
 	for _, want := range []string{"task stop", "one story in progress", "Most conversations put nothing on the board"} {
+		if !strings.Contains(help.String(), want) {
+			t.Errorf("task help lacks %q:\n%s", want, help.String())
+		}
+	}
+	for _, want := range []string{"Most conversations put nothing on the board"} {
 		if !strings.Contains(b.String(), want) {
 			t.Errorf("start block lacks %q:\n%s", want, b.String())
 		}

@@ -109,11 +109,10 @@ func TestTaskStartShowsDoneWhen(t *testing.T) {
 	}
 }
 
-// SPEC T9: the start block tells the agent about -then, task then, and that task done needs every criterion met.
+// SPEC T9, B1: trace task help tells the agent about -then, task then, and that task done needs every criterion met.
 func TestStartBlockTellsAboutCriteria(t *testing.T) {
 	var b strings.Builder
-	db := rzDB(t)
-	if err := taskSection(db, &b, "the user"); err != nil {
+	if err := taskHelp(&b, "the user"); err != nil {
 		t.Fatal(err)
 	}
 	for _, want := range []string{"-then", "Given / When / Then", "task then", "every criterion"} {

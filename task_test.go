@@ -354,7 +354,7 @@ func TestFirstSessionGetsBoardInstructions(t *testing.T) {
 		t.Fatal(err)
 	}
 	got := out.String()
-	for _, want := range []string{"task add", "scrum master", "rule add -quote"} {
+	for _, want := range []string{"task add", "task help", "rule add -quote"} {
 		if !strings.Contains(got, want) {
 			t.Errorf("first start block lacks %q:\n%s", want, got)
 		}

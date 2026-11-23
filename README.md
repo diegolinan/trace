@@ -89,6 +89,7 @@ The installer downloads into your system's temporary folder and deletes the down
 **4. Check that it works.** Two things make a test show nothing, so avoid them:
 
 - **Use a real project folder.** Sessions that ran in a temporary folder (`...\Temp\...` on Windows, `/tmp/...` on Linux, `/var/folders/...` on macOS) are stored but never shown in a start block: TRACE treats those folders as scratch. `trace resume` says so when it is the case.
+- **The start block fits Claude Code's hook limit.** Claude Code swaps a hook's output over 10,000 characters for a short preview. When the block would be longer, TRACE shortens it step by step (pins first, rules last) and says so on its last line; `trace resume -host claude-code` prints it whole.
 - **Use a normal interactive session.** Sessions started by a program (`claude -p`, the SDKs, an MCP client) are stored too, but their prompts count as the program's, not yours: the next start block shows their replies but never quotes their prompts as your words.
 
 Then:
@@ -183,7 +184,7 @@ When the agent finds out by testing something about the tools, the machine or th
 
 When you ask the agent to remind you of something, or to note something for later, it adds a task with `trace task add`, tied to the message where you asked. A task can have a time: TRACE then fires it at that time, even with nobody typing, by writing a reminder into a live session (see `trace alarm` under [Commands](#commands)). Open tasks show in each start block, and a due one is named on your next prompt until you are told.
 
-The agent learns all this from the start block, which every session gets, the first one in a folder included. The start block also tells the agent how to keep these tasks as a board: what each waits on, how to tell it is done, epics, stories and sprints. The agent does that on its own and talks to you about the work itself, never about ids or levels. You never have to run a task command yourself; `trace task board` opens the board as a page in your browser, and `trace task list` prints it.
+The agent learns all this from the start block, which every session gets, the first one in a folder included. The start block also points the agent to `trace task help`, the full guide to keeping these tasks as a board: what each waits on, how to tell it is done, epics, stories and sprints. The agent does that on its own and talks to you about the work itself, never about ids or levels. You never have to run a task command yourself; `trace task board` opens the board as a page in your browser, and `trace task list` prints it.
 
 ## Install in detail
 
@@ -299,6 +300,7 @@ trace task add -text "<what>"     a task the user asked to be reminded of, tied 
                                   are its stories'; the agent picks both and tells the user only what the work is like
 trace task kind <id> <kind>       change an open story's kind
 trace task points <id> <n>        change an open story's points
+trace task help                   the full guide to the board the agent reads before it plans work on it
 trace task sizes                  the last 20 stories closed as done with points: points, kind, time from started (else added) to done
 trace task then <id> "<criterion>"  add a criterion of done to an open task later
 trace task under <id> <parent|none>  move an open task under another open task one level up, or out of its parent

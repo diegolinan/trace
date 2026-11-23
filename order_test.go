@@ -65,8 +65,10 @@ func TestListInOrder(t *testing.T) {
 		t.Fatal(err)
 	}
 	b := block.String()
-	if !strings.Contains(b, "task order <id> <n>") || !strings.Contains(b, "never naming the order") {
-		t.Errorf("start block does not tell about the order:\n%s", b)
+	var help strings.Builder
+	taskHelp(&help, "Ana") // the guide is trace task help's (SPEC B1)
+	if h := help.String(); !strings.Contains(h, "task order <id> <n>") || !strings.Contains(h, "never naming the order") {
+		t.Errorf("task help does not tell about the order:\n%s", h)
 	}
 	if !strings.Contains(b, "### Open tasks (most important first, as a tree)\n- task 5, ") ||
 		!(strings.Index(b, "- task 1 ") < strings.Index(b, "\n  - task 3 ") && strings.Index(b, "\n  - task 3 ") < strings.Index(b, "\n  - task 2 ")) {
