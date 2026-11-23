@@ -81,6 +81,26 @@ folder. TRACE behaves the same with it or without it.
 - **R1.** `trace restore` brings back the prompt log's copy (`raw/.claude/history.jsonl.gz`) with any scope,
   the default empty one included. The prompt log is never read as a transcript. Test: `TestRestorePromptLogAnyScope`.
 
+## H. Hooks only where TRACE works
+
+Claude Code reads a project's hooks only from the folder a session starts in: not from a folder above it, and a linked
+worktree only from its own `.claude` (measured 2026-11-23 on Claude Code 2.1.330: a toy repo, a subfolder, a worktree,
+a subagent, a `cd` elsewhere). Hooks in the user settings run TRACE in every session on the machine, which then does
+nothing outside scope; that costs each tool call of an unrelated project two process starts, and a broken trace.exe
+breaks them all.
+
+- **H1.** `trace install -host claude-code -folder <dir>` writes the hooks to `<dir>/.claude/settings.local.json`
+  instead of the user settings, by the same rules: one home per file, the previous file kept as `.trace-backup`, a
+  file that does not parse left untouched. `<dir>` must be an existing absolute folder in scope; otherwise nothing is
+  written. `trace uninstall -host claude-code -folder <dir>` removes them there. Without `-folder`, install and
+  uninstall work on the user settings as before. Test: `TestInstallFolder`.
+- **H2.** `trace stats` lists, under "folders where Claude Code sessions started in the last 30 days without this
+  home's hooks", each such folder with its sessions and the last start: a main session's folder in scope (not a
+  subagent, not left out by I4) where neither the user settings nor that folder's `.claude/settings.json` or
+  `.claude/settings.local.json` run this home's hooks. It is how a new worktree that was never installed shows up.
+  Test: `TestStatsFoldersWithoutHooks`.
+- Not covered: Codex hooks (`hooks.json` in CODEX_HOME) stay per Codex home.
+
 ## I. Import
 
 - **I1.** A Codex rollout outside the scope is left out only while that scope is in force. The mark names the

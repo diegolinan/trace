@@ -209,6 +209,7 @@ Each memory is one folder, its home: `config.json`, `trace.db` and the raw copie
    - One TRACE home per settings file. If the file already runs TRACE with another home, nothing is written; uninstall that one first.
    - Hooks from an install made before `-home` existed are taken over only with `-migrate`.
    - The previous file is saved as `settings.json.trace-backup`. A settings file that is not valid JSON is never touched, and one that changes while TRACE writes it is left as the other writer left it.
+   - With `-folder <dir>` the hooks go to `<dir>/.claude/settings.local.json` instead, so only sessions started in that folder run TRACE; sessions in other projects never start it. Claude Code reads a project's hooks only from the folder a session starts in (not from a folder above it; a git worktree only from its own `.claude`), so install each folder you start sessions in. `<dir>` must exist and be in scope. `trace stats` lists the folders in scope where sessions started in the last 30 days without this home's hooks.
 2. It runs the first import of your existing transcripts into the home. If that fails, the hooks stay installed and the command exits with an error that says how to retry.
 
 The hooks are user-wide, so they fire in every project. Outside the home's `scope` they do nothing: no import, no output. A session that started in scope keeps its memory after it `cd`s elsewhere.
@@ -255,6 +256,7 @@ The data stays in the home. Before deleting the binary, stop the alarm (`trace a
 
 ```
 trace install -host claude-code   add the hooks to Claude Code's user settings and do the first import
+                 ... -folder <dir> to <dir>/.claude/settings.local.json instead (only sessions started there)
 trace install -host codex -mode hooks|agents   a Codex memory for the current folder (no default mode)
 trace uninstall -host <agent>     remove what install added for this home (the data stays)
 trace import                      read what is new in every transcript in scope; safe to run any time

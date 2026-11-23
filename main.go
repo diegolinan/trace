@@ -6,7 +6,8 @@
 // Usage:
 //
 //	trace install -host claude-code   add hooks that run this home to Claude Code's user settings, then import
-//	                                  (uninstall removes them; -migrate takes over hooks that name no home)
+//	                                  (uninstall removes them; -migrate takes over hooks that name no home;
+//	                                  -folder <dir>: that folder's .claude/settings.local.json instead)
 //	trace install -host codex   a Codex-only memory for the current folder: config.json and an AGENTS.md line
 //	-home <folder>          on any command: the TRACE home to use (default $TRACE_HOME, else ~/.trace)
 //	trace import            read new bytes of every transcript in scope; safe to run any time
@@ -69,7 +70,7 @@ func main() {
 // opts are one command's settings: its flags, with what config.json and the defaults fill in for the flags not given.
 type opts struct {
 	cmd, home, dbPath, projects, history, codexDir, host, notID, archive, scope, trigger, who, since, until, mode string
-	text, at, zone, level, under, kind, points, quote, replaces, about, evidence                                  string
+	text, at, zone, level, under, kind, points, quote, replaces, about, evidence, folder                          string
 	n                                                                                                             int
 	all, migrate, stop, self, decision, machine                                                                   bool
 	after, needs, then                                                                                            listFlag
@@ -136,6 +137,7 @@ func (o *opts) flagSet(onErr flag.ErrorHandling) *flag.FlagSet {
 	fs.StringVar(&o.history, "history", "", "Claude Code prompt log (empty: none; default $CLAUDE_CONFIG_DIR/history.jsonl, else ~/.claude/history.jsonl, unless config says claude: false)")
 	fs.StringVar(&o.codexDir, "codex", codexHome(), "Codex home, for its session rollouts (empty: no Codex)")
 	fs.StringVar(&o.host, "host", "", "install, uninstall (required), hook (default claude-code), resume (default codex): claude-code or codex")
+	fs.StringVar(&o.folder, "folder", "", "install, uninstall -host claude-code: that folder's .claude/settings.local.json instead of the user settings (SPEC H1)")
 	fs.StringVar(&o.notID, "not", "", "resume: a session id to leave out (default: the session written to in the last two minutes)")
 	fs.StringVar(&o.archive, "archive", "", "raw copies folder (empty: no copy; default <data>/raw)")
 	fs.StringVar(&o.scope, "scope", "", "folders in scope, comma-separated (empty: all; default from config)")
@@ -319,7 +321,11 @@ func (o opts) installClaude() error {
 	if o.cmd == "install" && !claudeOn(cfg) {
 		fmt.Println("note: this home's config.json says claude: false, so Claude Code will see this memory but its own sessions are not imported")
 	}
-	if err := install(claudeSettings(), exe, o.home, optionalHooks(cfg), o.migrate, os.Stdout); err != nil || o.cmd != "install" {
+	path, err := settingsFor(o.folder)
+	if err != nil {
+		return err
+	}
+	if err := install(path, exe, o.home, optionalHooks(cfg), o.migrate, os.Stdout); err != nil || o.cmd != "install" {
 		return err
 	}
 	return o.firstImport(o.projects, o.history, o.scope)
@@ -461,7 +467,7 @@ func cmdStats(o opts) error {
 		return err
 	}
 	defer db.Close()
-	return stats(db)
+	return stats(db, o.home)
 }
 
 // cmdRules prints the rule card a Claude Code session in this folder gets, and why it holds what it holds. The files
@@ -776,7 +782,7 @@ func short(s string) string {
 	return s[:min(len(s), 8)]
 }
 
-func stats(db *sql.DB) error {
+func stats(db *sql.DB, home string) error {
 	q := func(title, sql string) {
 		rows, err := db.Query(sql)
 		if err != nil {
@@ -823,6 +829,7 @@ func stats(db *sql.DB) error {
 		from hook_out h where h.session_id in `+lastFive+` group by h.session_id order by max(h.ts) desc`)
 	// A failure a deliverer gave starts with its name (SPEC A2), so an update that breaks one shows up here (A7).
 	q("alarm, each deliverer's last failure", "select substr(fire_reason, 1, instr(fire_reason, ':') - 1) deliverer, max(announced_at) last, fire_reason reason from task where fire_state = 'failed' and instr(fire_reason, ':') > 0 group by 1 order by 1")
+	foldersWithoutHooks(db, home, os.Stdout)
 	q("files with errors", "select path, last_error from source_file where last_error is not null")
 	return nil
 }
