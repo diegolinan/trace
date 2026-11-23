@@ -268,11 +268,11 @@ trace resume                      where the last session in this folder stopped,
                                   [-not <id>]: the session asking, left out; by default the one that ran
                                   `trace resume` or, failing that, the newest that wrote in the last two minutes;
                                   any value that is no session id (-not x) leaves none out
-trace search <words>              [-n 10] [-who user|assistant|subagent] [-all]
+trace search [flags] <words>      flags: [-n 10] [-who user|assistant|subagent] [-all]
                                   [-since <when>] [-until <when>]: a day (2026-11-21), a minute (2026-11-21 11:30, in
                                   -zone or the computer's zone), RFC 3339, or a span back from now (90m, 3h, 2d);
                                   with no words, what was said in that window, oldest first ("what did I say at 11:30?")
-trace show <session>#<seq>        a search hit with the 3 events before and after it in its session [-n 3] [-all]
+trace show [-n 3] [-all] <session>#<seq>   a search hit with the 3 events before and after it in its session
 trace rule add -quote "<words>"   record a rule of the user, tied to the newest message of theirs in this session that holds
                                   those words (3 or more); -decision for a decision; -replaces <id> for one it replaces;
                                   -about "<regexp>": the files or commands it is about; it comes back right before such
@@ -337,6 +337,8 @@ trace alarm                       fires each task at its time, even with nobody 
 trace alarm -stop                 stop the running alarm (the installers run it before replacing the binary)
 
 -home <folder>                    on any command: the memory to use
+                                  flags go before the words (for task, rule and lesson, right after the subcommand):
+                                  trace search -home <folder> -who user <words>; a flag after the words is refused
 -migrate                          install, uninstall: take over what an install before -home wrote
 ```
 

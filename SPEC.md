@@ -211,6 +211,23 @@ breaks them all.
   `TestQuietSideImportAndStats`.
 - **E5.** Flag help names the folders TRACE really reads: `$CLAUDE_CONFIG_DIR` or `~/.claude` (I13). Test:
   `TestFlagHelpNamesClaudeConfigDir`.
+- **E6. A flag after the words is refused, never read as words.** Flags go before the words. For task, rule and
+  lesson they go right after the subcommand.
+  - **The check:** a word after the flags is refused when it names one of trace's flags. That covers `-home`,
+    `--home`, `-home=X` and `-who=user`.
+    - The command exits 2 before it reads config.json or opens a store, so nothing is read or written in any home.
+    - The message names the flag and says where it goes.
+  - **What stays words:**
+    - a word that starts with `-` but names no flag: `-5%`, `-5`, `-foo`, `-`;
+    - one quoted word with a space in it, like `"-who user"`;
+    - the values of `-text`, `-quote` and the other flags.
+  - **Hooks:** a hook still exits 0 with nothing on stdout.
+  - **Why:** on 2026-11-23 an agent ran `trace search "<words>" -who user -home <another memory>`. The flags were read
+    as search words, so with no `-home` the search opened the default memory (another project's) and showed that
+    project's private conversations. Nothing warned it. Diego, asked if that was a bug: "si". Parsing the flags
+    wherever they appear was weighed and left out: a word that happens to be a flag's name would then change the
+    command in silence.
+  - **Test:** `TestFlagAfterWordsRefused`.
 
 ## T. Tasks
 

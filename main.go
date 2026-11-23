@@ -14,9 +14,10 @@
 //	trace hook              for host hooks: starts a detached import and returns at once, exit 0 (a Stop that holds the
 //	                        turn for a task not told exits 2)
 //	trace resume            where the last session in this folder stopped, for agents without hooks (-host codex)
-//	trace search <words>    [-n 10] [-who user|assistant|subagent] [-all] [-since 2026-11-01 [11:30] | 3h] [-until ...] [-zone UTC-3]
+//	trace search [-n 10] [-who user|assistant|subagent] [-all] [-since 2026-11-01 [11:30] | 3h] [-until ...] [-zone UTC-3] <words>
 //	                        (no words with -since or -until: what was said in that window, oldest first)
-//	trace show <session>#<seq> [-n 3] [-all]   a search hit with what was said around it
+//	trace show [-n 3] [-all] <session>#<seq>   a search hit with what was said around it
+//	                        flags always go before the words; a flag after them is refused (SPEC E6)
 //	trace rules             the rule card a session in this folder gets (re-injection, opt-in)
 //	trace stats
 //	trace task add -text "<what>" [-at "YYYY-MM-DD HH:MM" [-zone UTC-3]] [-self] | done <id> | drop <id> | told <id> | list   the user's tasks
@@ -106,6 +107,9 @@ func parseArgs(cmd string, args []string) (opts, error) {
 	fs := o.flagSet(onErr)
 	if err := fs.Parse(args); err != nil {
 		return o, usageError{err} // only a hook gets here (ContinueOnError)
+	}
+	if f := flagAfterWords(fs); f != "" { // before any home is read (SPEC E6)
+		return o, usageError{fmt.Errorf("-%s comes after the words; put flags before them (for task, rule and lesson, right after the subcommand); nothing done", f)}
 	}
 	o.args = append(sub, fs.Args()...)
 	o.given = map[string]bool{}

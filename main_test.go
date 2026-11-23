@@ -108,7 +108,7 @@ func TestRelativeHomeStoredAbsolute(t *testing.T) {
 }
 
 // -home wins over TRACE_HOME, is read before any config.json (so a broken default config does not matter), and a
-// "-home" among search words is a word, not a flag.
+// "-home" after the search words is refused before any home opens (SPEC E6).
 func TestHomeFlag(t *testing.T) {
 	root := t.TempDir()
 	bad, good := filepath.Join(root, "trace"), filepath.Join(root, "good dir")
@@ -120,12 +120,12 @@ func TestHomeFlag(t *testing.T) {
 	if !exists(filepath.Join(good, "trace.db")) || exists(filepath.Join(bad, "trace.db")) {
 		t.Fatal("import -home did not use the given home only")
 	}
-	other := filepath.Join(root, "other")
-	if _, errOut, code := runTrace(t, root, "", map[string]string{"TRACE_HOME": good}, "search", "hello", "-home", other); code != 0 {
-		t.Fatalf("search: exit %d: %s", code, errOut)
+	other, fresh := filepath.Join(root, "other"), filepath.Join(root, "fresh")
+	if _, errOut, code := runTrace(t, root, "", map[string]string{"TRACE_HOME": fresh}, "search", "hello", "-home", other); code != 2 {
+		t.Fatalf("search with -home after the words: exit %d, want 2 (SPEC E6): %s", code, errOut)
 	}
-	if exists(other) {
-		t.Fatal(`"-home" after the search words was taken as a flag`)
+	if exists(other) || exists(fresh) {
+		t.Fatal(`"-home" after the search words opened a home`)
 	}
 	if _, _, code := runTrace(t, root, "", nil, "stats", "-home", good); code != 0 {
 		t.Fatal("stats -home: broken default config still read")
