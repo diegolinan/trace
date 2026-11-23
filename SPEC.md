@@ -582,10 +582,23 @@ The agent, which understands what the user meant, records each rule or decision 
   - **It refuses and stores nothing when:**
     - the quote is missing or too short;
     - no message matches;
-    - the message is already recorded in force;
+    - the quote overlaps the words of a record in force from the same message. The error names that record's id;
     - `-replaces` names an id that is not in force.
 
     When no message matches, it prints the start of the user's last 3 messages.
+  - **Two rules in one message** (D1a).
+    - **Spans:** a quote's span is the run of the message's words it matches, at its first match.
+    - **Different spans:** two quotes from one message whose spans do not overlap are both stored, so a message
+      with two rules gets two records.
+    - **Overlapping spans:** the same quote again, a quote inside another one, or quotes that partly overlap are
+      refused. This catches the same rule recorded twice with slightly different words.
+    - **Replacing:** with `-replaces <id>`, that record's span does not count, so its quote can be reworded. A
+      quote that overlaps another record of the same message is still refused.
+    - **Dropping:** a dropped record's span is free again.
+    - **Why:** on 2026-11-23 a user's message held two rules ("use the logo, take the neon out everywhere" and
+      "don't create images on your own; we'll do them in photos later"). The second was refused because the message
+      was already recorded, and it was lost. A blind review of the design chose spans over one record per message.
+    - **Test:** `TestTwoRulesInOneMessage`.
   - **On success** it prints `rule <id> recorded: "<quote>"`, and `replaces <id>` when it replaced one.
 - **D2. Out of force.**
   - `-replaces <old>` puts the old one out of force, pointing to the new one.
@@ -618,6 +631,7 @@ The agent, which understands what the user meant, records each rule or decision 
   - "A rule is how you must work from now on, beyond the task at hand; a decision is a choice about the work that later sessions must keep."
   - "Do not record a hold for the moment, an approval or go for one step, a request for one task, a question, a complaint, an opinion, or a restatement of one already recorded."
   - "When he reverses or replaces one, record the new one with -replaces <id>; when he lifts one, trace rule drop <id>."
+  - "A message with two rules gets two records, each with its own quote." (D1a)
   - "When it is about certain files or commands, add -about "<regexp>" (for example -about "publish\.sh|git push"): it then comes back right before such a tool call." (D11)
   - A subagent is told not to record.
 - **D10. Hosts.** Codex Desktop runs no hooks, so its sessions get no block and no nets; there, `trace rule list` is the way to see them.

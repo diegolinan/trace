@@ -73,8 +73,11 @@ func ruleAdd(db *sql.DB, o opts, w io.Writer) error {
 	if o.replaces != "" && !inForce(db, "rule", o.replaces) {
 		return fmt.Errorf("rule %s is not in force; nothing stored", o.replaces)
 	}
-	if db.QueryRow(`select 1 from rule where event_id = ? and out_at is null and id != ?`, ev, o.replaces).Scan(new(int)) == nil {
-		return fmt.Errorf("that message is already recorded in force (trace rule list); nothing stored")
+	if id, err := overlapping(db, ev, quote, o.replaces); err != nil || id != 0 {
+		if err != nil {
+			return err
+		}
+		return fmt.Errorf("those words are already recorded in force as #%d (trace rule list); nothing stored", id)
 	}
 	now := clockNow().UTC().Format(time.RFC3339)
 	res, err := db.Exec(`insert into rule(event_id, quote, decision, session_id, added_at, about)
@@ -130,13 +133,48 @@ func quotedEvent(db *sql.DB, where, session string, quote []string) (id int64, s
 
 // quoteIn is the run of text's words that matches quote, folded, in text's own spelling, or "".
 func quoteIn(text string, quote []string) string {
+	if i := quoteAt(text, quote); i >= 0 {
+		return strings.Join(strings.Fields(text)[i:i+len(quote)], " ")
+	}
+	return ""
+}
+
+// quoteAt is the index of the first of text's words where quote matches, folded, or -1.
+func quoteAt(text string, quote []string) int {
 	words := strings.Fields(text)
 	for i := 0; i+len(quote) <= len(words); i++ {
 		if ruleMatch(words[i:i+len(quote)], quote) {
-			return strings.Join(words[i:i+len(quote)], " ")
+			return i
 		}
 	}
-	return ""
+	return -1
+}
+
+// overlapping is the id of a record in force of message ev, other than replaces, whose words overlap quote's words
+// in the message, or 0: one message can hold two rules, but not the same words twice (SPEC D1a).
+func overlapping(db *sql.DB, ev int64, quote []string, replaces string) (int64, error) {
+	var text string
+	if err := db.QueryRow(`select text from event where id = ?`, ev).Scan(&text); err != nil {
+		return 0, err
+	}
+	at := quoteAt(text, quote)
+	rows, err := db.Query(`select id, quote from rule where event_id = ? and out_at is null and id != ?`, ev, replaces)
+	if err != nil {
+		return 0, err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var id int64
+		var said string
+		if err := rows.Scan(&id, &said); err != nil {
+			return 0, err
+		}
+		w := ruleWords(said)
+		if s := quoteAt(text, w); s < at+len(quote) && at < s+len(w) {
+			return id, nil
+		}
+	}
+	return 0, rows.Err()
 }
 
 func ruleMatch(words, quote []string) bool {
@@ -238,6 +276,7 @@ const ruleInstruction = "When %[1]s gives you a rule or a decision, record it wi
 	"A rule is how you must work from now on, beyond the task at hand; a decision is a choice about the work that later sessions must keep. " +
 	"Do not record a hold for the moment, an approval or go for one step, a request for one task, a question, a complaint, an opinion, " +
 	"or a restatement of one already recorded. When %[1]s reverses or replaces one, record the new one with -replaces <id>; when %[1]s lifts one, %[3]s. " +
+	"A message with two rules gets two records, each with its own quote. " +
 	"When it is about certain files or commands, add -about \"<regexp>\" (for example -about \"publish\\.sh|git push\"): it then comes back right before such a tool call.\n"
 
 // ruleRecord is a record in force as the block shows it.
