@@ -169,6 +169,16 @@ Why not find them by word patterns, as TRACE did before? On 1300 real messages, 
 
 Most rules carry no word like "always" or "never".
 
+## Lessons
+
+When the agent finds out by testing something about the tools, the machine or the project, it records it with `trace lesson add -text "<the lesson>" -evidence "<words of the tool result that showed it>"`. The store is shared by every host, so a lesson recorded from Claude Code also reaches Codex, and it stays when a host's own memory fails.
+
+- **It is the agent's claim, not yours.** TRACE ties each lesson to a tool result of the same session that holds the evidence (at least 3 words), and shows the evidence as that result spells it. With no test run in the session, there is no lesson. Every lesson is shown as an agent's claim that authorizes nothing; your rules and words win over it.
+- **Scope:** by default a project lesson, shown to sessions in the folder it was recorded in or a folder inside it, never above it (with roles, also only to its role). With `-machine`, to every session that uses this store.
+- **Where it shows:** the start block lists up to 5 lessons in scope from the last 90 days, right after your rules; with `-about "<regexp>"`, up to 3 also come back before a Claude Code tool call on matching files or commands. Lessons are never in the rule card, and they do not count as a recorded rule for the nets.
+- **Caps:** text and evidence are redacted and clipped to 300 characters; a session records at most 3 lessons; the same text in force in the same scope is refused.
+- **Changing them:** `trace lesson drop <id>` when one proves wrong, `-replaces <id>` when it changed (recording again with new evidence brings back one older than 90 days). `trace lesson list` shows those in force; `-all` adds the others and how they left. Nothing is deleted. Subagents are told to report lessons to the agent that launched them instead of recording them.
+
 ## The task board
 
 When you ask the agent to remind you of something, or to note something for later, it adds a task with `trace task add`, tied to the message where you asked. A task can have a time: TRACE then fires it at that time, even with nobody typing, by writing a reminder into a live session (see `trace alarm` under [Commands](#commands)). Open tasks show in each start block, and a due one is named on your next prompt until you are told.
@@ -266,6 +276,11 @@ trace rule add -quote "<words>"   record a rule of the user, tied to the newest 
                                   a tool call (Claude Code)
 trace rule drop <id>              the user lifted a rule: out of force, nothing replaces it
 trace rule list                   the rules and decisions in force, newest first; -all also those out of force
+trace lesson add -text "<lesson>" -evidence "<words>"   record what the agent learned by testing, tied to the newest
+                                  tool result of this session that holds those words (3 or more); -machine for every
+                                  session of this store; -about "<regexp>" and -replaces <id> as for rule add
+trace lesson drop <id>            a lesson that proved wrong or no longer holds: out of force
+trace lesson list                 the lessons in force, newest first, with scope and evidence; -all also those out of force
 trace rules                       the rule card a session in this folder would get, and why
 trace stats                       counts, last runs, checks, rule cards, hook output that never reached the session,
                                   each alarm deliverer's last failure, and the context TRACE itself wrote to the agent in

@@ -19,15 +19,27 @@ const ruleTypedKinds = `('prompt', 'steering', 'refusal', 'answer')`
 // ruleAddCall matches a tool call that runs trace rule add, for callerSession's fallback.
 var ruleAddCall = regexp.MustCompile(`(?i)trace(?:\.exe)?\\?["']?\s+rule\s+add\b`)
 
-// cmdRule records, puts out of force and lists the user's rules and decisions (SPEC D1 to D3). It reads what is new
-// first, as task does, so the message quoted is in the store.
-func cmdRule(o opts) error {
-	run := map[string]func(*sql.DB, opts, io.Writer) error{"add": ruleAdd, "drop": ruleDrop, "list": ruleList}[first(o.args)]
+// recordCmds are the subcommands of rule, the user's rules and decisions (SPEC D1 to D3), and of lesson, what agents
+// learned by testing (L1 to L3), with how each command is used.
+var recordCmds = map[string]struct {
+	subs  map[string]func(*sql.DB, opts, io.Writer) error
+	usage string
+}{
+	"rule": {map[string]func(*sql.DB, opts, io.Writer) error{"add": ruleAdd, "drop": ruleDrop, "list": ruleList},
+		`rule needs add -quote "<the user's words>" [-decision] [-replaces <id>], drop <id> or list [-all]`},
+	"lesson": {map[string]func(*sql.DB, opts, io.Writer) error{"add": lessonAdd, "drop": lessonDrop, "list": lessonList},
+		`lesson needs add -text "<the lesson>" -evidence "<words of a tool result>" [-machine] [-about "<regexp>"] [-replaces <id>], drop <id> or list [-all]`},
+}
+
+// cmdRecords runs the subcommand of rule or lesson (o.cmd) named first in o.args. It reads what is new first, as task
+// does, so the message or tool result quoted is in the store.
+func cmdRecords(o opts) error {
+	run := recordCmds[o.cmd].subs[first(o.args)]
 	if run == nil {
-		return usageError{errors.New(`rule needs add -quote "<the user's words>" [-decision] [-replaces <id>], drop <id> or list [-all]`)}
+		return usageError{errors.New(recordCmds[o.cmd].usage)}
 	}
-	if err := importNow(o.dbPath, o.importFn("rule")); err != nil {
-		fmt.Fprintln(os.Stderr, "trace: import before rule failed, using what is stored:", err)
+	if err := importNow(o.dbPath, o.importFn(o.cmd)); err != nil {
+		fmt.Fprintf(os.Stderr, "trace: import before %s failed, using what is stored: %v\n", o.cmd, err)
 	}
 	db, err := openDB(o.dbPath)
 	if err != nil {
@@ -58,7 +70,7 @@ func ruleAdd(db *sql.DB, o opts, w io.Writer) error {
 	if _, err := regexp.Compile(o.about); err != nil {
 		return usageError{fmt.Errorf("-about %q is not a regexp (%v); nothing stored", o.about, err)}
 	}
-	if o.replaces != "" && !ruleInForce(db, o.replaces) {
+	if o.replaces != "" && !inForce(db, "rule", o.replaces) {
 		return fmt.Errorf("rule %s is not in force; nothing stored", o.replaces)
 	}
 	if db.QueryRow(`select 1 from rule where event_id = ? and out_at is null and id != ?`, ev, o.replaces).Scan(new(int)) == nil {
@@ -67,14 +79,20 @@ func ruleAdd(db *sql.DB, o opts, w io.Writer) error {
 	now := clockNow().UTC().Format(time.RFC3339)
 	res, err := db.Exec(`insert into rule(event_id, quote, decision, session_id, added_at, about)
 		values (?, ?, ?, nullif(?, ''), ?, coalesce(nullif(?, ''), (select about from rule where id = ?)))`, ev, said, o.decision, session, now, o.about, o.replaces)
+	return recorded(db, "rule", res, err, said, session, now, o.replaces, w)
+}
+
+// recorded says what an insert into table (rule or lesson) recorded and puts the one it replaces out of force (SPEC
+// D1, L1).
+func recorded(db *sql.DB, table string, res sql.Result, err error, said, session, now, replaces string, w io.Writer) error {
 	if err != nil {
 		return err
 	}
 	id, _ := res.LastInsertId()
-	fmt.Fprintf(w, "rule %d recorded: %q\n", id, said)
-	if o.replaces != "" {
-		db.Exec(`update rule set out_at = ?, out_session = nullif(?, ''), replaced_by = ? where id = ?`, now, session, id, o.replaces)
-		fmt.Fprintf(w, "replaces %s\n", o.replaces)
+	fmt.Fprintf(w, "%s %d recorded: %q\n", table, id, said)
+	if replaces != "" {
+		db.Exec(`update `+table+` set out_at = ?, out_session = nullif(?, ''), replaced_by = ? where id = ?`, now, session, id, replaces)
+		fmt.Fprintf(w, "replaces %s\n", replaces)
 	}
 	return nil
 }
@@ -82,25 +100,32 @@ func ruleAdd(db *sql.DB, o opts, w io.Writer) error {
 // ruleMessage is the newest message of the user in the session whose words hold quote, as its id and the quoted span
 // in the user's own spelling; when none does, an error with the start of the user's last 3 messages.
 func ruleMessage(db *sql.DB, session string, quote []string) (int64, string, error) {
-	rows, err := db.Query(`select id, text from event where session_id = ? and speaker = 'user' and kind in `+ruleTypedKinds+`
-		order by ts desc, id desc limit 500`, session)
+	id, said, last, err := quotedEvent(db, `speaker = 'user' and kind in `+ruleTypedKinds, session, quote)
+	if err != nil || said != "" {
+		return id, said, err
+	}
+	return 0, "", fmt.Errorf("no message of the user in this session holds those words; nothing stored. The last ones:\n%s", strings.Join(last, "\n"))
+}
+
+// quotedEvent is the newest event of the session matching where whose words hold quote, as its id and the quoted span
+// in the event's own spelling; when none does, said is "" and last has the start of the newest 3.
+func quotedEvent(db *sql.DB, where, session string, quote []string) (id int64, said string, last []string, err error) {
+	rows, err := db.Query(`select id, text from event where session_id = ? and `+where+` order by ts desc, id desc limit 500`, session)
 	if err != nil {
-		return 0, "", err
+		return 0, "", nil, err
 	}
 	defer rows.Close()
-	var last []string
 	for rows.Next() {
-		var id int64
 		var text string
 		rows.Scan(&id, &text)
 		if said := quoteIn(text, quote); said != "" {
-			return id, said, nil
+			return id, said, nil, nil
 		}
 		if len(last) < 3 {
 			last = append(last, "- "+clip(strings.Join(strings.Fields(text), " "), 80))
 		}
 	}
-	return 0, "", fmt.Errorf("no message of the user in this session holds those words; nothing stored. The last ones:\n%s", strings.Join(last, "\n"))
+	return 0, "", last, rows.Err()
 }
 
 // quoteIn is the run of text's words that matches quote, folded, in text's own spelling, or "".
@@ -139,25 +164,28 @@ func ruleFold(w string) string {
 	return strings.TrimFunc(fold.Replace(strings.ToLower(w)), func(r rune) bool { return !unicode.IsLetter(r) && !unicode.IsDigit(r) })
 }
 
-// ruleInForce says whether a record with this id is in force.
-func ruleInForce(db *sql.DB, id string) bool {
-	return db.QueryRow(`select 1 from rule where id = ? and out_at is null`, id).Scan(new(int)) == nil
+// inForce says whether a rule or a lesson (table) with this id is in force.
+func inForce(db *sql.DB, table, id string) bool {
+	return db.QueryRow(`select 1 from `+table+` where id = ? and out_at is null`, id).Scan(new(int)) == nil
 }
 
 // ruleDrop puts a record out of force with nothing replacing it: the user lifted it (SPEC D2).
-func ruleDrop(db *sql.DB, o opts, w io.Writer) error {
+func ruleDrop(db *sql.DB, o opts, w io.Writer) error { return dropRecord(db, "rule", o, w) }
+
+// dropRecord puts a rule or a lesson (table) out of force with nothing replacing it (SPEC D2, L2).
+func dropRecord(db *sql.DB, table string, o opts, w io.Writer) error {
 	if len(o.args) < 2 {
-		return usageError{errors.New("rule drop needs a rule id")}
+		return usageError{fmt.Errorf("%[1]s drop needs a %[1]s id", table)}
 	}
-	res, err := db.Exec(`update rule set out_at = ?, out_session = nullif(?, '') where id = ? and out_at is null`,
+	res, err := db.Exec(`update `+table+` set out_at = ?, out_session = nullif(?, '') where id = ? and out_at is null`,
 		clockNow().UTC().Format(time.RFC3339), callerSession(db), o.args[1])
 	if err != nil {
 		return err
 	}
 	if n, _ := res.RowsAffected(); n == 0 {
-		return fmt.Errorf("rule %s is not in force; nothing changed", o.args[1])
+		return fmt.Errorf("%s %s is not in force; nothing changed", table, o.args[1])
 	}
-	fmt.Fprintf(w, "rule %s: dropped\n", o.args[1])
+	fmt.Fprintf(w, "%s %s: dropped\n", table, o.args[1])
 	return nil
 }
 
@@ -179,10 +207,7 @@ func ruleList(db *sql.DB, o opts, w io.Writer) error {
 		var at, quote, out, about string
 		var decision bool
 		rows.Scan(&id, &at, &decision, &quote, &by, &out, &about)
-		if about != "" {
-			about = " (about: " + about + ")"
-		}
-		fmt.Fprintf(w, "#%d %s %s: %q%s%s\n", id, local(at), ruleKind(decision), quote, about, ruleOut(by, out))
+		fmt.Fprintf(w, "#%d %s %s: %q%s%s\n", id, local(at), ruleKind(decision), quote, aboutNote(about), ruleOut(by, out))
 	}
 	return rows.Err()
 }

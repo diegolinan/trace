@@ -224,7 +224,8 @@ func contextOut(w io.Writer, event, text string) error {
 // helperLine reaches every subagent through SubagentStart (subagents get no SessionStart context). They load the
 // same role files and memory as their parent, so without it they take themselves for that agent.
 const helperLine = "You are a helper agent started by %[1]s, not %[1]s itself. The role files and memory you loaded describe %[1]s, not you. " +
-	"Do the task you were given and return the result. Do not commit, push, fast-forward main, write %[1]s's memory, record rules with trace rule add, or message %[2]s or other agents unless the task says so."
+	"Do the task you were given and return the result. Do not commit, push, fast-forward main, write %[1]s's memory, record rules with trace rule add, or message %[2]s or other agents unless the task says so. " +
+	"Do not record lessons with trace lesson add either: report what you found out by testing to the agent that launched you."
 
 // compactSteer is PreCompact stdout, which Claude Code appends to its summary prompt under "Additional
 // Instructions:" (2.1.322 strings). It steers the summary only, never reaches the model afterwards, and the user

@@ -48,6 +48,7 @@ func startText(db *sql.DB, sid, source, role, host, cwd string, first bool, w io
 	if err != nil {
 		return err
 	}
+	lessonBlock(db, w, user, role, cwd, wrote)
 	s, err := lastSession(db, sid, source, role, host, cwd)
 	if err != nil {
 		return err
@@ -78,7 +79,7 @@ func startText(db *sql.DB, sid, source, role, host, cwd string, first bool, w io
 		b.err = refusals(db, w, user, host, role, cwd)
 	}
 	if !wrote {
-		writeRuleInstruction(w, user)
+		writeInstructions(w, user)
 	}
 	b.section("Pinned by "+user+" (\"remember this\"), any session",
 		`select e.ts, 'pin', e.text from anchor a join event e on e.id = a.event_id where a.type = 'pin' order by e.ts desc limit 5`,
@@ -100,7 +101,7 @@ func firstText(db *sql.DB, w io.Writer, user string, wrote, first bool) error {
 		return nil
 	}
 	if !wrote {
-		writeRuleInstruction(w, user)
+		writeInstructions(w, user)
 	}
 	return taskSection(db, w, user)
 }

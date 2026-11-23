@@ -38,8 +38,8 @@ func preMatcher(cs []check) string {
 	return actionTools
 }
 
-// preToolHook answers Claude Code's PreToolUse (SPEC C3, D11): a failing check before the call denies it; otherwise the
-// rules about what the call touches, and any check that could not judge, reach the agent as context.
+// preToolHook answers Claude Code's PreToolUse (SPEC C3, D11, L5): a failing check before the call denies it; otherwise
+// the rules and lessons about what the call touches, and any check that could not judge, reach the agent as context.
 func preToolHook(in hookInput, role, dbPath string, cwdIn bool, w io.Writer) error {
 	store := &lazyStore{path: dbPath}
 	defer store.close()
@@ -49,6 +49,9 @@ func preToolHook(in hookInput, role, dbPath string, cwdIn bool, w io.Writer) err
 	}
 	if about := rulesAbout(store.open(), toolTarget(in.ToolInput), role, in.Cwd); about != "" {
 		notes = append(notes, about)
+	}
+	if learned := lessonsAbout(store.open(), toolTarget(in.ToolInput), role, in.Cwd); learned != "" {
+		notes = append(notes, learned)
 	}
 	if len(denied) > 0 {
 		return json.NewEncoder(w).Encode(map[string]any{"hookSpecificOutput": map[string]string{

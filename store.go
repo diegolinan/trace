@@ -183,6 +183,23 @@ create table if not exists rule (
   out_session text,
   replaced_by integer
 );
+-- A lesson an agent learned by testing (SPEC L): its text and the evidence quoted from the tool result (event_id) that
+-- showed it, both redacted and clipped; a machine lesson or one of the folder cwd and role; once out of force, as rule.
+create table if not exists lesson (
+  id integer primary key,
+  text text not null,
+  evidence text not null,
+  event_id integer not null,
+  machine integer not null default 0,
+  cwd text not null,
+  role text,
+  session_id text not null,
+  about text,
+  added_at text not null,
+  out_at text,
+  out_session text,
+  replaced_by integer
+);
 -- Each hook call that wrote to the agent: how many characters, for the context TRACE takes (SPEC K2).
 create table if not exists hook_out (
   ts text not null,

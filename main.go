@@ -19,6 +19,7 @@
 //	trace rules             the rule card a session in this folder gets (re-injection, opt-in)
 //	trace stats
 //	trace task add -text "<what>" [-at "YYYY-MM-DD HH:MM" [-zone UTC-3]] [-self] | done <id> | drop <id> | told <id> | list   the user's tasks
+//	trace lesson add -text "<lesson>" -evidence "<words of a tool result>" [-machine] [-about <regexp>] | drop <id> | list [-all]   what agents learned by testing
 //	trace alarm [-stop]     fires tasks at their time; started by the start hook and task add -at (-stop: stop it)
 //	trace version           the installed version (also -version, --version)
 package main
@@ -36,7 +37,7 @@ import (
 
 func main() {
 	if len(os.Args) < 2 {
-		fmt.Fprintln(os.Stderr, "usage: trace install -host claude-code|codex | uninstall -host ... | import | restore | hook | resume | search <words> | show <session>#<seq> | rules | stats | task add|done|drop|told|list | alarm [-stop] | version")
+		fmt.Fprintln(os.Stderr, "usage: trace install -host claude-code|codex | uninstall -host ... | import | restore | hook | resume | search <words> | show <session>#<seq> | rules | stats | task add|done|drop|told|list | rule add|drop|list | lesson add|drop|list | alarm [-stop] | version")
 		os.Exit(2)
 	}
 	cmd := os.Args[1]
@@ -68,9 +69,9 @@ func main() {
 // opts are one command's settings: its flags, with what config.json and the defaults fill in for the flags not given.
 type opts struct {
 	cmd, home, dbPath, projects, history, codexDir, host, notID, archive, scope, trigger, who, since, until, mode string
-	text, at, zone, level, under, kind, points, quote, replaces, about                                            string
+	text, at, zone, level, under, kind, points, quote, replaces, about, evidence                                  string
 	n                                                                                                             int
-	all, migrate, stop, self, decision                                                                            bool
+	all, migrate, stop, self, decision, machine                                                                   bool
 	after, needs, then                                                                                            listFlag
 	given                                                                                                         map[string]bool
 	args                                                                                                          []string
@@ -96,7 +97,7 @@ func parseArgs(cmd string, args []string) (opts, error) {
 		onErr = flag.ContinueOnError
 	}
 	n := 0
-	if cmd == "task" || cmd == "rule" {
+	if cmd == "task" || cmd == "rule" || cmd == "lesson" {
 		n = min(1, len(args)) // flag parsing stops at the first word, so the subcommand comes off first
 	}
 	sub := args[:n:n] // capped, so appending to it never writes over args
@@ -145,7 +146,9 @@ func (o *opts) flagSet(onErr flag.ErrorHandling) *flag.FlagSet {
 	fs.StringVar(&o.since, "since", "", "search: only what was said from this day (YYYY-MM-DD), minute (YYYY-MM-DD HH:MM, in -zone), RFC 3339 time or span back (90m, 3h, 2d)")
 	fs.StringVar(&o.until, "until", "", "search: only what was said up to the end of this day, minute, time or span back, as -since")
 	fs.StringVar(&o.mode, "mode", "", "install -host codex (required): agents (a block in AGENTS.md) or hooks (Codex hooks in CODEX_HOME/hooks.json)")
-	fs.StringVar(&o.text, "text", "", "task add: what the task is")
+	fs.StringVar(&o.text, "text", "", "task add: what the task is; lesson add: what the agent learned by testing (SPEC L1)")
+	fs.StringVar(&o.evidence, "evidence", "", "lesson add: at least 3 words of the tool result in this session that showed it (SPEC L1)")
+	fs.BoolVar(&o.machine, "machine", false, "lesson add: a lesson for every session of this store, not only this folder (SPEC L1)")
 	fs.StringVar(&o.at, "at", "", "task add: when, as YYYY-MM-DD HH:MM in -zone (default the computer's zone) or RFC 3339")
 	fs.StringVar(&o.zone, "zone", "", "task add -at, search -since/-until: the zone they are in, as an offset (UTC-3) or a zone name (America/Los_Angeles); default the computer's")
 	fs.BoolVar(&o.stop, "stop", false, "alarm: stop the running alarm and wait for it to exit")
@@ -159,8 +162,8 @@ func (o *opts) flagSet(onErr flag.ErrorHandling) *flag.FlagSet {
 	fs.BoolVar(&o.self, "self", false, "task add: the agent adds it on its own; no message of the user asked for it")
 	fs.StringVar(&o.quote, "quote", "", "rule add: the user's words that set the rule, at least 3, as he typed them (SPEC D1)")
 	fs.BoolVar(&o.decision, "decision", false, "rule add: a decision about the work, not a rule of how to work (SPEC D1)")
-	fs.StringVar(&o.replaces, "replaces", "", "rule add: the record this one replaces (SPEC D2)")
-	fs.StringVar(&o.about, "about", "", "rule add: a regexp of the files or commands the record is about; it comes back before such a tool call (SPEC D11)")
+	fs.StringVar(&o.replaces, "replaces", "", "rule add, lesson add: the record this one replaces (SPEC D2, L2)")
+	fs.StringVar(&o.about, "about", "", "rule add, lesson add: a regexp of the files or commands the record is about; it comes back before such a tool call (SPEC D11, L5)")
 	fs.BoolVar(&o.migrate, "migrate", false, "install, uninstall: take over TRACE hooks that name no home (installed before -home existed)")
 	fs.String("repo", "", "ignored: kept so hooks written for an older TRACE still run (SPEC G5)")
 	return fs
@@ -234,7 +237,8 @@ var commands = map[string]func(opts) error{
 	"stats":     cmdStats,
 	"rules":     cmdRules,
 	"task":      cmdTask,
-	"rule":      cmdRule,
+	"rule":      cmdRecords,
+	"lesson":    cmdRecords,
 	"alarm":     cmdAlarm,
 }
 
