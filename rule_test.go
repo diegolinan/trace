@@ -173,6 +173,31 @@ func TestCardChangeNamesRecordsOutOfForce(t *testing.T) {
 	}
 }
 
+// SPEC D5 through the store: injectionDue asks the store, so a rule that only left the card under its limit is not
+// named, and the same rule once dropped is.
+func TestInjectionDueOutOfForceFromStore(t *testing.T) {
+	db := rzDB(t)
+	for _, s := range []string{"s1", "s2"} {
+		rzSession(t, db, s, "", `D:\p`, "2026-11-10T08:00:00Z", "2026-11-10T09:00:00Z", 60)
+	}
+	ev := ruleEvent(t, db, "s1", 1, "2026-11-10T08:00:00Z", "a b c and d e f")
+	ruleRow(t, db, ev, "a b c", false, "2026-11-10T08:01:00Z", "")
+	ruleRow(t, db, ev, "d e f", false, "2026-11-10T08:02:00Z", "")
+	old := "### rules\n- 2026-11-10 08:01 #1 rule: \"a b c\"\n- 2026-11-10 08:02 #2 rule: \"d e f\"\n"
+	cur := "### rules\n- 2026-11-10 08:02 #2 rule: \"d e f\"\nand 1 more\n"
+	now := time.Date(2026, 11, 25, 1, 0, 0, 0, time.UTC)
+	if err := recordInjection(db, "s2", 100, old, "", "start", now); err != nil {
+		t.Fatal(err)
+	}
+	if out, _, err := injectionDue(db, "s2", 200, cur, 1e9); err != nil || strings.Contains(out, "out of force") {
+		t.Errorf("#1 still in force: err %v, out:\n%s", err, out)
+	}
+	rzExec(t, db, `update rule set out_at = ? where id = 1`, "2026-11-25T00:59:00Z")
+	if out, _, err := injectionDue(db, "s2", 200, cur, 1e9); err != nil || !strings.Contains(out, "out of force: #1") {
+		t.Errorf("#1 dropped: err %v, out:\n%s", err, out)
+	}
+}
+
 // ruleNetStore is a store with session s1 where the user typed n messages, and its path.
 func ruleNetStore(t *testing.T, n int) (string, *sql.DB) {
 	t.Helper()
