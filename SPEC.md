@@ -578,7 +578,7 @@ The agent, which understands what the user meant, records each rule or decision 
     - The quote must have at least 3 words.
     - Accents and case do not count when matching.
   - **What is stored:** the message's event id, the quote as matched in the message, the kind, the session and the time.
-  - **What is shown** is always the user's text: the quote, with the message clipped around it as context.
+  - **What is shown** is always the user's text, never the agent's: the quote as matched in the message, clipped to 250 characters. The rest of the message is not shown; the context is the end of the reply it answered (D4).
   - **It refuses and stores nothing when:**
     - the quote is missing or too short;
     - no message matches;
@@ -618,7 +618,7 @@ The agent, which understands what the user meant, records each rule or decision 
     - It is shown even when there is no earlier session to resume.
     - In the card it comes before the files, so the card's budget never cuts it.
   - **Until a store has its first record**, the word-pattern section it replaces is shown instead.
-- **D5. A change reaches open sessions.** When a record is added or put out of force, the next card to a live session names it: "out of force: <id>" for one that left.
+- **D5. A change reaches open sessions.** When a record is added or put out of force, the next card to a live session names it: "out of force: <id>" for one that left the card because it was replaced or dropped. A record that left only because the card shows a limited number (the rest under "and N more") is still in force and is not named (Diego, 2026-11-25: "fix it", after #15 and #16 were reported out of force while `rule list` still showed them).
 - **D6. Net at the next prompt.** When the user has typed 10 or more messages in this session since the later of the last record made in it and the last time this net was shown, the prompt hook adds to the agent's context, without showing anything to the user:
   - "Did <user> set a rule or decision in these messages that you have not recorded? Record it with trace rule add, or go on.";
   - those messages, verbatim and clipped.

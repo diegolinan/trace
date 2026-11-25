@@ -390,7 +390,7 @@ func injectionDue(db *sql.DB, sid string, ctx int, text string, factor float64) 
 	case lastSha != sha(text):
 		var old string
 		db.QueryRow("select text from card where sha = ?", lastSha).Scan(&old)
-		if out = cardChange(old, text); out != "" {
+		if out = cardChange(old, text, func(id string) bool { return !inForce(db, "rule", id) }); out != "" {
 			out = "## Rules changed since the last time trace showed them (new or changed lines only)\n" + out
 		}
 		return out, "change", nil
@@ -410,15 +410,16 @@ func recordInjection(db *sql.DB, sid string, ctx int, text, out, reason string, 
 	return err
 }
 
-// cardChange is the card's new lines, then "out of force: #id" for each recorded rule that left it (SPEC D5).
-func cardChange(old, cur string) string {
+// cardChange is the card's new lines, then "out of force: #id" for each recorded rule that left it and is out of
+// force; one that left only under the card's limit is still in force and is not named (SPEC D5).
+func cardChange(old, cur string, outOfForce func(id string) bool) string {
 	out := newLines(old, cur)
 	in := map[string]bool{}
 	for _, m := range recordLine.FindAllStringSubmatch(cur, -1) {
 		in[m[1]] = true
 	}
 	for _, m := range recordLine.FindAllStringSubmatch(old, -1) {
-		if !in[m[1]] {
+		if !in[m[1]] && outOfForce(m[1]) {
 			out = strings.TrimPrefix(out+"\nout of force: #"+m[1], "\n")
 		}
 	}

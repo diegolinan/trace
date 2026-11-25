@@ -158,13 +158,18 @@ func TestCardRulesBeforeFiles(t *testing.T) {
 	}
 }
 
-// SPEC D5: a change of the card names each record that left it.
+// SPEC D5: a change of the card names each record that left it because it went out of force, and not one that only
+// left because the card shows a limited number.
 func TestCardChangeNamesRecordsOutOfForce(t *testing.T) {
 	old := "### rules\n- 2026-11-10 08:01 #1 rule: \"a b c\"\n- 2026-11-10 08:02 #2 rule: \"d e f\"\n"
-	cur := "### rules\n- 2026-11-10 08:02 #2 rule: \"d e f\"\n- 2026-11-21 09:00 #3 rule: \"g h i\"\n"
-	got := cardChange(old, cur)
+	cur := "### rules\n- 2026-11-10 08:02 #2 rule: \"d e f\"\n- 2026-11-21 09:00 #3 rule: \"g h i\"\nand 1 more\n"
+	got := cardChange(old, cur, func(id string) bool { return id == "1" })
 	if !strings.Contains(got, "#3") || !strings.Contains(got, "out of force: #1") || strings.Contains(got, "#2") {
-		t.Errorf("change:\n%s", got)
+		t.Errorf("dropped #1, change:\n%s", got)
+	}
+	got = cardChange(old, cur, func(string) bool { return false })
+	if !strings.Contains(got, "#3") || strings.Contains(got, "out of force") {
+		t.Errorf("#1 still in force, change:\n%s", got)
 	}
 }
 
