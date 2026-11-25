@@ -189,7 +189,7 @@ func lessonSection(db *sql.DB, w io.Writer, user, role, cwd string, n int) {
 		fmt.Fprintln(w, lessonLine(l))
 	}
 	if more := len(all) - len(shown); more > 0 {
-		fmt.Fprintf(w, "and %d more: %s\n", more, traceCmd("lesson", " list"))
+		fmt.Fprintf(w, "and %d more: %s\n", more, traceCmd("lesson list", ""))
 	}
 	fmt.Fprintln(w)
 }
@@ -219,8 +219,8 @@ const lessonInstruction = "When you find out by testing something about the tool
 
 func writeLessonInstruction(w io.Writer, user string) {
 	fmt.Fprintf(w, lessonInstruction, user,
-		traceCmd("lesson", ` add -text "<the lesson, with the version you tested>" -evidence "<words of the tool result that showed it>" [-machine] [-about "<regexp>"]`),
-		traceCmd("lesson", " drop <id>"))
+		traceCmd("lesson add", ` -text "<the lesson, with the version you tested>" -evidence "<words of the tool result that showed it>" [-machine] [-about "<regexp>"]`),
+		traceCmd("lesson drop", " <id>"))
 }
 
 // lessonBlock is what the start block shows right after the rule section, with or without it or an earlier session:

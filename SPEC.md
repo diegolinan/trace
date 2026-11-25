@@ -228,6 +228,11 @@ breaks them all.
     wherever they appear was weighed and left out: a word that happens to be a flag's name would then change the
     command in silence.
   - **Test:** `TestFlagAfterWordsRefused`.
+  - **The commands TRACE tells an agent to run follow the same order.** With a home that is not the default one,
+    each names `-home` right after the whole subcommand (`rule add -home "X" -quote ...`, `lesson drop -home "X"
+    <id>`), so it runs as written. Until v0.3.55 the rule and lesson lines put `-home` between `rule` and `add`. That
+    form is refused and records nothing. An agent with its own memory found it on 2026-11-25, and Diego said "arreglalo".
+    Test: `TestToldCommandsTakeAnotherHome`.
 
 ## T. Tasks
 

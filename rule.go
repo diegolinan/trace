@@ -313,7 +313,7 @@ func rulesIn(db *sql.DB, w io.Writer, user, role, cwd string, c caps) (recorded,
 
 // writeRuleInstruction tells the agent when and how to record (SPEC D9).
 func writeRuleInstruction(w io.Writer, user string) {
-	fmt.Fprintf(w, ruleInstruction+"\n", user, traceCmd("rule", ` add -quote "<the words>" [-decision]`), traceCmd("rule", " drop <id>"))
+	fmt.Fprintf(w, ruleInstruction+"\n", user, traceCmd("rule add", ` -quote "<the words>" [-decision]`), traceCmd("rule drop", " <id>"))
 }
 
 // ruleRecords are the records in force whose message is still the user's, from sessions in scope (SPEC D4): with roles,
@@ -366,7 +366,7 @@ func writeRules(db *sql.DB, w io.Writer, user string, recs []ruleRecord, c caps)
 		}
 	}
 	if more := len(recs) - len(rules) - len(decisions); more > 0 {
-		fmt.Fprintf(w, "and %d more: %s\n", more, traceCmd("rule", " list"))
+		fmt.Fprintf(w, "and %d more: %s\n", more, traceCmd("rule list", ""))
 	}
 	fmt.Fprintln(w)
 }
@@ -405,7 +405,7 @@ func ruleTypedSince(db *sql.DB, session, since string) []ruleTyped {
 // ruleNetText is the question with the messages, the newest 20 at most, verbatim and clipped.
 func ruleNetText(msgs []ruleTyped) string {
 	var b strings.Builder
-	fmt.Fprintf(&b, ruleNetQuestion, userName(), traceCmd("rule", ` add -quote "<the words>"`))
+	fmt.Fprintf(&b, ruleNetQuestion, userName(), traceCmd("rule add", ` -quote "<the words>"`))
 	if len(msgs) > 20 {
 		fmt.Fprintf(&b, "(the newest 20 of %d)\n", len(msgs))
 		msgs = msgs[len(msgs)-20:]
