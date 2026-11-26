@@ -103,7 +103,7 @@ func TestCodexInstallKeepsConfigScope(t *testing.T) {
 		t.Fatalf("import: %d %s", code, e)
 	}
 	appendUser(t, rollout, "NONCE_I2_DURING", 2) // the beta session keeps writing while install runs in alpha
-	if _, e, code := runTrace(t, root, "", map[string]string{"_DIR": alpha}, "install", "-host", "codex", "-mode", "agents"); code != 0 {
+	if _, e, code := runTrace(t, root, "", map[string]string{"_DIR": alpha}, "install", "-host", "codex", "-mode", "agents", "-user", "Ana"); code != 0 {
 		t.Fatalf("install from alpha: %d %s", code, e)
 	}
 	appendUser(t, rollout, "NONCE_I2_LATER", 3)

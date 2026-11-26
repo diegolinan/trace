@@ -95,7 +95,7 @@ func TestRelativeHomeStoredAbsolute(t *testing.T) {
 		t.Fatal("cannot copy the test binary")
 	}
 	env := map[string]string{"_EXE": exe, "TRACE_HOME": "relative memory"}
-	if _, errOut, code := runTrace(t, root, "", env, "install", "-host", "claude-code", "-codex="); code != 0 {
+	if _, errOut, code := runTrace(t, root, "", env, "install", "-host", "claude-code", "-codex=", "-user", "Ana", "-all-projects"); code != 0 {
 		t.Fatalf("install: exit %d: %s", code, errOut)
 	}
 	var m map[string]any
@@ -158,7 +158,7 @@ func TestInstallClaudeHome(t *testing.T) {
 	env := map[string]string{"_EXE": exe}
 	home := filepath.Join(root, "my memory")
 	settings := filepath.Join(root, "claude", "settings.json")
-	if _, errOut, code := runTrace(t, root, "", env, "install", "-host", "claude-code", "-home", home, "-codex="); code != 0 {
+	if _, errOut, code := runTrace(t, root, "", env, "install", "-host", "claude-code", "-home", home, "-codex=", "-user", "Ana", "-all-projects"); code != 0 {
 		t.Fatalf("install: exit %d: %s", code, errOut)
 	}
 	b, _ := os.ReadFile(settings)

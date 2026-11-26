@@ -47,7 +47,7 @@ func TestInstallWritesTheResolvedBinary(t *testing.T) {
 		// with the case on disk.
 		link = filepath.Join(root, "BIN", strings.ToUpper(filepath.Base(real)))
 	}
-	if _, errOut, code := runTrace(t, root, "", map[string]string{"_EXE": link}, "install", "-host", "claude-code", "-codex="); code != 0 {
+	if _, errOut, code := runTrace(t, root, "", map[string]string{"_EXE": link}, "install", "-host", "claude-code", "-codex=", "-user", "Ana", "-all-projects"); code != 0 {
 		t.Fatalf("install: exit %d\n%s", code, errOut)
 	}
 	want, _ := filepath.EvalSymlinks(real)

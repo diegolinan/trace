@@ -1,7 +1,8 @@
 # Installs TRACE on Windows in two steps. First the binary: downloads the latest release for this machine, checks its
 # SHA-256, puts it in %LOCALAPPDATA%\trace (or $env:TRACE_BIN_DIR) and adds that folder to the user PATH. Then the
 # integration for the agent named in $env:TRACE_HOST (claude-code or codex): `trace install -host <it>`. For codex,
-# run it from the project folder. $env:TRACE_HOME picks the memory's folder (default ~\.trace).
+# run it from the project folder. $env:TRACE_HOME picks the memory's folder (default ~\.trace). $env:TRACE_USER is the
+# name the agents call you.
 #
 #   $env:TRACE_HOST = 'claude-code'; irm https://raw.githubusercontent.com/diegolinan/trace/main/install.ps1 | iex
 #
@@ -20,6 +21,8 @@ if ($traceHost -eq 'codex') {
     }
     $integration += @('-mode', $env:TRACE_CODEX_MODE)
 }
+# Without TRACE_USER, trace asks in this console when the memory has no name yet.
+if ($env:TRACE_USER) { $integration += @('-user', $env:TRACE_USER) }
 if ($env:TRACE_UPDATE -and $env:TRACE_UPDATE -ne '1') {
     throw "TRACE_UPDATE is '$($env:TRACE_UPDATE)'; it is '1' to replace an existing trace.exe, or unset; nothing downloaded"
 }

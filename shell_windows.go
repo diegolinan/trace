@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"os"
 	"os/exec"
 	"strconv"
 	"strings"
@@ -59,4 +60,11 @@ func shortPath(p string) string {
 		return ""
 	}
 	return windows.UTF16ToString(buf)
+}
+
+// consoleIn says whether f is a console a person types in (SPEC U2). NUL is not one, though Go calls it a character
+// device, and neither is a pipe.
+func consoleIn(f *os.File) bool {
+	var mode uint32
+	return windows.GetConsoleMode(windows.Handle(f.Fd()), &mode) == nil
 }

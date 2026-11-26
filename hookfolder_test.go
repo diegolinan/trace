@@ -44,7 +44,7 @@ func TestInstallFolder(t *testing.T) {
 	user := filepath.Join(root, "claude", "settings.json")
 	local := filepath.Join(dir, ".claude", "settings.local.json")
 
-	if _, errOut, code := runTrace(t, root, "", env, "install", "-host", "claude-code", "-codex=", "-folder", dir); code != 0 {
+	if _, errOut, code := runTrace(t, root, "", env, "install", "-host", "claude-code", "-codex=", "-user", "Ana", "-folder", dir); code != 0 {
 		t.Fatalf("install -folder: exit %d\n%s", code, errOut)
 	}
 	if hfOwn(t, local, home) == 0 {
@@ -60,7 +60,7 @@ func TestInstallFolder(t *testing.T) {
 	os.WriteFile(file, nil, 0o644)
 	for bad, why := range map[string]string{"proj": "existing absolute folder", filepath.Join(root, "proj-missing"): "existing absolute folder",
 		file: "existing absolute folder", other: "outside this home's scope"} {
-		if _, errOut, code := runTrace(t, root, "", env, "install", "-host", "claude-code", "-codex=", "-folder", bad); code == 0 || !strings.Contains(errOut, why) {
+		if _, errOut, code := runTrace(t, root, "", env, "install", "-host", "claude-code", "-codex=", "-user", "Ana", "-folder", bad); code == 0 || !strings.Contains(errOut, why) {
 			t.Errorf("-folder %s: exit %d, want a refusal that says %q: %s", bad, code, why, errOut)
 		}
 	}
@@ -91,7 +91,7 @@ func TestStatsFoldersWithoutHooks(t *testing.T) {
 	single, _ := json.Marshal(map[string]any{"hooks": map[string]any{"Stop": []any{map[string]any{"hooks": []any{
 		map[string]any{"type": "command", "command": env["_EXE"], "args": []any{"hook", "-home", home}}}}}}})
 	os.WriteFile(filepath.Join(one, ".claude", "settings.json"), single, 0o644)
-	if _, errOut, code := runTrace(t, root, "", env, "install", "-host", "claude-code", "-codex=", "-folder", hooked); code != 0 {
+	if _, errOut, code := runTrace(t, root, "", env, "install", "-host", "claude-code", "-codex=", "-user", "Ana", "-folder", hooked); code != 0 {
 		t.Fatalf("install -folder: exit %d\n%s", code, errOut)
 	}
 	db, err := openDB(filepath.Join(home, "trace.db"))
@@ -137,7 +137,7 @@ func TestStatsFoldersWithoutHooks(t *testing.T) {
 	}
 
 	// Hooks of this home in the user settings cover every folder.
-	if _, errOut, code := runTrace(t, root, "", env, "install", "-host", "claude-code", "-codex="); code != 0 {
+	if _, errOut, code := runTrace(t, root, "", env, "install", "-host", "claude-code", "-codex=", "-user", "Ana"); code != 0 {
 		t.Fatalf("install: exit %d\n%s", code, errOut)
 	}
 	out, _, _ = runTrace(t, root, "", nil, "stats")

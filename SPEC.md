@@ -122,14 +122,96 @@ breaks them all.
 - **H1.** `trace install -host claude-code -folder <dir>` writes the hooks to `<dir>/.claude/settings.local.json`
   instead of the user settings, by the same rules: one home per file, the previous file kept as `.trace-backup`, a
   file that does not parse left untouched. `<dir>` must be an existing absolute folder in scope; otherwise nothing is
-  written. `trace uninstall -host claude-code -folder <dir>` removes them there. Without `-folder`, install and
-  uninstall work on the user settings as before. Test: `TestInstallFolder`.
+  written (U6, U7 add what else install checks and saves). `trace uninstall -host claude-code -folder <dir>` removes
+  them there, with no check of the folder (U10). Without `-folder`, install and uninstall work on the user settings
+  as before. Test: `TestInstallFolder`.
 - **H2.** `trace stats` lists, under "folders where Claude Code sessions started in the last 30 days without this
   home's hooks", each such folder with its sessions and the last start: a main session's folder in scope (not a
   subagent, not left out by I4) where neither the user settings nor that folder's `.claude/settings.json` or
   `.claude/settings.local.json` run this home's hooks. It is how a new worktree that was never installed shows up.
   Test: `TestStatsFoldersWithoutHooks`.
 - Not covered: Codex hooks (`hooks.json` in CODEX_HOME) stay per Codex home.
+
+## U. Install: the person's name, what the memory keeps, where to start
+
+Measured with v0.3.55 on 2026-11-25: `trace install -host claude-code -folder <project> -home <new home>` wrote the
+hooks to the project but no config.json, so the scope was every project, and the first import copied every Claude
+Code conversation on the machine into the new home (1.6 GB in 3 minutes, still going). Without `"user"` in
+config.json every text the agents read says "the user". A newcomer opened their session in the home folder instead of
+the project folder; nothing ran, and nothing said so.
+
+- **U1. The name is asked, never guessed.** When the home's config.json has no `"user"`, `trace install` (either
+  host) asks at the terminal for the name the agents should call the person, and saves the answer as `"user"`. It
+  never takes the name from the OS account, git or another memory. Why: Diego, 2026-11-25: "que el instalador lo
+  pida siempre. Hay gente que a su compu le pone JARVIS o AUTUMN... que se yo. Lo tiene que pedir". An empty answer
+  or the end of input refuses, with nothing written. Test: `TestInstallAsksTheName`.
+- **U2. With no person at a terminal, install refuses and says who must answer.** A console check decides, not Go's
+  "character device" (stdin from NUL or `/dev/null` is one): on Windows the console mode, elsewhere the terminal's
+  window size. Claude Code's own shell (`CLAUDECODE=1`) is an agent, not a person, even with a console. Codex's
+  variable for its shell is not verified, so a Codex agent is caught only by having no console. The refusal writes
+  nothing and says: "ask the person the name to call them; do not use the OS account, git name or another memory;
+  pass their exact answer with -user", and for a person whose terminal gives a pipe (mintty): "if you are the
+  person, run again with -user \"Your name\"". Tests: `TestInstallNameWithoutTerminal`, `TestConsoleCheck`.
+- **U3. A name is one line of text.** Surrounding spaces are trimmed. Empty, a control character or line break,
+  invalid UTF-8, or more than 60 characters is refused with nothing written. `ñ`, accents and quotes are kept as
+  typed, and config.json holds them unescaped (no `\u00f1`, no `\u003c`): the name goes into TRACE's own orders to
+  the agents. Test: `TestInstallNameValidated`.
+- **U4. `-user` wins, and a stored name stays.** `-user "<name>"` is taken with no question, at a terminal or not.
+  Without it a stored name is kept on every reinstall; with it a different name replaces it and install prints "name
+  changed from <old> to <new>". Every install prints the name stored. Test: `TestInstallKeepsOrChangesTheName`.
+- **U5. A memory of every project needs the person's yes.** Decision D2, Diego, 2026-11-25 ("va"). When a Claude
+  Code install leaves the memory with no scope (no `-folder`, no `-scope`, no scope in config.json), before anything
+  is written it says that this memory will store every conversation on this machine, with how many transcripts and
+  rollouts there are now and their size, and how to keep one project only (`-folder`). At a terminal it asks yes or
+  no, and only yes goes on. With no person at a terminal (U2) it refuses, nothing written, and tells an agent to ask
+  the person, unless `-all-projects` is given. A reinstall whose user settings already run this home asks nothing:
+  the memory already keeps every project. Test: `TestInstallEveryProjectAsks`.
+- **U6. A Claude Code install saves the scope it works in, and imports with it.** When config.json has no scope (the
+  file missing or a file with no `"scope"` alike: an empty scope keeps every folder), install saves `-scope` when it
+  is given, else the `-folder`. The folder is cleaned first, so a trailing separator (`D:\code\api\`) does not put the
+  project outside its own scope. The first import uses the scope config.json holds after the install, as I2 does for
+  Codex. A home that install creates gets a `.gitignore` holding `*`, so a home inside a repository is not
+  committed. Test: `TestInstallFolderSavesScope`.
+- **U7. A scope that would mislead is refused.** With nothing written, install refuses: a `-folder` that is the
+  memory's home, a volume root or the user's home folder; a `-folder` outside `-scope`; a `-folder` for a home with no
+  scope whose hooks the user settings already run (it would narrow a memory of every project in silence); and a new
+  scope while the store already holds sessions that ran outside it, with their count and "delete <home> and install
+  again" (search takes no scope, so they would keep coming back). Sessions with no folder recorded cannot be placed
+  and are not counted. Test: `TestInstallFolderRefusals`.
+- **U8. Every check comes before the first write.** The settings file is read and checked for another home's hooks
+  and for hooks that name no home (the refusals install has always made) before config.json is written. If writing the settings then fails, a config.json this run created is
+  removed, and one it changed gets its old bytes back. config.json is written only when a key changes, and every key
+  install does not set is kept as written. Test: `TestInstallUndoesConfig`.
+- **U9. Install says where to start, before the first import.** Right after the hooks are written, and before the
+  first import (which a person may stop with Ctrl-C), install prints the stored name and where sessions must start:
+  for Claude Code with `-folder`, "open your Claude Code sessions in <folder>: sessions started anywhere else do not
+  use this memory", with a pointer to `trace stats` (H2); for Claude Code without it, that it runs in every folder and
+  what it keeps; for Codex in agents mode, the folder whose AGENTS.md asks for it; in hooks mode, that the hooks run in
+  every Codex session and what this memory keeps. Then: "a new session there starts with a TRACE block; if you see
+  none, you are in another folder or did not restart the agent". Test: `TestInstallSaysWhereToStart`.
+- **U10. Uninstall asks nothing and checks no folder.** `trace uninstall` never asks for a name or a yes, and
+  `-folder` is not checked for existing, scope or kind: it removes this home's hooks from that folder's settings if
+  they are there. Test: `TestUninstallAsksNothing`.
+- **U11. Codex installs keep the config they found.** The name is asked (U1, U2) before any check that writes.
+  Writing `"user"` into an existing Codex config.json keeps its other keys, goes through writeChecked, and is undone
+  (old bytes back) if hooks.json or AGENTS.md cannot be written. `-folder` with `-host codex` is refused: Codex
+  installs for the folder it runs from. Test: `TestCodexInstallName`.
+- **U12. The one-line installers can answer.** `TRACE_USER` is passed to install as `-user`. Without it, install.sh
+  gives `trace install` the terminal (`/dev/tty`, since its own stdin is the downloaded script) when there is one, so
+  trace asks for the name and the yes itself, only when it needs them; install.ps1 runs it in the console it was
+  started from. Test: `TestInstallScriptsPassTheName`.
+- **Pending (not built in v0.3.56):**
+  - A scope admits sibling folders (`D:\code\api` also keeps `api2`, `api-old`): v0.3.57 filters Claude Code
+    transcripts by the folder recorded inside them (D3).
+  - A comma in a folder's path splits the scope in two.
+  - Adding a second folder to a home that has a scope: a message with the exact edit, and the scope as a list. No
+    check that two Claude Code homes keep overlapping folders.
+  - A Codex config with `"claude": false` and no scope is accepted and imports every rollout, with no question (U5
+    covers Claude Code only).
+  - Not verified: user-wide and `-folder` hooks of one home both running; symlinks, junctions, `subst` and macOS
+    `/private` paths; long transcript folder names; Windows PowerShell 5.1 decoding `ñ`; Codex's variable for its
+    shell (U2); that a program run from `irm ... | iex` gets the console (U12). An agent other than Claude Code that
+    runs install.sh with a controlling terminal gives trace `/dev/tty`, so trace asks there and waits for an answer.
 
 ## I. Import
 

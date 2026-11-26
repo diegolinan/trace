@@ -32,19 +32,19 @@ func TestWriteBothUndoesHooks(t *testing.T) {
 	}
 }
 
-// A Codex install whose second write fails removes the config it wrote, only while that file is still its own.
+// An install whose second write fails removes the config it wrote, only while that file is still its own.
 func TestUndoCodexConfig(t *testing.T) {
 	dir := t.TempDir()
 	cfgPath := filepath.Join(dir, "config.json")
 	var w strings.Builder
 	os.WriteFile(cfgPath, []byte("mine"), 0o644)
-	undoCodexConfig(cfgPath, "mine", &w)
+	undoConfig(filePlan{path: cfgPath, next: []byte("mine")}, &w)
 	if exists(cfgPath) || !strings.Contains(w.String(), "removed") {
 		t.Fatalf("its own config was not removed: %v %q", exists(cfgPath), w.String())
 	}
 	w.Reset()
 	os.WriteFile(cfgPath, []byte("edited by someone"), 0o644)
-	undoCodexConfig(cfgPath, "mine", &w)
+	undoConfig(filePlan{path: cfgPath, next: []byte("mine")}, &w)
 	if b, _ := os.ReadFile(cfgPath); string(b) != "edited by someone" || !strings.Contains(w.String(), "left") {
 		t.Fatalf("a changed config was touched: %q %q", b, w.String())
 	}

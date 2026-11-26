@@ -2,7 +2,6 @@ package main
 
 import (
 	"cmp"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -149,36 +148,40 @@ func changedSince(path, old string, existed bool) bool {
 // installCodex sets up a Codex memory for the project in dir. Mode "agents" asks Codex, through dir/AGENTS.md, to run
 // `trace resume -home <home>` when a session starts; mode "hooks" registers exe's hooks in codexDir/hooks.json. The
 // two are exclusive per home. home gets a config.json that never reads Claude Code and keeps the threads that ran in
-// dir, unless it already has one that does that. Everything is checked before the first write; if the second write
-// fails, the config written by this run is removed again while it is still what this run wrote. It never touches
-// Claude Code's settings.
-func installCodex(home, dir, codexDir, mode, exe string, migrate bool, w io.Writer) error {
+// dir, unless it already has one that does that; a user ("" for none) is written into it, every other key kept.
+// Everything is checked before the first write; if the second write fails, config.json is put back as it was while it
+// still holds what this run wrote (SPEC U11). It never touches Claude Code's settings.
+func installCodex(home, dir, codexDir, mode, exe, user string, migrate bool, w io.Writer) error {
 	if mode != "agents" && mode != "hooks" {
 		// No default: the two modes give different guarantees (hooks run on their own once trusted; AGENTS.md only asks).
 		return fmt.Errorf("install -host codex needs -mode hooks (Codex hooks, run once you trust them) or -mode agents (a request in AGENTS.md), not %q; nothing done", mode)
 	}
-	in := &codexInstall{home: home, dir: dir, codexDir: codexDir, mode: mode, exe: exe, w: w,
-		cfgPath: filepath.Join(home, "config.json"), agents: filepath.Join(dir, "AGENTS.md"), hooksPath: filepath.Join(codexDir, "hooks.json")}
+	in := &codexInstall{home: home, dir: dir, codexDir: codexDir, mode: mode, exe: exe, user: user, w: w,
+		agents: filepath.Join(dir, "AGENTS.md"), hooksPath: filepath.Join(codexDir, "hooks.json")}
 	text, err := in.check(migrate)
 	if err != nil {
 		return err
 	}
-	reportRollouts(w, codexDir, dir, in.cfgPath)
+	reportRollouts(w, codexDir, dir, in.cfg.path)
 	return in.write(text)
 }
 
 // codexInstall is one Codex install: its paths, and the files as it read them before writing any.
 type codexInstall struct {
-	home, dir, codexDir, mode, exe string
-	cfgPath, agents, hooksPath     string
-	b, hb                          []byte // AGENTS.md and hooks.json as read
-	existed, newCfg                bool   // AGENTS.md exists; config.json does not, so this run writes one
-	w                              io.Writer
+	home, dir, codexDir, mode, exe, user string
+	agents, hooksPath                    string
+	cfg                                  filePlan // config.json as read, and as this run writes it
+	b, hb                                []byte   // AGENTS.md and hooks.json as read
+	existed, newCfg                      bool     // AGENTS.md exists; config.json does not, so this run writes one
+	w                                    io.Writer
 }
 
 // check reads the files install touches and checks them all; in agents mode, text is AGENTS.md with this home's block.
 func (in *codexInstall) check(migrate bool) (text string, err error) {
 	if in.newCfg, err = codexConfigFits(in.home, in.dir); err != nil {
+		return "", err
+	}
+	if in.cfg, err = planConfig(in.home, in.configSet()); err != nil {
 		return "", err
 	}
 	if in.b, in.existed, err = readIfThere(in.agents); err != nil {
@@ -202,22 +205,26 @@ func (in *codexInstall) scope() string {
 	return string(c.Scope)
 }
 
-// write writes the config when this run makes one, then hooks.json or AGENTS.md; when that fails, the config this
-// run wrote is removed again.
-func (in *codexInstall) write(text string) error {
-	cfgText := ""
+// configSet is what this run writes into config.json: a Codex memory of this folder when there is none, and the user.
+func (in *codexInstall) configSet() map[string]any {
+	set := map[string]any{}
 	if in.newCfg {
-		var err error
-		if cfgText, err = writeCodexConfig(in.home, in.cfgPath, in.dir, in.w); err != nil {
-			return err
-		}
-	} else {
-		fmt.Fprintln(in.w, "kept", in.cfgPath)
+		set["claude"], set["scope"] = false, []string{in.dir}
+	}
+	if in.user != "" {
+		set["user"] = in.user
+	}
+	return set
+}
+
+// write writes config.json when this run changes it, then hooks.json or AGENTS.md; when that fails, config.json is
+// put back as it was.
+func (in *codexInstall) write(text string) error {
+	if err := writeConfig(in.cfg, in.w); err != nil {
+		return err
 	}
 	if err := in.writeMode(text); err != nil {
-		if in.newCfg {
-			undoCodexConfig(in.cfgPath, cfgText, in.w)
-		}
+		undoConfig(in.cfg, in.w)
 		return err
 	}
 	return nil
@@ -355,29 +362,6 @@ func rolloutFolders(codexDir string) map[string]int {
 		}
 	}
 	return cwds
-}
-
-// writeCodexConfig writes a config.json that never reads Claude Code and keeps the threads that ran in dir.
-func writeCodexConfig(home, cfgPath, dir string, w io.Writer) (string, error) {
-	cb, _ := json.MarshalIndent(map[string]any{"claude": false, "scope": []string{dir}}, "", "  ")
-	cfgText := string(append(cb, '\n'))
-	if err := os.MkdirAll(home, 0o755); err != nil {
-		return "", err
-	}
-	if err := writeChecked(cfgPath, "", false, cfgText, ""); err != nil {
-		return "", err
-	}
-	fmt.Fprintln(w, "wrote", cfgPath)
-	return cfgText, nil
-}
-
-// undoCodexConfig removes the config this run wrote, only while it is still what this run wrote.
-func undoCodexConfig(cfgPath, cfgText string, w io.Writer) {
-	if now, err := os.ReadFile(cfgPath); err == nil && string(now) == cfgText && os.Remove(cfgPath) == nil {
-		fmt.Fprintln(w, "removed", cfgPath, "again")
-		return
-	}
-	fmt.Fprintln(w, "left", cfgPath, "in place: it changed after this run wrote it, or could not be removed")
 }
 
 // writeCodexHooks registers this home's hooks in hooks.json and says what it did.

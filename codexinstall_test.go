@@ -51,7 +51,7 @@ func TestInstallCodex(t *testing.T) {
 	os.WriteFile(agents, []byte("# Rules"), 0o644)
 
 	var out strings.Builder
-	if err := installCodex(home, dir, codex, "agents", "", false, &out); err != nil {
+	if err := installCodex(home, dir, codex, "agents", "", "", false, &out); err != nil {
 		t.Fatal(err)
 	}
 	if !strings.Contains(out.String(), "1 of 2 Codex rollouts") {
@@ -66,7 +66,7 @@ func TestInstallCodex(t *testing.T) {
 		t.Fatalf("AGENTS.md: %q", b)
 	}
 	// Again: the config is this folder's Codex memory and the block is there, so nothing changes.
-	if err := installCodex(home, dir, codex, "agents", "", false, io.Discard); err != nil {
+	if err := installCodex(home, dir, codex, "agents", "", "", false, io.Discard); err != nil {
 		t.Fatal(err)
 	}
 	if b2, _ := os.ReadFile(agents); string(b2) != string(b) {
@@ -75,12 +75,12 @@ func TestInstallCodex(t *testing.T) {
 	// A Claude Code memory is never turned into a Codex one: its config is refused before anything is written.
 	claudeHome, elsewhere := t.TempDir(), t.TempDir()
 	os.WriteFile(filepath.Join(claudeHome, "config.json"), []byte(`{"scope":"x"}`), 0o644)
-	if installCodex(claudeHome, elsewhere, codex, "agents", "", false, io.Discard) == nil || exists(filepath.Join(elsewhere, "AGENTS.md")) {
+	if installCodex(claudeHome, elsewhere, codex, "agents", "", "", false, io.Discard) == nil || exists(filepath.Join(elsewhere, "AGENTS.md")) {
 		t.Fatal("a Claude Code config was accepted")
 	}
 	// Another home's block: refused before writing, so no config appears in the new home.
 	other := t.TempDir()
-	if err := installCodex(other, dir, codex, "agents", "", false, io.Discard); err == nil || !strings.Contains(err.Error(), home) {
+	if err := installCodex(other, dir, codex, "agents", "", "", false, io.Discard); err == nil || !strings.Contains(err.Error(), home) {
 		t.Fatalf("another home's block: %v", err)
 	}
 	if exists(filepath.Join(other, "config.json")) {
@@ -88,7 +88,7 @@ func TestInstallCodex(t *testing.T) {
 	}
 	// A run elsewhere lists the folders the rollouts ran in.
 	out.Reset()
-	if err := installCodex(t.TempDir(), t.TempDir(), codex, "agents", "", false, &out); err != nil || !strings.Contains(out.String(), `D:\elsewhere`) {
+	if err := installCodex(t.TempDir(), t.TempDir(), codex, "agents", "", "", false, &out); err != nil || !strings.Contains(out.String(), `D:\elsewhere`) {
 		t.Fatalf("folder list: %v %s", err, out.String())
 	}
 	// Uninstall takes out this home's block only; the other text stays.

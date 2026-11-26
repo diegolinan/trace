@@ -2,7 +2,8 @@
 # Installs TRACE on macOS or Linux in two steps. First the binary: downloads the latest release for this machine,
 # checks its SHA-256 and puts it in ~/.local/bin (or $TRACE_BIN_DIR). Then the integration for the agent named in
 # TRACE_HOST (claude-code or codex): `trace install -host <it>`. For codex, run it from the project folder.
-# TRACE_HOME picks the memory's folder (default ~/.trace).
+# TRACE_HOME picks the memory's folder (default ~/.trace). TRACE_USER is the name the agents call you; without it,
+# trace asks at the terminal when the memory has no name yet.
 #
 #   curl -fsSL https://raw.githubusercontent.com/diegolinan/trace/main/install.sh | TRACE_HOST=claude-code sh
 #
@@ -81,8 +82,12 @@ else
   echo "installed $exe"
 fi
 
+# This script's stdin is the download (curl | sh), so trace asks at the terminal instead, when there is one; it asks
+# only for what it needs: the name when none is stored and TRACE_USER is unset, a yes for a memory of every project.
+tty=/dev/null
+if (: </dev/tty) 2>/dev/null; then tty=/dev/tty; fi
 # shellcheck disable=SC2086 # mode_flag is two words or none, both from the fixed list above
-if ! "$exe" install -host "$TRACE_HOST" $mode_flag; then
+if ! "$exe" install -host "$TRACE_HOST" $mode_flag ${TRACE_USER:+-user "$TRACE_USER"} <"$tty"; then
   echo "trace: the binary is installed at $exe, but the $TRACE_HOST integration did not complete; see the messages above" >&2
   [ -n "$previous" ] && echo "trace: the build it replaced is at $previous; copy it over $exe to go back" >&2
   exit 1

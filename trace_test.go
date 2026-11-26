@@ -94,7 +94,7 @@ func TestMain(m *testing.M) {
 	for k, v := range map[string]string{"USERPROFILE": "user", "HOME": "user", "TRACE_HOME": "trace", "CLAUDE_CONFIG_DIR": "claude", "CODEX_HOME": "codex"} {
 		os.Setenv(k, filepath.Join(fence, v))
 	}
-	for _, k := range []string{"CLAUDE_CODE_SESSION_ID", "CLAUDE_CODE_MESSAGING_SOCKET", "CODEX_THREAD_ID", "CODEX_SANDBOX"} {
+	for _, k := range []string{"CLAUDE_CODE_SESSION_ID", "CLAUDE_CODE_MESSAGING_SOCKET", "CODEX_THREAD_ID", "CODEX_SANDBOX", "CLAUDECODE"} {
 		os.Unsetenv(k)
 	}
 	cfg = config{User: "Ana", RelayTools: []string{"mcp__relay"}, Roles: []roleRule{

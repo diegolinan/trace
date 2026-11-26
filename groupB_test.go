@@ -105,7 +105,7 @@ func TestCodexInstallSeesEveryOtherBlock(t *testing.T) {
 	text := "# Rules\n" + agentsBlock(home) + agentsBlock(other)
 	os.WriteFile(agents, []byte(text), 0o644)
 	var out strings.Builder
-	err := installCodex(home, dir, codex, "agents", "", false, &out)
+	err := installCodex(home, dir, codex, "agents", "", "", false, &out)
 	if err == nil || !strings.Contains(err.Error(), other) {
 		t.Fatalf("install over another home's second block: %v", err)
 	}

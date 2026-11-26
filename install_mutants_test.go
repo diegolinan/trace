@@ -210,21 +210,21 @@ func imFolderLines(out string) []string {
 func TestCodexInstallRolloutCount(t *testing.T) {
 	dir := t.TempDir()
 	var out strings.Builder
-	if err := installCodex(t.TempDir(), dir, imRollouts(t, dir, ""), "agents", "", false, &out); err != nil {
+	if err := installCodex(t.TempDir(), dir, imRollouts(t, dir, ""), "agents", "", "", false, &out); err != nil {
 		t.Fatal(err)
 	}
 	if !strings.Contains(out.String(), "1 of 1 Codex rollouts ran in "+dir) || strings.Contains(out.String(), "folders the rollouts ran in") {
 		t.Fatalf("one rollout here, one without a folder: %q", out.String())
 	}
 	out.Reset()
-	if err := installCodex(t.TempDir(), t.TempDir(), imRollouts(t), "agents", "", false, &out); err != nil {
+	if err := installCodex(t.TempDir(), t.TempDir(), imRollouts(t), "agents", "", "", false, &out); err != nil {
 		t.Fatal(err)
 	}
 	if !strings.Contains(out.String(), "0 of 0 Codex rollouts") || strings.Contains(out.String(), "folders the rollouts ran in") {
 		t.Fatalf("no rollouts: %q", out.String())
 	}
 	out.Reset()
-	if err := installCodex(t.TempDir(), t.TempDir(), imRollouts(t, "/elsewhere/one"), "agents", "", false, &out); err != nil {
+	if err := installCodex(t.TempDir(), t.TempDir(), imRollouts(t, "/elsewhere/one"), "agents", "", "", false, &out); err != nil {
 		t.Fatal(err)
 	}
 	if got := imFolderLines(out.String()); len(got) != 1 || got[0] != "1  /elsewhere/one" {
@@ -241,7 +241,7 @@ func TestCodexInstallFolderOrder(t *testing.T) {
 	want := []string{"3  /w/b", "2  /w/a", "1  /w/t1", "1  /w/t2", "1  /w/t3", "1  /w/t4", "1  /w/t5", "1  /w/t6", "1  /w/t7"}
 	for i := 0; i < 5; i++ {
 		var out strings.Builder
-		if err := installCodex(t.TempDir(), t.TempDir(), codex, "agents", "", false, &out); err != nil {
+		if err := installCodex(t.TempDir(), t.TempDir(), codex, "agents", "", "", false, &out); err != nil {
 			t.Fatal(err)
 		}
 		if got := imFolderLines(out.String()); strings.Join(got, "|") != strings.Join(want, "|") {
@@ -255,7 +255,7 @@ func TestCodexInstallRefusesClaudeConfig(t *testing.T) {
 	home, dir := t.TempDir(), t.TempDir()
 	b, _ := json.Marshal(map[string]any{"claude": true, "scope": []string{dir}})
 	os.WriteFile(filepath.Join(home, "config.json"), b, 0o644)
-	err := installCodex(home, dir, t.TempDir(), "agents", "", false, &strings.Builder{})
+	err := installCodex(home, dir, t.TempDir(), "agents", "", "", false, &strings.Builder{})
 	if err == nil || !strings.Contains(err.Error(), "is not a Codex memory for this folder") || exists(filepath.Join(dir, "AGENTS.md")) {
 		t.Fatalf("a Claude Code config was taken: %v", err)
 	}
@@ -264,7 +264,7 @@ func TestCodexInstallRefusesClaudeConfig(t *testing.T) {
 // Hooks mode without this binary's path refuses before writing anything.
 func TestCodexHooksModeNeedsBinary(t *testing.T) {
 	home, codex := t.TempDir(), t.TempDir()
-	err := installCodex(home, t.TempDir(), codex, "hooks", "", false, &strings.Builder{})
+	err := installCodex(home, t.TempDir(), codex, "hooks", "", "", false, &strings.Builder{})
 	if err == nil || !strings.Contains(err.Error(), "hooks mode needs") {
 		t.Fatalf("hooks mode without a binary: %v", err)
 	}
@@ -278,7 +278,7 @@ func TestCodexHooksInstallReports(t *testing.T) {
 	home, dir, codex := t.TempDir(), t.TempDir(), t.TempDir()
 	cfgPath, hooksPath := filepath.Join(home, "config.json"), filepath.Join(codex, "hooks.json")
 	var out strings.Builder
-	if err := installCodex(home, dir, codex, "hooks", "/bin/trace", false, &out); err != nil {
+	if err := installCodex(home, dir, codex, "hooks", "/bin/trace", "", false, &out); err != nil {
 		t.Fatal(err)
 	}
 	o := out.String()
@@ -287,7 +287,7 @@ func TestCodexHooksInstallReports(t *testing.T) {
 		t.Fatalf("first install: %q", o)
 	}
 	out.Reset()
-	if err := installCodex(home, dir, codex, "hooks", "/bin/trace", false, &out); err != nil {
+	if err := installCodex(home, dir, codex, "hooks", "/bin/trace", "", false, &out); err != nil {
 		t.Fatal(err)
 	}
 	o = out.String()
@@ -318,7 +318,7 @@ func TestCodexUninstallEveryBlock(t *testing.T) {
 func TestCodexInstallNamesOtherHome(t *testing.T) {
 	dir := t.TempDir()
 	os.WriteFile(filepath.Join(dir, "AGENTS.md"), []byte(agentsBlock("/other")), 0o644)
-	err := installCodex(t.TempDir(), dir, t.TempDir(), "agents", "", false, &strings.Builder{})
+	err := installCodex(t.TempDir(), dir, t.TempDir(), "agents", "", "", false, &strings.Builder{})
 	if err == nil || !strings.Contains(err.Error(), "another TRACE home (/other);") {
 		t.Fatalf("another home's block: %v", err)
 	}
@@ -330,7 +330,7 @@ func TestCodexInstallUndoesConfig(t *testing.T) {
 	cfgPath := filepath.Join(home, "config.json")
 	gone := filepath.Join(t.TempDir(), "gone")
 	var out strings.Builder
-	if err := installCodex(home, gone, t.TempDir(), "agents", "", false, &out); err == nil {
+	if err := installCodex(home, gone, t.TempDir(), "agents", "", "", false, &out); err == nil {
 		t.Fatal("AGENTS.md in a missing folder was written")
 	}
 	if exists(cfgPath) || !strings.Contains(out.String(), "removed "+cfgPath+" again") {

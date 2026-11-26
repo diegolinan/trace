@@ -89,7 +89,7 @@ func TestInstallLegacyNeedsMigrate(t *testing.T) {
 	settings := filepath.Join(root, "claude", "settings.json")
 	legacy := `{"hooks":{"Stop":[{"hooks":[{"type":"command","command":"C:/x/trace.exe","args":["hook"]}]}]}}`
 	mmWrite(t, settings, legacy)
-	_, errOut, code := runTrace(t, root, "", env, "install", "-host", "claude-code", "-codex=")
+	_, errOut, code := runTrace(t, root, "", env, "install", "-host", "claude-code", "-codex=", "-user", "Ana", "-all-projects")
 	if code != 1 || !strings.Contains(errOut, "run again with -migrate") {
 		t.Fatalf("exit %d, want 1\n%s", code, errOut)
 	}
@@ -105,7 +105,7 @@ func TestInstallClaudeNoteAndFirstImport(t *testing.T) {
 	env := map[string]string{"_EXE": mmTraceExe(t, root)}
 	const note = "config.json says claude: false"
 	mmWrite(t, filepath.Join(root, "trace", "config.json"), `{"claude": false}`)
-	out, errOut, code := runTrace(t, root, "", env, "install", "-host", "claude-code", "-codex=")
+	out, errOut, code := runTrace(t, root, "", env, "install", "-host", "claude-code", "-codex=", "-user", "Ana", "-all-projects")
 	if code != 0 || !strings.Contains(out, note) || !strings.Contains(out, "first import...") {
 		t.Fatalf("install: exit %d\n%s\n%s", code, out, errOut)
 	}
@@ -120,7 +120,7 @@ func TestInstallClaudeNoteAndFirstImport(t *testing.T) {
 	root2 := t.TempDir()
 	env2 := map[string]string{"_EXE": mmTraceExe(t, root2)}
 	mmWrite(t, filepath.Join(root2, "trace", "config.json"), `{"claude": true}`)
-	out, errOut, code = runTrace(t, root2, "", env2, "install", "-host", "claude-code", "-codex=")
+	out, errOut, code = runTrace(t, root2, "", env2, "install", "-host", "claude-code", "-codex=", "-user", "Ana", "-all-projects")
 	if code != 0 || strings.Contains(out, note) {
 		t.Fatalf("install with claude: true: exit %d\n%s\n%s", code, out, errOut)
 	}
@@ -135,7 +135,7 @@ func TestInstallCodexHooksFirstImport(t *testing.T) {
 	codexDir := filepath.Join(root, "codex")
 	os.MkdirAll(codexDir, 0o755)
 	env := map[string]string{"_EXE": exe, "_DIR": work}
-	out, errOut, code := runTrace(t, root, "", env, "install", "-host", "codex", "-mode", "hooks", "-codex", codexDir)
+	out, errOut, code := runTrace(t, root, "", env, "install", "-host", "codex", "-mode", "hooks", "-codex", codexDir, "-user", "Ana")
 	if code != 0 || !strings.Contains(out, "first import...") {
 		t.Fatalf("install: exit %d\n%s\n%s", code, out, errOut)
 	}

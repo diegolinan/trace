@@ -56,9 +56,9 @@ h="${TRACE_HOME:-$HOME/.trace}"; mkdir -p "$h" && echo '{"scope": "my-repo"}' > 
 $h = if ($env:TRACE_HOME) { $env:TRACE_HOME } else { "$HOME\.trace" }; New-Item -ItemType Directory -Force $h | Out-Null; [IO.File]::WriteAllText("$h\config.json", '{"scope": "my-repo"}')
 ```
 
-A scope of `my-repo` keeps the sessions that ran in any folder whose path contains `my-repo`. A list works too: `{"scope": ["my-repo", "other-repo"]}`. Without a `config.json`, TRACE keeps every project.
+A scope of `my-repo` keeps the sessions that ran in any folder whose path contains `my-repo`. A list works too: `{"scope": ["my-repo", "other-repo"]}`. Without a scope, TRACE keeps every project: install then says how many conversations and how many MB that is, and asks you to agree before it copies anything. Run by an agent, with no terminal to ask you, it stops and tells the agent to ask you.
 
-**2. Install.** One command, no Go needed. It downloads the latest release for your machine, checks its SHA-256, and adds TRACE's hooks to Claude Code's user settings.
+**2. Install.** One command, no Go needed. It downloads the latest release for your machine, checks its SHA-256, and adds TRACE's hooks to Claude Code's user settings. It asks the name the agents should call you, once: set `TRACE_USER` to give it beforehand.
 
 macOS and Linux:
 
@@ -79,10 +79,11 @@ Options, set before the command on both systems:
 | `TRACE_HOST` | the agent to install for: `claude-code` or `codex` (Codex also needs `TRACE_CODEX_MODE`, see [Install for Codex](#what-trace-install--host-codex-changes)); without it, nothing is downloaded | none |
 | `TRACE_BIN_DIR` | the folder for the binary | `~/.local/bin`; on Windows `%LOCALAPPDATA%\trace` |
 | `TRACE_HOME` | the memory's folder: `config.json`, `trace.db`, the raw copies | `~/.trace` |
+| `TRACE_USER` | the name the agents call you, saved as `user` in `config.json` (passed as `-user`); it replaces a name saved before | asked at the terminal when none is saved |
 | `TRACE_NO_PATH=1` | Windows: leave your user PATH alone (otherwise the binary's folder is added to it) | off |
 | `TRACE_UPDATE=1` | replace an existing binary that differs from the release | off |
 
-The installer downloads into your system's temporary folder and deletes the download when it is done. If the hooks fail after the binary is in place, it says so and exits with an error.
+The installer downloads into your system's temporary folder and deletes the download when it is done. Its questions (your name, and a yes for a memory of every project) are asked at your terminal; with no terminal, install stops before writing anything and says what to pass. If the hooks fail after the binary is in place, it says so and exits with an error.
 
 **3. Restart Claude Code.** Open sessions read their hooks when they start, so they do not see TRACE until you reopen them.
 
@@ -196,7 +197,7 @@ The binary goes in `~/.local/bin` (macOS, Linux) or `%LOCALAPPDATA%\trace` (Wind
 
 ```sh
 go install github.com/diegolinan/trace@latest
-trace install -host claude-code
+trace install -host claude-code -folder /path/to/project   # one project; without -folder every project, after you agree
 ```
 
 ### Where the memory lives
@@ -210,8 +211,10 @@ Each memory is one folder, its home: `config.json`, `trace.db` and the raw copie
    - One TRACE home per settings file. If the file already runs TRACE with another home, nothing is written; uninstall that one first.
    - Hooks from an install made before `-home` existed are taken over only with `-migrate`.
    - The previous file is saved as `settings.json.trace-backup`. A settings file that is not valid JSON is never touched, and one that changes while TRACE writes it is left as the other writer left it.
-   - With `-folder <dir>` the hooks go to `<dir>/.claude/settings.local.json` instead, so only sessions started in that folder run TRACE; sessions in other projects never start it. Claude Code reads a project's hooks only from the folder a session starts in (not from a folder above it; a git worktree only from its own `.claude`), so install each folder you start sessions in. `<dir>` must exist and be in scope. `trace stats` lists the folders in scope where sessions started in the last 30 days without this home's hooks.
-2. It runs the first import of your existing transcripts into the home. If that fails, the hooks stay installed and the command exits with an error that says how to retry.
+   - With `-folder <dir>` the hooks go to `<dir>/.claude/settings.local.json` instead, so only sessions started in that folder run TRACE; sessions in other projects never start it. Claude Code reads a project's hooks only from the folder a session starts in (not from a folder above it; a git worktree only from its own `.claude`), so install each folder you start sessions in. `<dir>` must exist and be in scope, and must be a project: not a drive root, your home folder or the memory's home. `trace stats` lists the folders in scope where sessions started in the last 30 days without this home's hooks.
+2. It saves in the home's `config.json` the name the agents call you (`user`) and, when the file has no `scope`, the scope it works in: `-scope <folders>` if you give it, else the `-folder`. The name is asked at the terminal when none is saved, never taken from your computer's account, git or another memory; `-user "<name>"` gives it without a question and replaces a saved one (install says so). With no `-folder`, no `-scope` and no saved scope, the memory keeps every project: install says how many conversations and how many MB that is now and asks you to agree, or takes `-all-projects`. With no terminal (an agent running it), a missing name or a missing yes stops install before anything is written, and the message tells the agent to ask you. Other keys in `config.json` are kept, and it is rewritten only when a value changes. A home that install creates gets a `.gitignore` holding `*`, so a home inside a repository is not committed.
+   - Everything is checked before the first write. Install refuses a `-folder` for a memory whose hooks already run in every folder from the user settings with no scope (it would narrow it in silence), and a new scope while the memory already holds sessions that ran outside it (delete the home and install again). If the hooks cannot be written, `config.json` is put back as it was.
+3. It prints your name and where to open your sessions, then runs the first import of your existing transcripts into the home, with the scope just saved. If that fails, the hooks stay installed and the command exits with an error that says how to retry. A new session there starts with a TRACE block; if you see none, you are in another folder or did not restart Claude Code.
 
 The hooks are user-wide, so they fire in every project. Outside the home's `scope` they do nothing: no import, no output. A session that started in scope keeps its memory after it `cd`s elsewhere.
 
@@ -238,7 +241,8 @@ Run it from the project folder with one of two modes, one per home; there is no 
 Both modes:
 
 - If the home has no `config.json`, it writes one that reads no Claude Code transcripts (`"claude": false`) and keeps the threads that ran in this folder. An existing config is used only if it already does that; a Claude Code memory is never turned into a Codex one.
-- Everything is checked before the first write: the other mode already installed for this home, another home's `AGENTS.md` block, another memory's hooks whose `scope` overlaps this one's (or keeps every folder), a `trace resume` request outside a block, or an older install's line (taken over only with `-migrate`) stop it. If the second write fails, the config it just wrote is removed again while it is still what it wrote.
+- The name the agents call you is asked and saved as for Claude Code (`-user`, `TRACE_USER`); writing it into an existing config keeps its other keys. `-folder` is refused: Codex installs for the folder it runs in. Before the first import it prints your name and where to open your sessions.
+- Everything is checked before the first write: the other mode already installed for this home, another home's `AGENTS.md` block, another memory's hooks whose `scope` overlaps this one's (or keeps every folder), a `trace resume` request outside a block, or an older install's line (taken over only with `-migrate`) stop it. If the second write fails, `config.json` is put back as it was (removed again if it wrote it) while it is still what it wrote.
 
 Status of hooks mode, on Windows: under Codex 0.169.0 (app server and `codex exec`, with a local test model server and throwaway homes), the hooks stay untrusted and do not run until trusted; once trusted, SessionStart and Stop run on a new session and on a resumed one after a restart, and the block reaches the request Codex sends to the model. The commands also ran through cmd and PowerShell 5.1 with paths holding spaces, an apostrophe and ñ. The other events (Interrupt, SessionEnd, SubagentStart, PostToolUse, UserPromptSubmit, SessionStart after clear and compact) are built on payloads captured from Codex 0.169.0 and on its source, and tested against the output Codex accepts; they then ran under Codex 0.169.0 with TRACE as the hook, in a throwaway profile with a local test model, and every event completed. In real use (Windows, Codex 0.169.0 engine behind a 0.167.2 TUI, a real model), a phrase sent in one session was stored at Stop and, after `/clear`, the new session's model gave it back with no search and no tool call. Reported checked by the author on Windows (2026-11-14): Ctrl-C and /quit in the TUI, shell and patch tool calls, other Codex versions and PowerShell 7. Not checked yet: macOS and Linux, and a compaction with a real model.
 
@@ -247,7 +251,7 @@ A Codex thread reads `hooks.json` when it starts, so hooks installed while a ses
 ### Uninstall
 
 ```sh
-trace uninstall -host claude-code   # removes this home's hooks, and only those
+trace uninstall -host claude-code   # removes this home's hooks, and only those (-folder <dir>: from that folder's settings)
 trace uninstall -host codex -mode hooks|agents       # removes this home's hooks from hooks.json and its block from AGENTS.md in the current folder
 ```
 
@@ -365,7 +369,7 @@ TRACE's home is `-home`, else `$TRACE_HOME`, else `~/.trace`. Settings are read 
 | `data` | folder for `trace.db` and `raw/` | the home |
 | `scope` | a folder, or a list of folders: only sessions that ran in one of them (for Claude Code, its transcript folder name; for Codex, the folder a thread ran in). Matched as a part of the path, without case, with every character other than a letter or digit read as `-`, so a full path, a folder name or `example.com` all work | every project |
 | `claude` | `false`: never read Claude Code transcripts or `~/.claude/history.jsonl` (a Codex-only memory) | `true` |
-| `user` | the person's name in the text the agent reads | "the user" |
+| `user` | the person's name in the text the agent reads; install asks for it when it is missing, and `install -user "<name>"` changes it | "the user" |
 | `roles` | named folders (see below) | every folder is its own project |
 | `relay_tools` | tool-name prefixes whose results are another agent's words | none |
 | `anchors` | extra tags, `name: regexp`, beside paths and URLs (for example ticket ids) | none |

@@ -7,7 +7,8 @@
 //
 //	trace install -host claude-code   add hooks that run this home to Claude Code's user settings, then import
 //	                                  (uninstall removes them; -migrate takes over hooks that name no home;
-//	                                  -folder <dir>: that folder's .claude/settings.local.json instead)
+//	                                  -folder <dir>: that folder's .claude/settings.local.json instead, and its scope;
+//	                                  -user <name>: the name the agents call you, asked when none is saved)
 //	trace install -host codex   a Codex-only memory for the current folder: config.json and an AGENTS.md line
 //	-home <folder>          on any command: the TRACE home to use (default $TRACE_HOME, else ~/.trace)
 //	trace import            read new bytes of every transcript in scope; safe to run any time
@@ -71,9 +72,9 @@ func main() {
 // opts are one command's settings: its flags, with what config.json and the defaults fill in for the flags not given.
 type opts struct {
 	cmd, home, dbPath, projects, history, codexDir, host, notID, archive, scope, trigger, who, since, until, mode string
-	text, at, zone, level, under, kind, points, quote, replaces, about, evidence, folder                          string
+	text, at, zone, level, under, kind, points, quote, replaces, about, evidence, folder, user                    string
 	n                                                                                                             int
-	all, migrate, stop, self, decision, machine                                                                   bool
+	all, migrate, stop, self, decision, machine, allProjects                                                      bool
 	after, needs, then                                                                                            listFlag
 	given                                                                                                         map[string]bool
 	args                                                                                                          []string
@@ -170,6 +171,8 @@ func (o *opts) flagSet(onErr flag.ErrorHandling) *flag.FlagSet {
 	fs.BoolVar(&o.decision, "decision", false, "rule add: a decision about the work, not a rule of how to work (SPEC D1)")
 	fs.StringVar(&o.replaces, "replaces", "", "rule add, lesson add: the record this one replaces (SPEC D2, L2)")
 	fs.StringVar(&o.about, "about", "", "rule add, lesson add: a regexp of the files or commands the record is about; it comes back before such a tool call (SPEC D11, L5)")
+	fs.StringVar(&o.user, "user", "", "install: the name the agents call the person, saved as config.json's \"user\"; asked at the terminal when config.json has none (SPEC U1, U4)")
+	fs.BoolVar(&o.allProjects, "all-projects", false, "install -host claude-code: with no -folder and no scope, keep every conversation on this machine without asking (SPEC U5)")
 	fs.BoolVar(&o.migrate, "migrate", false, "install, uninstall: take over TRACE hooks that name no home (installed before -home existed)")
 	fs.String("repo", "", "ignored: kept so hooks written for an older TRACE still run (SPEC G5)")
 	return fs
@@ -304,6 +307,9 @@ func cmdInstall(o opts) error {
 		return fmt.Errorf("%s needs -host claude-code or -host codex; nothing done", o.cmd)
 	}
 	if o.host == "codex" {
+		if o.folder != "" {
+			return fmt.Errorf("-folder is for -host claude-code; Codex installs for the folder it runs in, so run %s from the project folder; nothing done", o.cmd)
+		}
 		return o.installCodex()
 	}
 	return o.installClaude()
@@ -322,17 +328,20 @@ func (o opts) installClaude() error {
 	if err != nil {
 		return err
 	}
-	if o.cmd == "install" && !claudeOn(cfg) {
+	if o.folder != "" {
+		o.folder = filepath.Clean(o.folder) // with a trailing separator the project would be outside its own scope (SPEC U6)
+	}
+	if o.cmd != "install" {
+		return install(settingsFor(o.folder), "", o.home, nil, o.migrate, os.Stdout) // no name, no folder check (SPEC U10)
+	}
+	if !claudeOn(cfg) {
 		fmt.Println("note: this home's config.json says claude: false, so Claude Code will see this memory but its own sessions are not imported")
 	}
-	path, err := settingsFor(o.folder)
+	in, err := o.checkClaude(exe)
 	if err != nil {
 		return err
 	}
-	if err := install(path, exe, o.home, optionalHooks(cfg), o.migrate, os.Stdout); err != nil || o.cmd != "install" {
-		return err
-	}
-	return o.firstImport(o.projects, o.history, o.scope)
+	return in.write()
 }
 
 func (o opts) installCodex() error {
@@ -344,7 +353,11 @@ func (o opts) installCodex() error {
 	if err != nil {
 		return err
 	}
-	if err := installCodex(o.home, cwd, o.codexDir, o.mode, exe, o.migrate, os.Stdout); err != nil {
+	user, err := o.name() // before any check that writes (SPEC U11)
+	if err != nil {
+		return err
+	}
+	if err := installCodex(o.home, cwd, o.codexDir, o.mode, exe, user, o.migrate, os.Stdout); err != nil {
 		return err
 	}
 	// The scope config.json holds now: the one installCodex just wrote, or the one already there (SPEC I2).
@@ -352,6 +365,9 @@ func (o opts) installCodex() error {
 	if err != nil {
 		return err
 	}
+	where := map[string]string{"agents": "open your Codex sessions in " + cwd + ": its AGENTS.md asks them to run trace resume",
+		"hooks": "the hooks run in every Codex session once you trust them, and this memory keeps those that run in " + string(c.Scope)}[o.mode]
+	startHint(os.Stdout, cfg.User, user, where)
 	return o.firstImport("", "", string(c.Scope))
 }
 
