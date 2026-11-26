@@ -503,12 +503,14 @@ func TestCodexInstallName(t *testing.T) {
 // SPEC U12: the one-line installers pass TRACE_USER as -user and, without it, let trace ask at the terminal.
 func TestInstallScriptsPassTheName(t *testing.T) {
 	sh, ps := imRead(t, "install.sh"), imRead(t, "install.ps1")
-	for _, want := range []string{`-user "$TRACE_USER"`, "/dev/tty"} {
+	for _, want := range []string{`-user "$TRACE_USER"`, "/dev/tty", `[ "${TRACE_ALL_PROJECTS:-}" = 1 ]`, "-all-projects"} {
 		if !strings.Contains(sh, want) {
 			t.Errorf("install.sh lacks %s", want)
 		}
 	}
-	if !strings.Contains(ps, `'-user', $env:TRACE_USER`) {
-		t.Error("install.ps1 does not pass TRACE_USER as -user")
+	for _, want := range []string{`'-user', $env:TRACE_USER`, `$env:TRACE_ALL_PROJECTS -eq '1'`, "'-all-projects'"} {
+		if !strings.Contains(ps, want) {
+			t.Errorf("install.ps1 lacks %s", want)
+		}
 	}
 }

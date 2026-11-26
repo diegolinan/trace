@@ -80,6 +80,7 @@ Options, set before the command on both systems:
 | `TRACE_BIN_DIR` | the folder for the binary | `~/.local/bin`; on Windows `%LOCALAPPDATA%\trace` |
 | `TRACE_HOME` | the memory's folder: `config.json`, `trace.db`, the raw copies | `~/.trace` |
 | `TRACE_USER` | the name the agents call you, saved as `user` in `config.json` (passed as `-user`); it replaces a name saved before | asked at the terminal when none is saved |
+| `TRACE_ALL_PROJECTS=1` | your yes, given beforehand, for a memory of every project (passed as `-all-projects`); for an install with no terminal, such as an agent or CI | asked at the terminal |
 | `TRACE_NO_PATH=1` | Windows: leave your user PATH alone (otherwise the binary's folder is added to it) | off |
 | `TRACE_UPDATE=1` | replace an existing binary that differs from the release | off |
 

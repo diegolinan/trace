@@ -44,19 +44,23 @@ jobs:
         shell: bash
         run: |
           export HOME="$RUNNER_TEMP/home" && mkdir -p "$HOME"
-          set -o pipefail
-          {
-            set -ex
-            TRACE_HOST=claude-code sh install.sh
-            grep -q '"hook"' "$HOME/.claude/settings.json"
-            "$HOME/.local/bin/trace" stats >/dev/null
-            "$HOME/.local/bin/trace" uninstall -host claude-code
-          } 2>&1 | tee smoke.out || { tail -15 smoke.out | sed 's/^/::error::/'; exit 1; }
+          export TRACE_USER='CI smoke' TRACE_ALL_PROJECTS=1
+          # The steps run in their own bash -e: a group on the left of || runs with -e switched off, which hid
+          # every failure here until 2026-11-26.
+          cat > smoke.sh <<'EOF'
+          TRACE_HOST=claude-code sh install.sh
+          grep -q '"hook"' "$HOME/.claude/settings.json"
+          "$HOME/.local/bin/trace" stats >/dev/null
+          "$HOME/.local/bin/trace" uninstall -host claude-code
+          EOF
+          bash -ex smoke.sh > smoke.out 2>&1 || { cat smoke.out; tail -15 smoke.out | sed 's/^/::error::/'; exit 1; }
+          cat smoke.out
       - if: runner.os == 'Windows'
         shell: powershell
         run: |
           $env:USERPROFILE = Join-Path $env:RUNNER_TEMP 'home'; New-Item -ItemType Directory -Force $env:USERPROFILE | Out-Null
           $env:TRACE_BIN_DIR = Join-Path $env:RUNNER_TEMP 'bin'; $env:TRACE_NO_PATH = '1'
+          $env:TRACE_USER = 'CI smoke'; $env:TRACE_ALL_PROJECTS = '1'
           $env:TRACE_HOST = 'claude-code'; ./install.ps1
           if (-not (Select-String -Quiet '"hook"' (Join-Path $env:USERPROFILE '.claude\settings.json'))) { throw 'hooks missing' }
           & (Join-Path $env:TRACE_BIN_DIR 'trace.exe') stats | Out-Null

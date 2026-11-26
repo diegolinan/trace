@@ -86,8 +86,11 @@ fi
 # only for what it needs: the name when none is stored and TRACE_USER is unset, a yes for a memory of every project.
 tty=/dev/null
 if (: </dev/tty) 2>/dev/null; then tty=/dev/tty; fi
-# shellcheck disable=SC2086 # mode_flag is two words or none, both from the fixed list above
-if ! "$exe" install -host "$TRACE_HOST" $mode_flag ${TRACE_USER:+-user "$TRACE_USER"} <"$tty"; then
+# TRACE_ALL_PROJECTS=1 is the yes for a memory of every project given beforehand, for an install with no terminal.
+all_flag=
+if [ "${TRACE_ALL_PROJECTS:-}" = 1 ]; then all_flag=-all-projects; fi
+# shellcheck disable=SC2086 # mode_flag is two words or none, all_flag one word or none, both from fixed values above
+if ! "$exe" install -host "$TRACE_HOST" $mode_flag $all_flag ${TRACE_USER:+-user "$TRACE_USER"} <"$tty"; then
   echo "trace: the binary is installed at $exe, but the $TRACE_HOST integration did not complete; see the messages above" >&2
   [ -n "$previous" ] && echo "trace: the build it replaced is at $previous; copy it over $exe to go back" >&2
   exit 1

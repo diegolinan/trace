@@ -207,7 +207,10 @@ the project folder; nothing ran, and nothing said so.
 - **U12. The one-line installers can answer.** `TRACE_USER` is passed to install as `-user`. Without it, install.sh
   gives `trace install` the terminal (`/dev/tty`, since its own stdin is the downloaded script) when there is one, so
   trace asks for the name and the yes itself, only when it needs them; install.ps1 runs it in the console it was
-  started from. Test: `TestInstallScriptsPassTheName`.
+  started from. `TRACE_ALL_PROJECTS=1` is passed as `-all-projects`, the yes for a memory of every project, so an
+  install with no terminal (an agent, CI) can complete when the person agreed beforehand; it is passed only when it is
+  exactly `1`. Found on 2026-11-26: CI's install smoke had no way to say yes and failed on every OS (the Linux and
+  macOS runs hid it: the smoke's steps ran with `-e` switched off). Test: `TestInstallScriptsPassTheName`.
 - **Pending (not built in v0.3.56):**
   - A scope admits sibling folders (`D:\code\api` also keeps `api2`, `api-old`): v0.3.57 filters Claude Code
     transcripts by the folder recorded inside them (D3).

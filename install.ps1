@@ -23,6 +23,8 @@ if ($traceHost -eq 'codex') {
 }
 # Without TRACE_USER, trace asks in this console when the memory has no name yet.
 if ($env:TRACE_USER) { $integration += @('-user', $env:TRACE_USER) }
+# TRACE_ALL_PROJECTS=1 is the yes for a memory of every project given beforehand, for an install with no console.
+if ($env:TRACE_ALL_PROJECTS -eq '1') { $integration += @('-all-projects') }
 if ($env:TRACE_UPDATE -and $env:TRACE_UPDATE -ne '1') {
     throw "TRACE_UPDATE is '$($env:TRACE_UPDATE)'; it is '1' to replace an existing trace.exe, or unset; nothing downloaded"
 }

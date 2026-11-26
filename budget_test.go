@@ -144,7 +144,9 @@ func TestStartBlockNamesTaskHelp(t *testing.T) {
 	if err := taskSection(rzDB(t), &b, "Ana"); err != nil {
 		t.Fatal(err)
 	}
-	s := b.String()
+	// The commands name this test binary's path, whose length depends on the machine (CI's temp paths are long),
+	// so the size is measured with the path written as "trace".
+	s := strings.ReplaceAll(b.String(), shellPath(mustExe(t)), "trace")
 	for _, want := range []string{"task add", "-self", "Most conversations put nothing on the board", "Close a task only after asking Ana", "task help"} {
 		if !strings.Contains(s, want) {
 			t.Errorf("the block lacks %q:\n%s", want, s)
