@@ -59,10 +59,27 @@ func TestResumeExplainsProgramSessions(t *testing.T) {
 		db.Exec(`insert into event(session_id, seq, ts, speaker, kind, text) values (?, 1, ?, 'user', 'prompt', 'Remember this')`, id, now)
 		db.Exec(`insert into event(session_id, seq, ts, speaker, kind, text) values (?, 2, ?, 'assistant', 'reply', 'OK')`, id, now)
 	}
+	// A row from before I18 with no folder keeps the old reason, which must not leak into the sentence.
+	other := filepath.Join(root, "other")
+	os.MkdirAll(other, 0o755)
+	for _, r := range [][2]string{{"p-old", work}, {"o-old", other}} {
+		db.Exec(`insert into session(id, host, role, started_at, ended_at, excluded) values (?, 'claude-code', ?, ?, ?, 'probe or test folder: x')`, r[0], projectRole(r[1]), now, now)
+	}
 	db.Close()
-	out, errOut, code := runTrace(t, root, "", map[string]string{"_DIR": work}, "resume", "-codex=")
-	if code != 0 || !strings.Contains(out, "2 sessions here are stored but kept out of this block") || !strings.Contains(out, "trace search -all") || strings.Contains(out, "-not x") {
+	keptLine := func(out, n string) string {
+		_, line, _ := strings.Cut(out, n+" sessions here are stored but kept out of this block")
+		line, _, _ = strings.Cut(line, "\n")
+		return line
+	}
+	out, errOut, code := runTrace(t, root, "", map[string]string{"_DIR": work, "TRACE_TEST_TEMP_ROOT": root}, "resume", "-codex=")
+	line := keptLine(out, "3")
+	if code != 0 || !strings.Contains(line, "inside the system temp folder "+root) || !strings.Contains(line, `keep "`+work+`"`) || !strings.Contains(line, "trace search -all") || strings.Contains(out, "-not x") || strings.Contains(out, "probe or test") {
 		t.Errorf("exit %d\n%s%s", code, out, errOut)
+	}
+	// A folder outside every temp root whose only kept-out session has no folder gets no keep to run.
+	out, errOut, code = runTrace(t, root, "", map[string]string{"_DIR": other}, "resume", "-codex=")
+	if line = keptLine(out, "1"); code != 0 || !strings.Contains(line, "inside the system temp folder, which") || strings.Contains(line, "keep") || strings.Contains(out, "probe or test") {
+		t.Errorf("outside the temp roots: exit %d\n%s%s", code, out, errOut)
 	}
 }
 

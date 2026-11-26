@@ -24,6 +24,8 @@
 //	trace task add -text "<what>" [-at "YYYY-MM-DD HH:MM" [-zone UTC-3]] [-self] | done <id> | drop <id> | told <id> | list   the user's tasks
 //	trace lesson add -text "<lesson>" -evidence "<words of a tool result>" [-machine] [-about <regexp>] | drop <id> | list [-all]   what agents learned by testing
 //	trace alarm [-stop]     fires tasks at their time; started by the start hook and task add -at (-stop: stop it)
+//	trace keep <folder>     recall the sessions of a project inside the system temp folder (config.json "keep")
+//	trace check-ignore -v <folder>   whether sessions there are kept out of recall, and why
 //	trace version           the installed version (also -version, --version)
 package main
 
@@ -40,7 +42,7 @@ import (
 
 func main() {
 	if len(os.Args) < 2 {
-		fmt.Fprintln(os.Stderr, "usage: trace install -host claude-code|codex | uninstall -host ... | import | restore | hook | resume | search <words> | show <session>#<seq> | rules | stats | task add|done|drop|told|list | rule add|drop|list | lesson add|drop|list | alarm [-stop] | version")
+		fmt.Fprintln(os.Stderr, "usage: trace install -host claude-code|codex | uninstall -host ... | import | restore | hook | resume | search <words> | show <session>#<seq> | rules | stats | task add|done|drop|told|list | rule add|drop|list | lesson add|drop|list | alarm [-stop] | keep <folder> | check-ignore -v <folder> | version")
 		os.Exit(2)
 	}
 	cmd := os.Args[1]
@@ -74,7 +76,7 @@ type opts struct {
 	cmd, home, dbPath, projects, history, codexDir, host, notID, archive, scope, trigger, who, since, until, mode string
 	text, at, zone, level, under, kind, points, quote, replaces, about, evidence, folder, user                    string
 	n                                                                                                             int
-	all, migrate, stop, self, decision, machine, allProjects                                                      bool
+	all, migrate, stop, self, decision, machine, allProjects, verbose                                             bool
 	after, needs, then                                                                                            listFlag
 	given                                                                                                         map[string]bool
 	args                                                                                                          []string
@@ -174,6 +176,7 @@ func (o *opts) flagSet(onErr flag.ErrorHandling) *flag.FlagSet {
 	fs.StringVar(&o.user, "user", "", "install: the name the agents call the person, saved as config.json's \"user\"; asked at the terminal when config.json has none (SPEC U1, U4)")
 	fs.BoolVar(&o.allProjects, "all-projects", false, "install -host claude-code: with no -folder and no scope, keep every conversation on this machine without asking (SPEC U5)")
 	fs.BoolVar(&o.migrate, "migrate", false, "install, uninstall: take over TRACE hooks that name no home (installed before -home existed)")
+	fs.BoolVar(&o.verbose, "v", false, "check-ignore: say why (git's form; the answer always says why, SPEC I20)")
 	fs.String("repo", "", "ignored: kept so hooks written for an older TRACE still run (SPEC G5)")
 	return fs
 }
@@ -236,19 +239,21 @@ func (o opts) importFn(trigger string) func(*sql.DB) error {
 
 // commands are every command but hook, which fails open and is run apart.
 var commands = map[string]func(opts) error{
-	"install":   cmdInstall,
-	"uninstall": cmdInstall,
-	"resume":    cmdResume,
-	"import":    cmdImport,
-	"restore":   cmdRestore,
-	"search":    cmdSearch,
-	"show":      cmdShow,
-	"stats":     cmdStats,
-	"rules":     cmdRules,
-	"task":      cmdTask,
-	"rule":      cmdRecords,
-	"lesson":    cmdRecords,
-	"alarm":     cmdAlarm,
+	"install":      cmdInstall,
+	"uninstall":    cmdInstall,
+	"resume":       cmdResume,
+	"import":       cmdImport,
+	"restore":      cmdRestore,
+	"search":       cmdSearch,
+	"show":         cmdShow,
+	"stats":        cmdStats,
+	"rules":        cmdRules,
+	"task":         cmdTask,
+	"rule":         cmdRecords,
+	"lesson":       cmdRecords,
+	"alarm":        cmdAlarm,
+	"keep":         cmdKeep,
+	"check-ignore": cmdCheckIgnore,
 }
 
 // runHook answers a host hook. Fail open: a hook error must never block or fail the host's turn.
@@ -408,7 +413,7 @@ func cmdResume(o opts) error {
 		fmt.Printf("No earlier %s session in this folder.\n", hostName(o.host))
 		explainEmptyResume(db, o, role, skip, cwd)
 	}
-	fmt.Print(buf.String())
+	fmt.Print(buf.String() + keepHint(cwd)) // apart from the block, which reads as "no earlier session" when empty
 	return nil
 }
 
@@ -425,8 +430,17 @@ func explainEmptyResume(db *sql.DB, o opts, role, skip, cwd string) {
 	var kept int
 	db.QueryRow("select count(*) from session where host = ? and role = ? and excluded is not null", o.host, role).Scan(&kept)
 	if kept > 0 {
-		fmt.Printf("%d sessions here are stored but kept out of this block: they ran in a temporary folder (like ...\\Temp\\... or /tmp/...), which TRACE treats as scratch. Try TRACE in a real project folder; `trace search -all <words>` finds what is in these.\n", kept)
+		fmt.Printf("%d sessions here are stored but kept out of this block: %s; `trace search -all <words>` finds what is in these.\n", kept, keptOutWhy(cwd))
 	}
+}
+
+// keptOutWhy is why S6's sessions are kept out: this folder's temp root and the way out when it is excluded itself;
+// else only that they ran inside the system temp folder (other folders of the role, or rows with no folder).
+func keptOutWhy(cwd string) string {
+	if root := tempRootOf(cwd); root != "" {
+		return fmt.Sprintf("they ran inside the system temp folder %s, which other sessions do not recall. If this folder is a project, run %s", root, keepCmd(cwd))
+	}
+	return "they ran inside the system temp folder, which other sessions do not recall"
 }
 
 // cmdImport waits for a running import: the hook that fired last must still read the newest bytes.
@@ -496,7 +510,7 @@ func cmdRules(o opts) error {
 	cwd, _ := os.Getwd()
 	db, _ := openReadOnly(o.dbPath)
 	transcript := folderTranscript(db, cwd)
-	text, note := sessionCard(db, cwd, transcript, roleFor(cwd, projectRole(cwd)), "claude-code") // a Codex card needs a session's rollout
+	text, note := sessionCard(db, cwd, transcript, roleFor(cwd, projectRole(cwd)), "claude-code", reinjectBudget()) // a Codex card needs a session's rollout
 	for _, s := range claudeSources(nil, transcript) {
 		fmt.Fprintf(os.Stderr, "%7d  %s\n", len(s.text), s.label)
 	}
@@ -624,7 +638,7 @@ func runImport(db *sql.DB, projects, history, codex, archive, scope, trigger str
 	if err := activeTime(db, im.touched); err != nil {
 		errs = append(errs, err.Error())
 	}
-	if err := markNotTypedByUser(db); err != nil {
+	if err := errors.Join(markNotTypedByUser(db), markExcluded(db)); err != nil {
 		errs = append(errs, err.Error())
 	}
 	msg := strings.Join(errs, "\n")

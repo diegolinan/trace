@@ -194,7 +194,7 @@ func dueCard(in hookInput, role, host string, store *lazyStore) string {
 	if d == nil {
 		return ""
 	}
-	text, _ := sessionCard(d, in.Cwd, in.Transcript, role, host)
+	text, _ := sessionCard(d, in.Cwd, in.Transcript, role, host, reinjectBudget())
 	out, _, err := reinjection(d, in.SessionID, ctx, text, reinjectFactor(), time.Now())
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "trace: re-injection:", err)

@@ -179,9 +179,17 @@ func card(srcs []source, rules string, budget int) (text, note string) {
 		body = clip(body, budget)
 		note = strings.TrimPrefix(note+"; the card was cut at the budget", "; ")
 	}
-	return "## Rules in force (re-injected by trace as the session grows; the files and the user's words are the source)\n\n" + body +
-		fmt.Sprintf("\nEverything said before: %s. Search before saying you cannot confirm something; if nothing comes up, search again in the other language and with synonyms.\n", traceCmd("search", " <words>")), note
+	return cardHead + body + cardFoot(), note
 }
+
+const cardHead = "## Rules in force (re-injected by trace as the session grows; the files and the user's words are the source)\n\n"
+
+func cardFoot() string {
+	return fmt.Sprintf("\nEverything said before: %s. Search before saying you cannot confirm something; if nothing comes up, search again in the other language and with synonyms.\n", traceCmd("search", " <words>"))
+}
+
+// cardFrame is the most a card adds to its budget: its head, its foot and the mark of a cut body.
+func cardFrame() int { return len(cardHead) + len(cardFoot()) + len("…") }
 
 // cardFiles is the card's part from the instruction files: each file whole when all of them fit the budget, else only
 // its marked blocks, with a note that says so and names the files that have none.
@@ -444,8 +452,8 @@ func newLines(old, cur string) string {
 }
 
 // sessionCard builds the card for a session of host in cwd (transcript is its transcript or rollout), with the user's
-// rules from this host's sessions in the store when it is readable.
-func sessionCard(db *sql.DB, cwd, transcript, role, host string) (string, string) {
+// rules from this host's sessions in the store when it is readable, in at most budget characters of body.
+func sessionCard(db *sql.DB, cwd, transcript, role, host string, budget int) (string, string) {
 	var rules strings.Builder
 	if db != nil {
 		if recorded, _, _ := ruleSection(db, &rules, userName(), role, cwd); !recorded {
@@ -453,9 +461,9 @@ func sessionCard(db *sql.DB, cwd, transcript, role, host string) (string, string
 		}
 	}
 	if host == "codex" {
-		return card(codexSources(db, transcript), rules.String(), reinjectBudget())
+		return card(codexSources(db, transcript), rules.String(), budget)
 	}
-	return card(claudeSources(db, transcript), rules.String(), reinjectBudget())
+	return card(claudeSources(db, transcript), rules.String(), budget)
 }
 
 func reinjectFactor() float64 { f, _ := cfg.Reinject.limits(); return f }

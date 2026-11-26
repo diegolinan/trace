@@ -18,7 +18,7 @@ func settingsFor(folder string) string {
 }
 
 // folderFits says why install refuses -folder: not an existing absolute folder, no project folder (a volume root, the
-// user's home folder, the memory's home), or outside the scope (SPEC H1, U7). No folder fits.
+// user's home folder, the memory's home, the system temp folder), or outside the scope (SPEC H1, U7). No folder fits.
 func folderFits(folder, home string) error {
 	if folder == "" {
 		return nil
@@ -26,13 +26,19 @@ func folderFits(folder, home string) error {
 	if fi, err := os.Stat(folder); !filepath.IsAbs(folder) || err != nil || !fi.IsDir() {
 		return fmt.Errorf("-folder %q must be an existing absolute folder; nothing done", folder)
 	}
-	if user, _ := os.UserHomeDir(); filepath.Dir(folder) == folder || sameHome(folder, user) || sameHome(folder, home) {
-		return fmt.Errorf("-folder %s is not a project folder (a volume root, your home folder or this memory's home): TRACE would keep every session under it, or run in no project; nothing done", folder)
+	if notProject(folder, home) {
+		return fmt.Errorf("-folder %s is not a project folder (a volume root, your home folder, this memory's home or the system temp folder): TRACE would keep every session under it, or run in no project; nothing done", folder)
 	}
 	if !inScope(folder, string(cfg.Scope)) {
 		return fmt.Errorf("-folder %s is outside this home's scope (%s), so TRACE would do nothing there; nothing done", folder, cfg.Scope)
 	}
 	return nil
+}
+
+// notProject says folder is a volume root, the user's home folder, the memory's home or a system temp root (U7).
+func notProject(folder, home string) bool {
+	user, _ := os.UserHomeDir()
+	return filepath.Dir(folder) == folder || sameHome(folder, user) || sameHome(folder, home) || isTempRoot(folder)
 }
 
 // runsHome says whether the settings file at path runs hooks of home.

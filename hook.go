@@ -157,27 +157,28 @@ func hookTrigger(in hookInput) string {
 	return trigger
 }
 
-// hookRole is the calling session's role, and whether this memory speaks to it (a role of its own, not excluded).
+// hookRole is the calling session's role, and whether this memory speaks to it (a role of its own). An excluded
+// folder (I4) is spoken to all the same: exclusion only keeps it out of what other sessions recall (SPEC I17).
 // A Codex payload names no Claude transcript folder, so the fallback is the folder itself, the role the importer
 // gives a Codex thread (projectRole of its cwd).
 func hookRole(in hookInput, host string) (role string, mine bool) {
-	_, role, _, excluded := sessionFor(in.Transcript)
+	_, role, _, _ = sessionFor(in.Transcript)
 	if host == "codex" {
-		role, excluded = roleFor(in.Cwd, projectRole(in.Cwd)), ""
+		role = roleFor(in.Cwd, projectRole(in.Cwd))
 	} else if in.Cwd != "" {
 		role = roleFor(in.Cwd, role)
 	}
-	return role, ours(role) && excluded == ""
+	return role, ours(role)
 }
 
-// compactCard prints, after a compaction, the net that asks about rules not recorded (SPEC D7), then the rule card when
-// re-injection is on and the day is not withheld: the host reloads the instruction files then, but not the user's
-// rules from conversation.
+// compactCard prints, after a compaction, the net that asks about rules not recorded (SPEC D7), the open tasks with a
+// note (T27), then the rule card when re-injection is on and the day is not withheld: the host reloads the instruction
+// files then, but not the user's rules from conversation. The card's budget shrinks so the whole stays under hookLimit.
 func compactCard(in hookInput, dbPath, role, host string, w io.Writer) error {
 	db, _ := openReadOnly(dbPath)
-	text := compactNet(db, in.SessionID)
-	if cfg.Reinject != nil && !withheld(clockNow()) {
-		card, _ := sessionCard(db, in.Cwd, in.Transcript, role, host)
+	text := compactNet(db, in.SessionID) + compactNotes(db, in.Cwd)
+	if room := hookLimit - len(text) - cardFrame(); cfg.Reinject != nil && !withheld(clockNow()) && room > 0 {
+		card, _ := sessionCard(db, in.Cwd, in.Transcript, role, host, min(reinjectBudget(), room))
 		text += card
 	}
 	if db != nil {
@@ -225,7 +226,8 @@ func contextOut(w io.Writer, event, text string) error {
 // same role files and memory as their parent, so without it they take themselves for that agent.
 const helperLine = "You are a helper agent started by %[1]s, not %[1]s itself. The role files and memory you loaded describe %[1]s, not you. " +
 	"Do the task you were given and return the result. Do not commit, push, fast-forward main, write %[1]s's memory, record rules with trace rule add, or message %[2]s or other agents unless the task says so. " +
-	"Do not record lessons with trace lesson add either: report what you found out by testing to the agent that launched you."
+	"Do not record lessons with trace lesson add or task notes with trace task note either: report what you found out by testing, " +
+	"and where results live, to the agent that launched you."
 
 // compactSteer is PreCompact stdout, which Claude Code appends to its summary prompt under "Additional
 // Instructions:" (2.1.322 strings). It steers the summary only, never reaches the model afterwards, and the user
@@ -237,6 +239,7 @@ const compactSteer = `trace, for this summary:
 - State open work as facts (done, not done, decided), never as orders for the next step.
 - Give specific statements (the command, the flag, the path), not a list of topics.
 - Mark any claim of success that has no passing tool result as unverified.
+- Keep, for each piece of work, open or finished, exactly where its result or state lives (path, id, URL, system) and whether it is done.
 `
 
 // spawnImport starts a detached copy of trace that imports, and returns at once. Used for Stop, PreCompact and

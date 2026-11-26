@@ -161,6 +161,9 @@ func taskStart(db *sql.DB, args []string, w io.Writer) error {
 	if done := criteriaText(db, args[1]); done != "" {
 		fmt.Fprintf(w, "done when: %s\n", done)
 	}
+	if note := noteOf(db, id, wholeNotes); note != "" {
+		fmt.Fprintln(w, note)
+	}
 	if waiting != "" {
 		return exitCodeError{3, fmt.Errorf("task %d is not ready", id)}
 	}

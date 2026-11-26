@@ -39,8 +39,13 @@ func resumeBlock(db *sql.DB, sid, source, role, host, cwd string, w io.Writer) e
 // the empty block, which it reads as "no earlier session".
 // Claude Code's block is built again one step shorter while it is over its hook limit (SPEC B2, B3).
 func hookBlock(db *sql.DB, sid, source, role, host, cwd string, w io.Writer) error {
+	hint := keepHint(cwd) // in the tail, which no step cuts (SPEC S7)
 	if host != "claude-code" {
-		return startText(db, sid, source, role, host, cwd, true, fitNone, w, w)
+		if err := startText(db, sid, source, role, host, cwd, true, fitNone, w, w); err != nil {
+			return err
+		}
+		_, err := io.WriteString(w, hint)
+		return err
 	}
 	var body, tail strings.Builder
 	f := fitNone
@@ -50,6 +55,7 @@ func hookBlock(db *sql.DB, sid, source, role, host, cwd string, w io.Writer) err
 		if err := startText(db, sid, source, role, host, cwd, true, f, &body, &tail); err != nil {
 			return err
 		}
+		tail.WriteString(hint)
 		if body.Len()+tail.Len() <= hookLimit || f == fitLast {
 			break
 		}
@@ -156,7 +162,7 @@ func startText(db *sql.DB, sid, source, role, host, cwd string, first bool, f fi
 		return err
 	}
 	if s == nil {
-		return firstText(db, w, user, wrote, first, f)
+		return firstText(db, w, user, cwd, wrote, first, f)
 	}
 	writeHeader(db, w, *s, user, role, host)
 	b := blockWriter{db: db, w: w}
@@ -179,8 +185,8 @@ func startText(db *sql.DB, sid, source, role, host, cwd string, first bool, f fi
 	b.section("The last replies (verbatim, clipped, newest last)",
 		`select ts, 'reply', text from event where session_id = ? and speaker = 'assistant' and kind = 'reply' order by seq desc limit 4`,
 		c.replyClip, s.id)
-	if b.err == nil && !recorded { // the word-pattern section, until the store has its first record (SPEC D4)
-		b.err = refusals(db, w, user, host, role, cwd)
+	if !recorded { // the word-pattern section, until the store has its first record (SPEC D4)
+		b.then(func() error { return refusals(db, w, user, host, role, cwd) })
 	}
 	if !wrote {
 		writeInstructions(w, user)
@@ -190,9 +196,7 @@ func startText(db *sql.DB, sid, source, role, host, cwd string, first bool, f fi
 			`select e.ts, 'pin', e.text from anchor a join event e on e.id = a.event_id where a.type = 'pin' order by e.ts desc limit 5`,
 			300)
 	}
-	if b.err == nil {
-		b.err = fitTasks(db, w, tail, user, f)
-	}
+	b.then(func() error { return fitTasks(db, w, tail, user, cwd, f) })
 	if b.err != nil {
 		return b.err
 	}
@@ -202,14 +206,14 @@ func startText(db *sql.DB, sid, source, role, host, cwd string, first bool, f fi
 
 // firstText is what a block with no earlier session adds: nothing for trace resume; for the hook, how to record rules
 // (unless the rule section already said it) and how to use the board.
-func firstText(db *sql.DB, w io.Writer, user string, wrote, first bool, f fit) error {
+func firstText(db *sql.DB, w io.Writer, user, cwd string, wrote, first bool, f fit) error {
 	if !first {
 		return nil
 	}
 	if !wrote {
 		writeInstructions(w, user)
 	}
-	return fitTasks(db, w, w, user, f)
+	return fitTasks(db, w, w, user, cwd, f)
 }
 
 // shownSession is the session a start block shows.
@@ -279,6 +283,13 @@ type blockWriter struct {
 	db  *sql.DB
 	w   io.Writer
 	err error
+}
+
+// then runs write unless an earlier write failed, and keeps its error.
+func (b *blockWriter) then(write func() error) {
+	if b.err == nil {
+		b.err = write()
+	}
 }
 
 // section writes one titled list of (ts, label, text) rows, each text clipped to each bytes, newest last; an empty

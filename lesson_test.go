@@ -216,7 +216,7 @@ func TestLessonInBlock(t *testing.T) {
 	if r, l, w := strings.Index(got, "set as rules and decisions"), strings.Index(got, "What agents learned here"), strings.Index(got, "## Where"); r < 0 || l < r || w < l {
 		t.Errorf("rules at %d, lessons at %d, the session at %d:\n%s", r, l, w, got)
 	}
-	if card, _ := sessionCard(db, f, "", "r", "claude-code"); strings.Contains(card, "recent lesson") || strings.Contains(card, "learned") || !strings.Contains(card, "parches no") {
+	if card, _ := sessionCard(db, f, "", "r", "claude-code", reinjectBudget()); strings.Contains(card, "recent lesson") || strings.Contains(card, "learned") || !strings.Contains(card, "parches no") {
 		t.Errorf("lessons in the card:\n%s", card)
 	}
 }
@@ -298,7 +298,7 @@ func TestLessonInstruction(t *testing.T) {
 	ev := ruleEvent(t, db, "old", 1, "2026-11-10T08:01:00Z", "parches no, lo hablamos mil veces")
 	ruleRow(t, db, ev, "parches no, lo hablamos", false, "2026-11-10T08:02:00Z", "")
 	check("with records", rzBlock(t, db, f))
-	if card, _ := sessionCard(db, f, "", projectRole(f), "claude-code"); strings.Contains(card, say) || !strings.Contains(card, "rule add -quote") {
+	if card, _ := sessionCard(db, f, "", projectRole(f), "claude-code", reinjectBudget()); strings.Contains(card, say) || !strings.Contains(card, "rule add -quote") {
 		t.Errorf("card:\n%s", card)
 	}
 	var w strings.Builder

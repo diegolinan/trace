@@ -67,6 +67,12 @@ func count(t *testing.T, db *sql.DB, q string, args ...any) int {
 }
 
 func TestMain(m *testing.M) {
+	// t.TempDir() is inside the real system temp folder, so no test folder is a temp root (SPEC I4) unless a test sets
+	// tempRoots, or passes TRACE_TEST_TEMP_ROOT to the child process runTrace starts.
+	tempRoots = []string{filepath.Join(os.TempDir(), "trace-tests-no-temp-root")}
+	if r := os.Getenv("TRACE_TEST_TEMP_ROOT"); r != "" {
+		tempRoots = []string{r}
+	}
 	// task add -at and the start hook would start this binary as an alarm; tests that start one replace this.
 	spawnAlarm = func(string) error { return nil }
 	// No test opens a real session inbox or starts a real Codex; the deliverer tests replace these with fakes.
@@ -94,7 +100,7 @@ func TestMain(m *testing.M) {
 	for k, v := range map[string]string{"USERPROFILE": "user", "HOME": "user", "TRACE_HOME": "trace", "CLAUDE_CONFIG_DIR": "claude", "CODEX_HOME": "codex"} {
 		os.Setenv(k, filepath.Join(fence, v))
 	}
-	for _, k := range []string{"CLAUDE_CODE_SESSION_ID", "CLAUDE_CODE_MESSAGING_SOCKET", "CODEX_THREAD_ID", "CODEX_SANDBOX", "CLAUDECODE"} {
+	for _, k := range []string{"CLAUDE_CODE_SESSION_ID", "CLAUDE_CODE_MESSAGING_SOCKET", "CODEX_THREAD_ID", "CODEX_SANDBOX", "CLAUDECODE", "CLAUDE_CODE_ENTRYPOINT"} {
 		os.Unsetenv(k)
 	}
 	cfg = config{User: "Ana", RelayTools: []string{"mcp__relay"}, Roles: []roleRule{

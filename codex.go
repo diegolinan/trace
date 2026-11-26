@@ -33,9 +33,10 @@ func hostName(host string) string {
 }
 
 // resumeCall matches a tool call that runs trace resume (trace or trace.exe, quoted or not; the input is stored as
-// JSON, so a quote may come as \"), not a file named resume.go. taskAddCall matches one that runs trace task add, trace rule add or trace lesson add.
+// JSON, so a quote may come as \"), not a file named resume.go. taskAddCall matches one that runs trace task add, trace rule add, trace lesson add
+// or trace task note.
 var resumeCall = regexp.MustCompile(`(?i)trace(?:\.exe)?\\?["']?\s+resume\b`)
-var taskAddCall = regexp.MustCompile(`(?i)trace(?:\.exe)?\\?["']?\s+(?:task|rule|lesson)\s+add\b`)
+var taskAddCall = regexp.MustCompile(`(?i)trace(?:\.exe)?\\?["']?\s+(?:(?:task|rule|lesson)\s+add|task\s+note)\b`)
 
 // liveSession is the session asking for `trace resume`, so the block shows the one before it (SPEC S1): among the
 // sessions of this host and role written to in the last two minutes, the one whose last stored event is that call
@@ -438,7 +439,7 @@ func (im *importer) readCodex(tx *sql.Tx, r io.Reader, path string, meta codexMe
 	}
 	if _, err := tx.Exec(`insert or ignore into session(id, host, role, parent_id, cwd, branch_first, branch_last, version_first, started_at, ended_at, excluded)
 		values (?, 'codex', ?, nullif(?, ''), ?, ?, ?, ?, ?, ?, nullif(?, ''))`,
-		c.sid, role, parent, meta.Cwd, meta.Git.Branch, meta.Git.Branch, meta.CliVersion, meta.Timestamp, meta.Timestamp, excludedFor(folderName(meta.Cwd))); err != nil {
+		c.sid, role, parent, meta.Cwd, meta.Git.Branch, meta.Git.Branch, meta.CliVersion, meta.Timestamp, meta.Timestamp, excludedFor(meta.Cwd)); err != nil {
 		return from, c.bad, err // nothing read yet
 	}
 	tx.QueryRow("select coalesce(max(seq), 0) from event where session_id = ?", c.sid).Scan(&c.seq)

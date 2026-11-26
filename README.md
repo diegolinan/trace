@@ -89,7 +89,7 @@ The installer downloads into your system's temporary folder and deletes the down
 
 **4. Check that it works.** Two things make a test show nothing, so avoid them:
 
-- **Use a real project folder.** Sessions that ran in a temporary folder (`...\Temp\...` on Windows, `/tmp/...` on Linux, `/var/folders/...` on macOS) are stored but never shown in a start block: TRACE treats those folders as scratch. `trace resume` says so when it is the case.
+- **Use a real project folder, or keep it.** A session that started inside the system temp folder (the one `TEMP`/`TMPDIR` names, and `/tmp`, `/var/folders` and their `/private` forms) is stored but not shown to other sessions: not in their start block, not in `trace resume`, not in a default search (`-all` finds it), and never woken by a reminder. Everything that protects you still runs there: your checks, the reminders before a tool call, the hold for an untold task, the helper line and the session's own start block. If your project really lives there, run `trace keep "<folder>"` (or install with `-folder <folder>`, whose scope exempts it too); the start block and `trace resume` tell you so when it is the case, and `trace check-ignore -v "<folder>"` says whether a folder is excluded and why.
 - **The start block fits Claude Code's hook limit.** Claude Code swaps a hook's output over 10,000 characters for a short preview. When the block would be longer, TRACE shortens it step by step (pins first, rules last) and says so on its last line; `trace resume -host claude-code` prints it whole.
 - **Use a normal interactive session.** Sessions started by a program (`claude -p`, the SDKs, an MCP client) are stored too, but their prompts count as the program's, not yours: the next start block shows their replies but never quotes their prompts as your words.
 
@@ -142,7 +142,8 @@ TRACE takes a different approach:
 - **Hooks.**
   - Stop, PreCompact and SessionEnd: a detached import that returns at once.
   - SessionStart: a block that says where the last session in the same folder, or in a folder inside it, stopped (with roles configured, the last session of the same role). It opens with the rules and decisions the agent recorded (below), in your own words. Until the first one is recorded, it lists instead what code rules mark as a refusal or a standing rule in the last 14 days.
-  - PreCompact: also fixed text that tells Claude Code's summarizer to keep quotes, ids and open work.
+  - PreCompact: also fixed text that tells Claude Code's summarizer to keep quotes, ids, open work, and where each piece of work's result or state lives.
+  - SessionStart after a compaction (Claude Code and Codex): the question about rules not recorded, up to 3 open tasks with a note (below), and the rule card when it is on, all under 9,500 bytes. The card gets what room is left, so when the instruction files no longer fit it, only their marked blocks go in.
   - SubagentStart: tells helper agents that they are helpers, not the agent that started them.
   - PostToolUse, only when `checks` are configured: runs the project's checks after the tool calls they name, and shows a failure to the agent at once.
   - UserPromptSubmit, always: after 10 of your messages with nothing recorded, it gives the agent those messages and asks whether it missed a rule or decision. It shows nothing to you.
@@ -186,6 +187,12 @@ When the agent finds out by testing something about the tools, the machine or th
 When you ask the agent to remind you of something, or to note something for later, it adds a task with `trace task add`, tied to the message where you asked. A task can have a time: TRACE then fires it at that time, even with nobody typing, by writing a reminder into a live session (see `trace alarm` under [Commands](#commands)). Open tasks show in each start block, and a due one is named on your next prompt until you are told.
 
 The agent learns all this from the start block, which every session gets, the first one in a folder included. The start block also points the agent to `trace task help`, the full guide to keeping these tasks as a board: what each waits on, how to tell it is done, epics, stories and sprints. The agent does that on its own and talks to you about the work itself, never about ids or levels. You never have to run a task command yourself; `trace task board` opens the board as a page in your browser, and `trace task list` prints it.
+
+When a task produces an outcome, or the agent learns where its state lives, it notes it: `trace task note <id> "<what; where>"`. A note is free text that TRACE never reads or fetches: a file, an id in another system, a URL. The newest note is the task's note, and when the task closes it is its outcome; older notes are kept. Notes are redacted, clipped to 300 bytes, and a session writes at most 3 on one task.
+
+- **Where it shows:** quoted, with its age, as an agent's note: a pointer to check, not an instruction; what you say and the live state win. It shows whole in `trace task list`, `trace task start`, the alarm and the prompt reminder, and clipped to 150 bytes in the start block.
+- **After a compaction:** the host's summary may lose that a task already has a result. So the output after a compaction, in Claude Code and Codex, lists up to 3 open tasks with a note, newest note first.
+- **Scope:** the start block and the compaction output show a note only to sessions in the folder where the task was added, or a folder inside it.
 
 ## Install in detail
 
@@ -288,6 +295,11 @@ trace lesson add -text "<lesson>" -evidence "<words>"   record what the agent le
                                   session of this store; -about "<regexp>" and -replaces <id> as for rule add
 trace lesson drop <id>            a lesson that proved wrong or no longer holds: out of force
 trace lesson list                 the lessons in force, newest first, with scope and evidence; -all also those out of force
+trace keep <folder>               recall the sessions of a project inside the system temp folder: adds the absolute
+                                  folder to config.json "keep" (refuses a relative path, a volume root, the temp
+                                  folder itself); run it yourself, or tell the agent to
+trace check-ignore -v <folder>    whether sessions started there are kept out of recall, and why: the temp folder it is
+                                  inside, or the scope or keep entry that exempts it
 trace rules                       the rule card a session in this folder would get, and why
 trace stats                       counts, last runs, checks, rule cards, hook output that never reached the session,
                                   each alarm deliverer's last failure, and the context TRACE itself wrote to the agent in
@@ -307,6 +319,8 @@ trace task points <id> <n>        change an open story's points
 trace task help                   the full guide to the board the agent reads before it plans work on it
 trace task sizes                  the last 20 stories closed as done with points: points, kind, time from started (else added) to done
 trace task then <id> "<criterion>"  add a criterion of done to an open task later
+trace task note <id> "<what; where>"  note on a task, open or closed, what came out of it or where its state lives;
+                                  the newest note shows, older ones are kept; 3 per task and session
 trace task under <id> <parent|none>  move an open task under another open task one level up, or out of its parent
 trace task level <id> <level>     change an open task's level, keeping its parent one level up and its children one down
 trace task met <id> <n>           condition or criterion n of a task is met (a -needs, a -then, or an -after whose
@@ -377,6 +391,7 @@ TRACE's home is `-home`, else `$TRACE_HOME`, else `~/.trace`. Settings are read 
 | `checks` | rules a command can verify, run after matching tool calls (see below) | none |
 | `reinject` | turns on the rule card: `{}`, or `{"factor": 7, "budget": 8000}` (new context, in card sizes, before it comes again; most characters of the card) | off |
 | `not_typed_by_user` | periods when someone or something else typed in your terminal, so those prompts are not shown as yours: `[{"from": "2026-09-29", "to": "2026-10-08", "note": "a script drove the console"}]` (UTC dates, both included) | none |
+| `keep` | absolute folders inside the system temp folder whose sessions are recalled all the same (`trace keep` adds one); an absolute `scope` entry exempts its folder too | none |
 
 Prompts in a session that a program started (Claude Code's `claude -p`, the SDKs or an MCP client; Codex's `codex exec` or MCP) are always stored as the program's, never as yours. A Claude Code prompt you sent by accepting a suggestion the model wrote is kept as a suggestion: shown as one, never read as a rule you stated.
 

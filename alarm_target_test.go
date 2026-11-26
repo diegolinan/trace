@@ -105,6 +105,7 @@ func TestTaskAddSessionFromS1Rule(t *testing.T) {
 // to never qualify, even when it added the task or was used last.
 func TestAlarmSkipsProgramAndExcludedSessions(t *testing.T) {
 	got := map[string][]string{}
+	exRoots(t, atFolder("acme", "Temp"), atFolder("acme", "scratch"))
 	atPrograms(t, deliverer{name: "fa", live: atLive(
 		atSession("fa", "s-worker", atFolder("acme"), true, 500, got, nil),
 		atSession("fa", "s-scratch", atFolder("acme", "scratch"), false, 400, got, nil),

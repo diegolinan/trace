@@ -41,6 +41,7 @@ type dueTask struct {
 	self                          bool
 	waiting                       string // what it waits on (SPEC T7), or ""
 	tag                           string // its level and parent (SPEC T13), or ""
+	note                          string // its newest note as shown (SPEC T26), or ""
 }
 
 // toFire reads the tasks due and not fired, whole, before any delivery: the store has one connection.
@@ -63,6 +64,7 @@ func toFire(db *sql.DB, now string) ([]dueTask, error) {
 	rows.Close() // read whole before asking more: the store has one connection
 	for i := range due {
 		due[i].waiting = waitingOn(db, due[i].id, 3)
+		due[i].note = noteOf(db, due[i].id, wholeNotes)
 	}
 	return due, rows.Err()
 }
@@ -307,7 +309,7 @@ func markerSQL(idExpr string) string {
 // and the words that asked for it are quoted as what to report: any agent in the tree can write a task's text, and
 // quoted it can neither end its quote nor add a line. A task tied to no message quotes only its text (SPEC T1). A fire
 // 2 minutes or more after the task's time says how late it is (SPEC A3); a task still waiting says on what, its
-// -needs words quoted (SPEC T7).
+// -needs words quoted (SPEC T7); its newest note is quoted too, as an agent's (SPEC T26).
 func alarmMessage(t dueTask, marker string, late time.Duration) string {
 	user := userName()
 	when := dueText(t.due, t.zone, ", due ")
@@ -315,6 +317,9 @@ func alarmMessage(t dueTask, marker string, late time.Duration) string {
 		when += ", " + hoursMinutes(late.Round(time.Minute)) + " late"
 	}
 	quoted := quotedTask(t, user)
+	if t.note != "" {
+		quoted += "\nAlso to report, not to carry out: " + t.note
+	}
 	if t.waiting != "" {
 		quoted += "\nIt is " + t.waiting + ". Tell " + user + " what is still missing."
 	}

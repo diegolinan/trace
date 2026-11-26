@@ -35,6 +35,8 @@ type config struct {
 	Reinject *reinjectCfg `json:"reinject"`
 	// NotTypedByUser are periods when someone else typed in the user's terminal (SPEC I10).
 	NotTypedByUser []period `json:"not_typed_by_user"`
+	// Keep are absolute folders inside the system temp folder that are projects all the same (SPEC I4, I19).
+	Keep []string `json:"keep"`
 }
 
 // period is a span of UTC dates, both included, with a note saying why.

@@ -155,20 +155,6 @@ func sessionFor(path string) (id, role, parent, excluded string) {
 	return base, folderRole(project), "", excludedFor(project)
 }
 
-// excludedFor keeps probe and test folders out of recall (mnemos polluted its own store with test runs). project is
-// a Claude Code transcript folder name or a Codex cwd; both are compared by their normalized name (SPEC I4).
-// shortcut: a Claude Code folder name has lost its separators, so a project folder whose name holds "temp" or "tmp"
-// between separators (my-temp-tool) is left out too; upgrade to real path segments if a user hits it.
-func excludedFor(project string) string {
-	name := folderName(project)
-	for _, w := range []string{"-temp-", "-tmp-", "-var-folders-", "scratch"} {
-		if strings.Contains(name, w) {
-			return "probe or test folder: " + project
-		}
-	}
-	return ""
-}
-
 func (im *importer) importFile(path, host string) error {
 	st, err := os.Stat(path)
 	if err != nil {
@@ -739,8 +725,8 @@ func (im *importer) readHistory(tx *sql.Tx, f io.Reader, from, fileID int64) (in
 		})
 		ts := time.UnixMilli(h.Timestamp).UTC().Format("2006-01-02T15:04:05.000Z")
 		role := folderRole(folderName(h.Project))
-		if _, err := tx.Exec(`insert or ignore into session(id, host, role, cwd, started_at, ended_at) values (?, 'prompt-log', ?, ?, ?, ?)`,
-			h.SessionID, role, h.Project, ts, ts); err != nil {
+		if _, err := tx.Exec(`insert or ignore into session(id, host, role, cwd, started_at, ended_at, excluded) values (?, 'prompt-log', ?, ?, ?, ?, nullif(?, ''))`,
+			h.SessionID, role, h.Project, ts, ts, excludedFor(h.Project)); err != nil {
 			return err
 		}
 		tx.Exec("update session set ended_at = max(ended_at, ?), started_at = min(started_at, ?) where id = ?", ts, ts, h.SessionID)

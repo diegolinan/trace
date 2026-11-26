@@ -170,6 +170,15 @@ create table if not exists task_condition (
   met_event integer,
   primary key (task_id, n)
 );
+-- What came out of a task or where its state lives, as an agent noted it (SPEC T25): every note kept, the newest shown.
+create table if not exists task_note (
+  id integer primary key,
+  task_id integer not null,
+  text text not null,
+  session_id text,
+  added_at text not null
+);
+create index if not exists task_note_task on task_note(task_id, id);
 -- A rule or decision of the user, recorded by the agent (SPEC D): the message that set it, the quote shown from it,
 -- and, once out of force, when and what replaced it (none: dropped).
 create table if not exists rule (

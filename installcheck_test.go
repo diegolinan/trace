@@ -307,6 +307,16 @@ func TestInstallFolderRefusals(t *testing.T) {
 	if vol := filepath.VolumeName(root) + string(filepath.Separator); folderFits(vol, home) == nil || !strings.Contains(folderFits(vol, home).Error(), "not a project folder") {
 		t.Errorf("-folder %s: %v", vol, folderFits(vol, home))
 	}
+	// So is the system temp folder; a project inside it is not refused.
+	sysTemp := filepath.Join(root, "systemp")
+	os.MkdirAll(filepath.Join(sysTemp, "p"), 0o755)
+	exRoots(t, sysTemp)
+	if err := folderFits(sysTemp+string(filepath.Separator), home); err == nil || !strings.Contains(err.Error(), "not a project folder") {
+		t.Errorf("-folder %s: %v", sysTemp, err)
+	}
+	if err := folderFits(filepath.Join(sysTemp, "p"), home); err != nil {
+		t.Errorf("-folder inside the temp folder: %v", err)
+	}
 	for _, f := range []string{home, user} {
 		refused("not a project folder", "-folder", f)
 		if exists(filepath.Join(f, ".claude")) {

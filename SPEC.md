@@ -68,13 +68,21 @@ folder. TRACE behaves the same with it or without it.
   was told only "No earlier session". Test: `TestResumeSaysWhoWasLeftOut`.
 - **S6.** S4's hint to run again with `-not x` is given only when that run would show something. When resume shows
   nothing and gives no such hint while sessions of this host and folder are stored but kept out of recall (I4: they
-  ran in a temporary folder), it says how many, why, and that `trace search -all` finds them. A newcomer on
+  ran inside the system temp folder), it says how many, why, and that `trace search -all` finds them; when this
+  folder is excluded itself, it names its temp root and the way out (`trace keep` with this folder, I19), and never
+  repeats a reason stored before I18. A newcomer on
   2026-11-19 tried TRACE in `D:\Temp\...`, had two sessions stored, was told only "No earlier session", and `-not x`
   showed nothing. (A third newcomer test the same day, with `claude -p` sessions in a real folder, got the same bare
   "No earlier session" for another reason: those sessions had no folder stored, fixed by I15.) Test:
   `TestResumeExplainsProgramSessions`.
 - **S5.** The block's session line names the branch only when the host recorded one; a session outside a
   repository shows no "branch" at all, never "branch ,". Test: `TestResumeSaysWhoWasLeftOut` (its session has none).
+- **S7.** A session whose folder I4 excludes, in a memory whose scope is every project, and not started by a program
+  (Claude Code's `CLAUDE_CODE_ENTRYPOINT` `sdk-*` or `mcp`, I9), gets one line in its start block and in `trace
+  resume`: "<folder> is inside the system temp folder <root>, so other sessions do not recall it; if <user> says it
+  is a project, run `trace keep "<folder>"`." In Claude Code's block it is never cut (B2, B3) and counts inside the
+  9,500 bytes. A real project under `D:\Temp` had no way to learn why it got nothing. Test:
+  `TestStartBlockTellsTheWayOut`.
 
 ## R. Restore
 
@@ -100,13 +108,13 @@ replies that hold state and kept the user's noisiest lines) and its ladder able 
   oldest one often holds the state); (5) the rules and decisions without the end of the reply each answered; (6) the
   newest 2 lessons; (7) the user's words clipped to 200 characters and the replies to 150; (8) the newest 5 rules and
   3 decisions, with "and N more: trace rule list". The instructions on recording rules and lessons, the header, the
-  board instruction and the search line are never cut by a step. Every maximum counted at once (13 long rules, 5
+  board instruction, the search line and S7's line are never cut by a step. Every maximum counted at once (13 long rules, 5
   lessons, long words and replies, long tasks) is still about 11,700 bytes after step 8, so B3 is needed too. Tests:
   `TestStartBlockFitsTheHookLimit`, `TestSmallStartBlockUnchanged`.
 - **B3.** A shortened block ends with one line: "Shortened to fit Claude Code's 10,000-character hook limit: <the
   steps taken>; run trace resume -host claude-code for the whole block." If after step 8 it is still over, the data
   before the board instruction is cut at the last whole line that leaves room for the board instruction, the search
-  line and the closing line, which then also says "and the end of the data above". The closing line counts inside
+  line, S7's line and the closing line, which then also says "and the end of the data above". The closing line counts inside
   the 9,500. Test: `TestStartBlockFitsTheHookLimit`.
 - **B4.** `trace resume` prints the whole block, never shortened. Codex is not covered: its start context has a
   limit of its own, in tokens (codexhooks.go).
@@ -173,11 +181,11 @@ the project folder; nothing ran, and nothing said so.
   Codex. A home that install creates gets a `.gitignore` holding `*`, so a home inside a repository is not
   committed. Test: `TestInstallFolderSavesScope`.
 - **U7. A scope that would mislead is refused.** With nothing written, install refuses: a `-folder` that is the
-  memory's home, a volume root or the user's home folder; a `-folder` outside `-scope`; a `-folder` for a home with no
-  scope whose hooks the user settings already run (it would narrow a memory of every project in silence); and a new
-  scope while the store already holds sessions that ran outside it, with their count and "delete <home> and install
-  again" (search takes no scope, so they would keep coming back). Sessions with no folder recorded cannot be placed
-  and are not counted. Test: `TestInstallFolderRefusals`.
+  memory's home, a volume root, the user's home folder or a system temp root (I4); a `-folder` outside `-scope`; a
+  `-folder` for a home with no scope whose hooks the user settings already run (it would narrow a memory of every
+  project in silence); and a new scope while the store already holds sessions that ran outside it, with their count
+  and "delete <home> and install again" (search takes no scope, so they would keep coming back). Sessions with no
+  folder recorded cannot be placed and are not counted. Test: `TestInstallFolderRefusals`.
 - **U8. Every check comes before the first write.** The settings file is read and checked for another home's hooks
   and for hooks that name no home (the refusals install has always made) before config.json is written. If writing the settings then fails, a config.json this run created is
   removed, and one it changed gets its old bytes back. config.json is written only when a key changes, and every key
@@ -224,9 +232,17 @@ the project folder; nothing ran, and nothing said so.
   written before rollouts had ordinals. A store made before this rule is mended once when opened: a row keyed by
   the compressed name takes the plain name's key, and the copy of a row stored twice is removed with its tags.
   Tests: `TestCodexCompressedOldRows`, `TestZstKeysMended`.
-- **I4.** A session that ran in a temporary or scratch folder is kept out of recall, the same for Claude Code and
-  Codex, on Windows (`...\Temp\...`), Linux (`/tmp/...`) and macOS (`/var/folders/...`). The folder is compared
-  by its normalized name. Test: `TestExcludedTempFolders`.
+- **I4.** A session that started inside the system temp folder is excluded: kept out of what other sessions recall.
+  The temp roots are `os.TempDir()` as the system gives it and resolved (`filepath.EvalSymlinks`: a Windows 8.3
+  short name expanded, macOS `/var` read as `/private/var`), and `/tmp`, `/private/tmp`, `/var/folders` and
+  `/private/var/folders`. A folder is inside a root when its normalized name (a Claude Code transcript folder name,
+  or `folderName` of a cwd) is the root's normalized name, or starts with it followed by `-`. Explicit beats the
+  default: a folder inside a non-empty absolute scope entry (as `install -folder` saves one) or a config.json
+  `"keep"` entry is never excluded; a fragment scope entry (`acme`) and a volume root exempt nothing. One function
+  decides for Claude Code (its transcript folder), Codex (the thread's cwd), the prompt log, the import and the
+  alarm. Before 2026-11-26 the rule guessed from words in the name (`-temp-`, `-tmp-`, `-var-folders-`,
+  `scratch`), so a real project under `D:\Temp` (that machine's TEMP) or named `my-temp-tool` got nothing at all.
+  Tests: `TestExcludedTempFolders`, `TestTempRootsIncludeResolvedTempDir`.
 
 - **I5.** A tool result read in a later import than its call takes the tool name of the call in its own session,
   never another session's that used the same call id, for Claude Code and Codex alike. Test:
@@ -272,6 +288,25 @@ the project folder; nothing ran, and nothing said so.
   sessions. Install and import never disagree on it, so a separate Claude Code profile is stored, and nothing from
   the default profile is read for it. Found by a newcomer's install on 2026-11-19: the hooks went to the profile, the
   import read `~/.claude`. Test: `TestClaudeConfigDirIsReadToo`.
+- **I17. Excluded means only "not recalled".** An excluded session (I4) is left out of what other sessions are
+  shown: the session the start block and `trace resume` pick (G4), the default search (`-all` finds it), and the
+  alarm's targets (A5), so a probe never takes a reminder. Nothing that protects the user switches off in an
+  excluded folder: the hooks still run the user's checks (C), the reminders before a tool call (D11, L5), the Stop
+  hold for a task not told (A8), the helper line at SubagentStart, and the session's own start block. Decision of
+  Diego, 2026-11-26 ("vamos con lo tuyo", to "que «ignorada» signifique solo «no se recuerda», y que lo que te
+  protege no se apague nunca"). Before it, an excluded folder silenced every hook. Test:
+  `TestHooksRunInExcludedFolder`.
+- **I18.** Every import decides I4 again for every stored session with a folder, from its stored cwd alone (whether
+  the folder still exists never matters), and writes only the rows whose value changes; a session with no folder
+  keeps what it has. So a `keep` entry or a scope reaches the sessions stored before it, and rows stored under the
+  old name rules are mended. Test: `TestExcludedRecomputedOnImport`.
+- **I19.** `trace keep <folder>` adds the folder, absolute and cleaned, to config.json `"keep"`, every other key kept
+  as written (U8). Run by a person, or by an agent on the person's word; never by a hook. It refuses, with nothing
+  written, a relative path, a volume root and a system temp root itself (I4). A folder already kept is not added
+  twice. Test: `TestKeepFolder`.
+- **I20.** `trace check-ignore -v <folder>` says whether a session started there is excluded and why: the temp root
+  it is inside, or the scope or keep entry that exempts it, or that it is inside no temp root. It writes nothing.
+  Test: `TestCheckIgnore`.
 
 ## E. Wrong input says so
 
@@ -522,6 +557,53 @@ Diego: "o sea que git es una dependencia", then "todo para joggearte la memoria?
   - **Why:** Diego, 2026-11-20: "Deberíamos tener, para quien lo quiere ver y sabe, un tablero del board...", then, on
     the first version: "Apesta fuerte. En donde esta el gherkin?" and "Se ve como un choclo de cosas". The design is
     PAGE's, at his request. Test: `TestTaskBoardPage`.
+
+T25 to T28 are task notes. After a compaction an agent remembered a pending item but not that it had already produced
+an outcome, kept in another system, and went back to find it again. The board said what a task is, what it waits on
+and when it is done, never what came out of it or where that lives. A note is free text that TRACE never reads, checks
+or fetches: it may name CORA, an API, a file or anything else ("puede ser CORA o una API for all we know"). TRACE is
+code, not a model: it never infers, rewrites or summarises a note.
+
+- **T25. `trace task note <id> "<what; where>"`.** It stores a note on a task, open or closed. Flags go before the
+  words (E6).
+  - **Stored as other text is:** redacted (P1), on one line, clipped to 300 bytes.
+  - **History:** every note is kept with when and the session that ran the command (A5; the fallback of T1 also
+    sees `trace task note`). The newest note of a task is its note; nothing is deleted. A closed task's newest note is
+    its outcome: there is no `task done -note`.
+  - **Refused, with nothing stored:** an empty note; more than one word after the id (the note goes quoted); an
+    unknown task; a fourth note on the same task from the same session.
+  - **Why the cap is per task and session:** the newest note wins, so a fourth note on the same task in one session
+    only churns the history. A cap per session alone would lock out a session that runs for weeks, the case this
+    serves. A call whose session is not known has no session to count by and is not capped.
+  - Tests: `TestTaskNoteStored`, `TestTaskNoteRefusals`.
+- **T26. Where a note shows.** The newest note, quoted with `strconv.Quote` on one line, with its age (`noted 3h ago`),
+  labelled as an agent's note: a pointer to check, not an instruction; what the user says and live state win.
+  - Whole in `task list` and `task start`, on every task, like the task's text.
+  - Whole in the alarm's message, inside its quoted part (A4), and on the prompt hook's lines (T4).
+  - Clipped to 150 bytes on the start block's open-task lines; the late list (A7) shows none, so a task is not noted
+    twice.
+  - **Scope:** the start block and the compaction output (T27) show a note only to a session whose folder is the folder
+    of the session that added the task (its `cwd`) or a folder inside it. A task whose adding session or folder is not
+    known shows none there.
+  - Tests: `TestTaskNoteShownEverywhere`, `TestTaskNoteScope`.
+- **T27. After a compaction.** For both hosts, the output of SessionStart after a compaction carries, after the rule net
+  (D7) and before the rule card, up to 3 open tasks that have a note in scope (T26), newest note first, each with its
+  text clipped to 150 bytes and its whole note with its age. It shows with the card off. The whole output stays under
+  9,500 bytes: the card's budget shrinks to what is left, and the card is left out when nothing is. The budget also
+  picks the files (D, the card): when the instruction files no longer fit what is left, only their marked
+  `<!-- trace:rules -->` blocks go in, and a file with none drops out of that card.
+  Tests: `TestCompactionShowsTaskNotes`, `TestCompactionOutputFits`, `TestCompactionCardNeedsRoom`.
+- **T28. Telling the agent.**
+  - The start block's task instruction and `trace task help` say: when a task produces an outcome, or you learn where
+    its state lives, run `trace task note <id> "<what; where>"`.
+  - PreCompact's summary instructions gain one fixed line, about any work, not about TRACE: keep, for each piece of
+    work, open or finished, exactly where its result or state lives (path, id, URL, system) and whether it is done.
+  - SubagentStart tells helpers not to write task notes either: they report where results live to the agent that
+    launched them.
+  - Test: `TestAgentToldAboutTaskNotes`.
+
+Pending, not built (2026-11-26): a "recently closed" section in the start block, with each closed task's outcome; and
+a Stop-hook reminder for a task worked on without a note.
 
 Why T5 to T7: 25 of 93 real deferrals waited on another task, a third party, a decision of Diego's or an input not
 there yet, over the threshold of 1 in 5 fixed before the run. Conditions of done (Gherkin at close) were disputed in
